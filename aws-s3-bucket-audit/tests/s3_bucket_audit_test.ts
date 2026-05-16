@@ -167,20 +167,32 @@ const narrowDenyPolicy = {
 // Helper bundle factories
 // ---------------------------------------------------------------------------
 
-function cleanBundle(): BucketBundle {
+/** Build a BucketBundle from a state object (name taken from `BucketName`). */
+function stateOnly(state: Record<string, unknown>): BucketBundle {
   return {
-    name: cleanBucketState.BucketName,
-    state: cleanBucketState as unknown as BucketBundle["state"],
-    policy: cleanBucketPolicy as unknown as BucketBundle["policy"],
+    name: state.BucketName as string,
+    state: state as unknown as BucketBundle["state"],
   };
 }
 
-function noncompliantBundle(): BucketBundle {
+/** Build a BucketBundle from a state and a policy object. */
+function statePolicy(
+  state: Record<string, unknown>,
+  policy: Record<string, unknown>,
+): BucketBundle {
   return {
-    name: noncompliantBucketState.BucketName,
-    state: noncompliantBucketState as unknown as BucketBundle["state"],
-    policy: noncompliantBucketPolicy as unknown as BucketBundle["policy"],
+    name: state.BucketName as string,
+    state: state as unknown as BucketBundle["state"],
+    policy: policy as unknown as BucketBundle["policy"],
   };
+}
+
+function cleanBundle(): BucketBundle {
+  return statePolicy(cleanBucketState, cleanBucketPolicy);
+}
+
+function noncompliantBundle(): BucketBundle {
+  return statePolicy(noncompliantBucketState, noncompliantBucketPolicy);
 }
 
 function noStateBundle(): BucketBundle {
@@ -188,11 +200,7 @@ function noStateBundle(): BucketBundle {
 }
 
 function noPolicyBundle(): BucketBundle {
-  return {
-    name: cleanBucketState.BucketName,
-    state: cleanBucketState as unknown as BucketBundle["state"],
-    // no policy
-  };
+  return stateOnly(cleanBucketState);
 }
 
 // ---------------------------------------------------------------------------
@@ -1081,26 +1089,22 @@ Deno.test("findGateTrippers — info threshold counts every fail/warn", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Encryption allowlist tightening (peer-review fix)
+// Encryption allowlist
 // ---------------------------------------------------------------------------
 
 Deno.test("checkEncryption: FAIL when algorithm is an unrecognized string", () => {
-  // Typo or future algorithm we don't recognize must NOT pass the rule.
-  const b: BucketBundle = {
-    name: "typo-enc",
-    state: {
-      BucketName: "typo-enc",
-      BucketEncryption: {
-        ServerSideEncryptionConfiguration: [
-          { ServerSideEncryptionByDefault: { SSEAlgorithm: "AS256" } },
-        ],
-      },
-    } as unknown as BucketBundle["state"],
-  };
+  const b = stateOnly({
+    BucketName: "typo-enc",
+    BucketEncryption: {
+      ServerSideEncryptionConfiguration: [
+        { ServerSideEncryptionByDefault: { SSEAlgorithm: "AS256" } },
+      ],
+    },
+  });
   const f = checkEncryption(b);
   assertEquals(f.status, "fail");
-  // The message must mention the actual unrecognized algorithm so the
-  // operator can see what slipped through.
+  // The message must surface the unrecognized algorithm so the operator
+  // can see what slipped through.
   assert(f.message.includes("AS256"));
 });
 
@@ -1111,12 +1115,9 @@ Deno.test("checkEncryption: FAIL when algorithm is an unrecognized string", () =
 Deno.test("checkTLSOnlyPolicy: PASS when Action is the all-services wildcard '*'", () => {
   // A Deny with Action: "*" is broader than Action: "s3:*" and just as
   // valid for blocking insecure transport on S3 specifically.
-  const b: BucketBundle = {
-    name: "star-action",
-    state: {
-      BucketName: "star-action",
-    } as unknown as BucketBundle["state"],
-    policy: {
+  const b = statePolicy(
+    { BucketName: "star-action" },
+    {
       Bucket: "star-action",
       PolicyDocument: {
         Statement: [
@@ -1132,8 +1133,8 @@ Deno.test("checkTLSOnlyPolicy: PASS when Action is the all-services wildcard '*'
           },
         ],
       },
-    } as unknown as BucketBundle["policy"],
-  };
+    },
+  );
   assertEquals(checkTLSOnlyPolicy(b).status, "pass");
 });
 
@@ -1144,12 +1145,9 @@ Deno.test("checkTLSOnlyPolicy: PASS when Action is the all-services wildcard '*'
 Deno.test("checkTLSOnlyPolicy: PASS when Principal is { AWS: ['*'] } (array wildcard)", () => {
   // IAM allows {AWS: ["*"]} as an array form of the wildcard. Equivalent
   // to {AWS: "*"} and to "*".
-  const b: BucketBundle = {
-    name: "array-wildcard",
-    state: {
-      BucketName: "array-wildcard",
-    } as unknown as BucketBundle["state"],
-    policy: {
+  const b = statePolicy(
+    { BucketName: "array-wildcard" },
+    {
       Bucket: "array-wildcard",
       PolicyDocument: {
         Statement: [
@@ -1165,8 +1163,8 @@ Deno.test("checkTLSOnlyPolicy: PASS when Principal is { AWS: ['*'] } (array wild
           },
         ],
       },
-    } as unknown as BucketBundle["policy"],
-  };
+    },
+  );
   assertEquals(checkTLSOnlyPolicy(b).status, "pass");
 });
 
@@ -1177,12 +1175,9 @@ Deno.test("checkTLSOnlyPolicy: PASS when Principal is { AWS: ['*'] } (array wild
 Deno.test("checkTLSOnlyPolicy: PASS when condition key is lowercase 'aws:securetransport'", () => {
   // IAM condition keys are case-insensitive per AWS docs. The operator
   // (`Bool`) is case-sensitive but the key inside it is not.
-  const b: BucketBundle = {
-    name: "lowercase-key",
-    state: {
-      BucketName: "lowercase-key",
-    } as unknown as BucketBundle["state"],
-    policy: {
+  const b = statePolicy(
+    { BucketName: "lowercase-key" },
+    {
       Bucket: "lowercase-key",
       PolicyDocument: {
         Statement: [
@@ -1198,8 +1193,8 @@ Deno.test("checkTLSOnlyPolicy: PASS when condition key is lowercase 'aws:securet
           },
         ],
       },
-    } as unknown as BucketBundle["policy"],
-  };
+    },
+  );
   assertEquals(checkTLSOnlyPolicy(b).status, "pass");
 });
 
@@ -1208,12 +1203,9 @@ Deno.test("checkTLSOnlyPolicy: PASS when condition key is lowercase 'aws:securet
 // ---------------------------------------------------------------------------
 
 Deno.test("checkTLSOnlyPolicy: PASS for China partition (arn:aws-cn:s3:::...)", () => {
-  const b: BucketBundle = {
-    name: "china-bucket",
-    state: {
-      BucketName: "china-bucket",
-    } as unknown as BucketBundle["state"],
-    policy: {
+  const b = statePolicy(
+    { BucketName: "china-bucket" },
+    {
       Bucket: "china-bucket",
       PolicyDocument: {
         Statement: [
@@ -1229,18 +1221,15 @@ Deno.test("checkTLSOnlyPolicy: PASS for China partition (arn:aws-cn:s3:::...)", 
           },
         ],
       },
-    } as unknown as BucketBundle["policy"],
-  };
+    },
+  );
   assertEquals(checkTLSOnlyPolicy(b).status, "pass");
 });
 
 Deno.test("checkTLSOnlyPolicy: PASS for GovCloud partition (arn:aws-us-gov:s3:::...)", () => {
-  const b: BucketBundle = {
-    name: "gov-bucket",
-    state: {
-      BucketName: "gov-bucket",
-    } as unknown as BucketBundle["state"],
-    policy: {
+  const b = statePolicy(
+    { BucketName: "gov-bucket" },
+    {
       Bucket: "gov-bucket",
       PolicyDocument: {
         Statement: [
@@ -1256,20 +1245,19 @@ Deno.test("checkTLSOnlyPolicy: PASS for GovCloud partition (arn:aws-us-gov:s3:::
           },
         ],
       },
-    } as unknown as BucketBundle["policy"],
-  };
+    },
+  );
   assertEquals(checkTLSOnlyPolicy(b).status, "pass");
 });
 
 // ---------------------------------------------------------------------------
 // collectBundles recovery paths (via report.execute integration)
 //
-// collectBundles is internal; we drive it through report.execute() with a
-// faked context that includes a temp repoDir and prewritten data files. This
-// covers the must-fix from the peer reviews: when an upstream step succeeds
-// but its data is bad (unparseable JSON, schema-mismatched), the bucket name
-// must still surface via methodArgs.identifier so the bucket appears in the
-// report rather than silently disappearing.
+// collectBundles is internal; drive it through report.execute() with a
+// faked context that includes a temp repoDir and prewritten data files.
+// When an upstream step succeeds but its data is unparseable or schema-
+// mismatched, the bucket name must still surface via methodArgs.identifier
+// so the bucket appears in the report rather than silently disappearing.
 // ---------------------------------------------------------------------------
 
 interface FakeStepExecution {
@@ -1381,8 +1369,8 @@ Deno.test("collectBundles: succeeded step with unparseable JSON surfaces with pa
 });
 
 Deno.test("collectBundles: succeeded step with schema-mismatched data surfaces via fallback identifier", async () => {
-  // Valid JSON but missing required BucketName field. Before the peer-
-  // review fix this bucket would silently disappear from the report.
+  // Valid JSON but missing the required BucketName field. The bucket must
+  // still surface via methodArgs.identifier rather than disappearing.
   const repoDir = await Deno.makeTempDir({ prefix: "s3audit-test-" });
   try {
     await writeRaw(
@@ -1420,12 +1408,9 @@ Deno.test("checkTLSOnlyPolicy: bucket name with dots is matched literally (regex
   // S3 bucket names allow dots (`my.bucket.example`). The regex must
   // treat them as literal characters, not "any char". Wrong-bucket ARNs
   // must still fail.
-  const b: BucketBundle = {
-    name: "my.bucket.example",
-    state: {
-      BucketName: "my.bucket.example",
-    } as unknown as BucketBundle["state"],
-    policy: {
+  const matching = statePolicy(
+    { BucketName: "my.bucket.example" },
+    {
       Bucket: "my.bucket.example",
       PolicyDocument: {
         Statement: [
@@ -1441,18 +1426,15 @@ Deno.test("checkTLSOnlyPolicy: bucket name with dots is matched literally (regex
           },
         ],
       },
-    } as unknown as BucketBundle["policy"],
-  };
-  assertEquals(checkTLSOnlyPolicy(b).status, "pass");
+    },
+  );
+  assertEquals(checkTLSOnlyPolicy(matching).status, "pass");
 
-  // A different-bucket ARN that matches via greedy-dot would be `myXbucketXexample`
-  // — verify that doesn't pass.
-  const wrongBucket: BucketBundle = {
-    name: "my.bucket.example",
-    state: {
-      BucketName: "my.bucket.example",
-    } as unknown as BucketBundle["state"],
-    policy: {
+  // A different-bucket ARN that matches via greedy-dot would be
+  // `myXbucketXexample` — verify that doesn't pass.
+  const wrongBucket = statePolicy(
+    { BucketName: "my.bucket.example" },
+    {
       Bucket: "my.bucket.example",
       PolicyDocument: {
         Statement: [
@@ -1468,7 +1450,7 @@ Deno.test("checkTLSOnlyPolicy: bucket name with dots is matched literally (regex
           },
         ],
       },
-    } as unknown as BucketBundle["policy"],
-  };
+    },
+  );
   assertEquals(checkTLSOnlyPolicy(wrongBucket).status, "fail");
 });

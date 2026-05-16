@@ -57,6 +57,12 @@ const POLICY_TYPE = "@swamp/aws/s3/bucket-policy";
 const SECURITY_S3 =
   "https://docs.aws.amazon.com/AmazonS3/latest/userguide/security-best-practices.html";
 
+const VALID_SSE_ALGORITHMS: readonly string[] = [
+  "AES256",
+  "aws:kms",
+  "aws:kms:dsse",
+];
+
 const BucketStateSchema = z.object({
   BucketName: z.string(),
 }).passthrough();
@@ -114,10 +120,12 @@ export interface BucketBundle {
   policyError?: string;
 }
 
+const TEXT_DECODER = new TextDecoder();
+
 function decodeJson<T>(bytes: Uint8Array | null): T | null {
   if (!bytes) return null;
   try {
-    return JSON.parse(new TextDecoder().decode(bytes)) as T;
+    return JSON.parse(TEXT_DECODER.decode(bytes)) as T;
   } catch {
     return null;
   }
@@ -233,7 +241,11 @@ async function collectBundles(context: any): Promise<BucketBundle[]> {
       }
     }
 
-    if (step.status === "failed") {
+    // Last-resort: if the step failed AND produced no handles at all, the
+    // inner loop never ran. Surface the bucket via methodArgs.identifier so
+    // it doesn't silently disappear. Other failure modes (no file, unparseable
+    // JSON, schema mismatch) are already recorded inside the inner loop.
+    if (step.status === "failed" && (step.dataHandles?.length ?? 0) === 0) {
       recordUnknown(
         isBucket
           ? "bucket lookup step failed"
@@ -253,26 +265,37 @@ function makeFinding(
   },
 ): Finding {
   return {
+    ...partial,
     actual: partial.actual ?? {},
     expected: partial.expected ?? {},
     references: partial.references ?? [SECURITY_S3],
-    ...partial,
   };
+}
+
+/**
+ * Build a `skip`-status finding for a rule that needs `b.state` but the
+ * step that should have provided it didn't (no data, parse error, or
+ * step failure). Centralises the seven copies of the same boilerplate.
+ */
+function skipNoState(
+  b: BucketBundle,
+  id: string,
+  severity: Severity,
+): Finding {
+  return makeFinding({
+    id,
+    severity,
+    status: "skip",
+    bucket: b.name,
+    message: b.stateError ?? "no bucket state available",
+  });
 }
 
 /** Rule: bucket-versioning-enabled. `error`, passes iff `VersioningConfiguration.Status` is `Enabled`. */
 export function checkVersioning(b: BucketBundle): Finding {
   const id = "bucket-versioning-enabled";
   const severity: Severity = "error";
-  if (!b.state) {
-    return makeFinding({
-      id,
-      severity,
-      status: "skip",
-      bucket: b.name,
-      message: b.stateError ?? "no bucket state available",
-    });
-  }
+  if (!b.state) return skipNoState(b, id, severity);
   const status = (b.state.VersioningConfiguration as
     | { Status?: string }
     | undefined)?.Status;
@@ -294,15 +317,7 @@ export function checkVersioning(b: BucketBundle): Finding {
 export function checkEncryption(b: BucketBundle): Finding {
   const id = "bucket-encryption-enabled";
   const severity: Severity = "error";
-  if (!b.state) {
-    return makeFinding({
-      id,
-      severity,
-      status: "skip",
-      bucket: b.name,
-      message: b.stateError ?? "no bucket state available",
-    });
-  }
+  if (!b.state) return skipNoState(b, id, severity);
   const rules = (b.state.BucketEncryption as
     | {
       ServerSideEncryptionConfiguration?: Array<{
@@ -310,26 +325,29 @@ export function checkEncryption(b: BucketBundle): Finding {
       }>;
     }
     | undefined)?.ServerSideEncryptionConfiguration ?? [];
-  const VALID_ALGS = ["AES256", "aws:kms", "aws:kms:dsse"] as const;
   const algs = rules
     .map((r) => r.ServerSideEncryptionByDefault?.SSEAlgorithm)
     .filter((x): x is string => typeof x === "string");
-  const validAlgs = algs.filter((a) =>
-    (VALID_ALGS as readonly string[]).includes(a)
-  );
+  const validAlgs = algs.filter((a) => VALID_SSE_ALGORITHMS.includes(a));
   const ok = validAlgs.length > 0;
+  let message: string;
+  if (ok) {
+    message = `Default encryption is configured (${validAlgs.join(", ")}).`;
+  } else if (algs.length > 0) {
+    message = `Default encryption uses unrecognized algorithm(s): ${
+      algs.join(", ")
+    }.`;
+  } else {
+    message = "No default encryption is configured on the bucket.";
+  }
   return makeFinding({
     id,
     severity,
     status: ok ? "pass" : "fail",
     bucket: b.name,
     actual: { algorithms: algs },
-    expected: { algorithms: [...VALID_ALGS] },
-    message: ok
-      ? `Default encryption is configured (${validAlgs.join(", ")}).`
-      : algs.length > 0
-      ? `Default encryption uses unrecognized algorithm(s): ${algs.join(", ")}.`
-      : "No default encryption is configured on the bucket.",
+    expected: { algorithms: [...VALID_SSE_ALGORITHMS] },
+    message,
   });
 }
 
@@ -337,15 +355,7 @@ export function checkEncryption(b: BucketBundle): Finding {
 export function checkPublicAccessBlock(b: BucketBundle): Finding {
   const id = "bucket-public-access-blocked";
   const severity: Severity = "error";
-  if (!b.state) {
-    return makeFinding({
-      id,
-      severity,
-      status: "skip",
-      bucket: b.name,
-      message: b.stateError ?? "no bucket state available",
-    });
-  }
+  if (!b.state) return skipNoState(b, id, severity);
   const bpa = b.state.PublicAccessBlockConfiguration as
     | {
       BlockPublicAcls?: boolean;
@@ -381,15 +391,7 @@ export function checkPublicAccessBlock(b: BucketBundle): Finding {
 export function checkOwnershipEnforced(b: BucketBundle): Finding {
   const id = "bucket-ownership-enforced";
   const severity: Severity = "error";
-  if (!b.state) {
-    return makeFinding({
-      id,
-      severity,
-      status: "skip",
-      bucket: b.name,
-      message: b.stateError ?? "no bucket state available",
-    });
-  }
+  if (!b.state) return skipNoState(b, id, severity);
   const rules = (b.state.OwnershipControls as
     | { Rules?: Array<{ ObjectOwnership?: string }> }
     | undefined)?.Rules ?? [];
@@ -606,15 +608,7 @@ export function checkTLSOnlyPolicy(b: BucketBundle): Finding {
 export function checkLifecycleExpiresNoncurrent(b: BucketBundle): Finding {
   const id = "bucket-lifecycle-expires-noncurrent-versions";
   const severity: Severity = "warn";
-  if (!b.state) {
-    return makeFinding({
-      id,
-      severity,
-      status: "skip",
-      bucket: b.name,
-      message: b.stateError ?? "no bucket state available",
-    });
-  }
+  if (!b.state) return skipNoState(b, id, severity);
   const rules = (b.state.LifecycleConfiguration as
     | {
       Rules?: Array<{
@@ -647,15 +641,7 @@ export function checkLifecycleExpiresNoncurrent(b: BucketBundle): Finding {
 export function checkServerAccessLogging(b: BucketBundle): Finding {
   const id = "bucket-server-access-logging";
   const severity: Severity = "warn";
-  if (!b.state) {
-    return makeFinding({
-      id,
-      severity,
-      status: "skip",
-      bucket: b.name,
-      message: b.stateError ?? "no bucket state available",
-    });
-  }
+  if (!b.state) return skipNoState(b, id, severity);
   const cfg = b.state.LoggingConfiguration as
     | { DestinationBucketName?: string; LogFilePrefix?: string }
     | undefined;
@@ -693,15 +679,7 @@ export function checkServerAccessLogging(b: BucketBundle): Finding {
 export function inventoryTags(b: BucketBundle): Finding {
   const id = "bucket-tag-inventory";
   const severity: Severity = "info";
-  if (!b.state) {
-    return makeFinding({
-      id,
-      severity,
-      status: "skip",
-      bucket: b.name,
-      message: b.stateError ?? "no bucket state available",
-    });
-  }
+  if (!b.state) return skipNoState(b, id, severity);
   const tags =
     (b.state.Tags as Array<{ Key?: string; Value?: string }> | undefined) ??
       [];
