@@ -227,3 +227,42 @@ Deno.test("STS error propagation — throws with sensible message", async () => 
     "Network failure",
   );
 });
+
+Deno.test("AWS_PROFILE unset — throws before any AWS call", async () => {
+  await assertRejects(
+    () => runVerify({ profile: "" }),
+    Error,
+    "AWS_PROFILE is not set",
+  );
+});
+
+Deno.test("STS returns empty Account — throws", async () => {
+  await assertRejects(
+    () =>
+      runVerify({
+        stsResponse: {
+          Account: "",
+          Arn: "arn:aws:iam::000000000000:user/testuser",
+          UserId: "AIDAXXXXXXXXXXXXXXXXX",
+        },
+      }),
+    Error,
+    "returned no Account",
+  );
+});
+
+Deno.test("globalArgs schema-parse failure — throws with field detail", async () => {
+  // The runtime would normally validate at instance-create, but the
+  // execute path also safeParses as defense in depth. Pass an
+  // expectedAccountId that doesn't match /^\d{12}$/.
+  await assertRejects(
+    () =>
+      runVerify({
+        // @ts-expect-error — deliberately wrong shape for the schema-parse test
+        globalArgs: { expectedAccountId: "not-12-digits" },
+      }),
+    Error,
+    "invalid globalArgs",
+  );
+});
+

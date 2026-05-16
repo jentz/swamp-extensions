@@ -162,6 +162,19 @@ async function collectBundles(context: any): Promise<BucketBundle[]> {
     const isPolicy = typeStr === POLICY_TYPE;
     if (!isBucket && !isPolicy) continue;
 
+    // Best-effort recovery: when we can't pull the bucket name out of the
+    // parsed data, fall back to the step's method argument so the bucket
+    // still appears in the report as an explicit failure rather than
+    // silently disappearing.
+    const fallbackIdent = (step.methodArgs?.identifier as string | undefined) ??
+      "";
+    const recordUnknown = (reason: string) => {
+      if (!fallbackIdent) return;
+      const b = upsert(fallbackIdent);
+      if (isBucket) b.stateError ??= reason;
+      if (isPolicy) b.policyError ??= reason;
+    };
+
     for (const handle of step.dataHandles ?? []) {
       const bytes = await readDataFile(
         context,
@@ -177,6 +190,11 @@ async function collectBundles(context: any): Promise<BucketBundle[]> {
           "Could not parse {modelType} data for step {step} (handle {handle})",
           { modelType: step.modelType, step: stepLabel, handle: handle.name },
         );
+        recordUnknown(
+          isBucket
+            ? "bucket data file missing or unparseable"
+            : "bucket-policy data file missing or unparseable",
+        );
         continue;
       }
 
@@ -187,6 +205,7 @@ async function collectBundles(context: any): Promise<BucketBundle[]> {
             "Bucket state did not match expected shape (step {step})",
             { step: `${step.jobName}.${step.stepName}` },
           );
+          recordUnknown("bucket state did not match expected shape");
           continue;
         }
         const state = stateRes.data;
@@ -202,6 +221,7 @@ async function collectBundles(context: any): Promise<BucketBundle[]> {
             "Bucket-policy state did not match expected shape (step {step})",
             { step: `${step.jobName}.${step.stepName}` },
           );
+          recordUnknown("bucket-policy state did not match expected shape");
           continue;
         }
         const policy = polRes.data;
@@ -213,14 +233,12 @@ async function collectBundles(context: any): Promise<BucketBundle[]> {
       }
     }
 
-    if ((isBucket || isPolicy) && step.status === "failed") {
-      const args = step.methodArgs ?? {};
-      const ident = (args.identifier as string | undefined) ?? "";
-      if (ident) {
-        const b = upsert(ident);
-        if (isBucket) b.stateError ??= "bucket lookup step failed";
-        if (isPolicy) b.policyError ??= "bucket-policy lookup step failed";
-      }
+    if (step.status === "failed") {
+      recordUnknown(
+        isBucket
+          ? "bucket lookup step failed"
+          : "bucket-policy lookup step failed",
+      );
     }
   }
 
@@ -292,19 +310,25 @@ export function checkEncryption(b: BucketBundle): Finding {
       }>;
     }
     | undefined)?.ServerSideEncryptionConfiguration ?? [];
+  const VALID_ALGS = ["AES256", "aws:kms", "aws:kms:dsse"] as const;
   const algs = rules
     .map((r) => r.ServerSideEncryptionByDefault?.SSEAlgorithm)
     .filter((x): x is string => typeof x === "string");
-  const ok = algs.length > 0;
+  const validAlgs = algs.filter((a) =>
+    (VALID_ALGS as readonly string[]).includes(a)
+  );
+  const ok = validAlgs.length > 0;
   return makeFinding({
     id,
     severity,
     status: ok ? "pass" : "fail",
     bucket: b.name,
     actual: { algorithms: algs },
-    expected: { algorithms: ["AES256", "aws:kms", "aws:kms:dsse"] },
+    expected: { algorithms: [...VALID_ALGS] },
     message: ok
-      ? `Default encryption is configured (${algs.join(", ")}).`
+      ? `Default encryption is configured (${validAlgs.join(", ")}).`
+      : algs.length > 0
+      ? `Default encryption uses unrecognized algorithm(s): ${algs.join(", ")}.`
       : "No default encryption is configured on the bucket.",
   });
 }
@@ -403,7 +427,11 @@ export interface PolicyStatement {
   Condition?: Record<string, Record<string, unknown>>;
 }
 
-/** Returns true if `principal` is the wildcard `*` (string or `{AWS:"*"}`). */
+/**
+ * Returns true if `principal` is the everyone-wildcard. Accepts the string
+ * form `"*"`, the object form `{AWS: "*"}`, and the array object form
+ * `{AWS: ["*"]}` (all three are legal IAM).
+ */
 function isPrincipalWildcard(principal: unknown): boolean {
   if (principal === "*") return true;
   if (
@@ -413,24 +441,26 @@ function isPrincipalWildcard(principal: unknown): boolean {
   ) {
     const aws = (principal as Record<string, unknown>).AWS;
     if (aws === "*") return true;
+    if (Array.isArray(aws) && aws.includes("*")) return true;
   }
   return false;
 }
 
 /**
- * Returns true if the Action field includes `s3:*` (i.e. covers all S3
- * operations, not a narrowly-scoped action like `s3:DeleteObject`).
+ * Returns true if the Action field covers all S3 operations — either via
+ * the S3-scoped wildcard `s3:*` or the all-services wildcard `*`. Both
+ * forms satisfy "denies every S3 operation under the condition".
  */
 function actionCoversAllS3(action: string | string[] | undefined): boolean {
   if (action === undefined) return false;
   const actions = Array.isArray(action) ? action : [action];
-  return actions.some((a) => a === "s3:*");
+  return actions.some((a) => a === "s3:*" || a === "*");
 }
 
 /**
- * Returns true if the Resource field covers BOTH the bucket root ARN
- * (`arn:aws:s3:::bucket`) and the bucket content ARN
- * (`arn:aws:s3:::bucket/*`).  A plain `*` wildcard is also accepted.
+ * Returns true if the Resource field covers BOTH the bucket root ARN and
+ * the bucket content ARN, across all AWS partitions (`aws`, `aws-cn`,
+ * `aws-us-gov`). A plain `*` wildcard is also accepted.
  */
 function resourceCoversBucket(
   resource: string | string[] | undefined,
@@ -440,20 +470,42 @@ function resourceCoversBucket(
   const resources = Array.isArray(resource) ? resource : [resource];
   // Bare wildcard covers everything.
   if (resources.includes("*")) return true;
-  const bucketArn = `arn:aws:s3:::${bucketName}`;
-  const contentArn = `${bucketArn}/*`;
-  const hasRoot = resources.includes(bucketArn);
-  const hasContent = resources.includes(contentArn);
+  // Bucket names allow dots and dashes; escape them so they're literal in
+  // the regex (cheap; both are valid S3 name chars).
+  const escapedName = bucketName.replace(/[.\-]/g, "\\$&");
+  const rootRe = new RegExp(`^arn:aws[^:]*:s3:::${escapedName}$`);
+  const contentRe = new RegExp(`^arn:aws[^:]*:s3:::${escapedName}/\\*$`);
+  const hasRoot = resources.some((r) =>
+    typeof r === "string" && rootRe.test(r)
+  );
+  const hasContent = resources.some((r) =>
+    typeof r === "string" && contentRe.test(r)
+  );
   return hasRoot && hasContent;
+}
+
+/**
+ * Find the `aws:SecureTransport` condition value, treating the IAM
+ * condition key as case-insensitive (IAM matches keys case-insensitively;
+ * `aws:securetransport` and `AWS:SecureTransport` are the same condition).
+ * The operator (`Bool`) IS case-sensitive in IAM.
+ */
+function findSecureTransportValue(
+  condBool: Record<string, unknown>,
+): unknown {
+  const key = Object.keys(condBool).find((k) =>
+    k.toLowerCase() === "aws:securetransport"
+  );
+  return key ? condBool[key] : undefined;
 }
 
 /**
  * Returns true when `stmt` is a properly-scoped TLS-enforcing Deny:
  *   - Effect: Deny
- *   - Principal: * (string) or {AWS: "*"}
- *   - Action: s3:* (covers all S3 operations, not a narrowly-scoped subset)
- *   - Resource: covers both arn:aws:s3:::bucket AND arn:aws:s3:::bucket/*
- *   - Condition: Bool with aws:SecureTransport = "false"
+ *   - Principal: covers everyone (`*`, `{AWS: "*"}`, or `{AWS: ["*"]}`)
+ *   - Action: covers all S3 operations (`s3:*` or `*`)
+ *   - Resource: covers both the bucket root and `bucket/*` (any AWS partition)
+ *   - Condition: Bool with aws:SecureTransport (case-insensitive) = false
  */
 export function statementDeniesInsecureTransport(
   stmt: PolicyStatement,
@@ -465,7 +517,8 @@ export function statementDeniesInsecureTransport(
   if (!resourceCoversBucket(stmt.Resource, bucketName)) return false;
   const condBool = stmt.Condition?.Bool;
   if (!condBool) return false;
-  const value = condBool["aws:SecureTransport"];
+  const value = findSecureTransportValue(condBool);
+  if (value === undefined) return false;
   const flagged = Array.isArray(value)
     ? value.map((v) => String(v).toLowerCase())
     : [String(value).toLowerCase()];

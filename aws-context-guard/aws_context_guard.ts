@@ -69,7 +69,18 @@ export const model = {
       arguments: z.object({}),
       // deno-lint-ignore no-explicit-any
       execute: async (_args: Record<string, never>, context: any) => {
-        const g = context.globalArgs as z.infer<typeof GlobalArgsSchema>;
+        // Defense in depth: parse, don't cast. The swamp runtime is expected
+        // to validate globalArgs at model-instance creation, but this is the
+        // last line of defense if something gets past that — and the cost is
+        // a single safeParse call.
+        const parsed = GlobalArgsSchema.safeParse(context.globalArgs);
+        if (!parsed.success) {
+          throw new Error(
+            "aws-context-guard refuses to proceed: invalid globalArgs " +
+              `(${parsed.error.issues.map((i) => i.message).join("; ")}).`,
+          );
+        }
+        const g = parsed.data;
         const profile = Deno.env.get("AWS_PROFILE") ?? "";
         const region = Deno.env.get("AWS_REGION") ?? "";
 

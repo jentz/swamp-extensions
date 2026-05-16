@@ -114,10 +114,18 @@ The report iterates `context.stepExecutions` and matches by `modelType`:
 - Bucket policy: steps whose `modelType == "@swamp/aws/s3/bucket-policy"`
 
 State and policy are paired by bucket name (`BucketName` from state, `Bucket`
-from policy). If a bucket has state but no policy (or vice versa), the missing
-side becomes a `skip`-status finding rather than a workflow failure. If a step
-failed entirely, the bucket name is recovered from the step's
-`methodArgs.identifier` so a failed lookup still produces a finding.
+from policy). Missing data is handled per-rule:
+
+- If bucket **state** is missing or unparseable, every state-dependent rule
+  emits `skip` (no data to evaluate against).
+- If the bucket **policy** lookup failed or returned no policy, the
+  `bucket-tls-only-policy` rule emits `fail`. No policy means no TLS
+  enforcement exists, which is a real audit failure rather than an
+  unknown.
+- If a step failed entirely (or its data is missing / schema-mismatched),
+  the bucket name is recovered from the step's `methodArgs.identifier` so
+  the bucket still appears in the report with a populated `stateError` or
+  `policyError`, rather than silently disappearing.
 
 ## Output
 
@@ -181,8 +189,9 @@ S3_BUCKET_AUDIT_FAILON=warn swamp workflow run audit-tf-state-buckets
 ```
 
 When the gate trips, the JSON output sets `gateTripped: true` and populates
-`trippers` with the first 5 findings that crossed the threshold; the workflow
-logs include a WARN line naming them.
+`trippers` with **every** finding that crossed the threshold. The workflow
+log includes a single WARN line naming the first five (the JSON is the
+machine-readable source of truth).
 
 ### Failing CI/CD on gate trips
 

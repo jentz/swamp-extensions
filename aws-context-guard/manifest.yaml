@@ -6,12 +6,13 @@ description: |
   runs by verifying, in order:
 
     1. AWS_PROFILE ends with a required suffix (default `-readonly`).
-    2. AWS_REGION matches an optional expected region.
-    3. sts:GetCallerIdentity returns the expected 12-digit account ID.
+    2. sts:GetCallerIdentity returns the expected 12-digit account ID.
 
   On success, persists the verified caller-identity context (account,
   ARN, user ID, profile, region, verifiedAt) as a `context` resource that
-  later workflow steps can reference.
+  later workflow steps can reference. AWS_REGION is captured for
+  reference but is not validated — region is a routing concern, not an
+  identity property.
 
   Designed to be the first step of any AWS audit or read-only-recon
   workflow, so a misconfigured shell can never reach AWS APIs.
