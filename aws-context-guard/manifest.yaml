@@ -1,0 +1,44 @@
+manifestVersion: 1
+name: "@jentz/aws-context-guard"
+version: "2026.05.17.1"
+description: |
+  Generic AWS workflow-safety primitive. Fails closed before any AWS work
+  runs by verifying, in order:
+
+    1. AWS_PROFILE ends with a required suffix (default `-readonly`).
+    2. AWS_REGION matches an optional expected region.
+    3. sts:GetCallerIdentity returns the expected 12-digit account ID.
+
+  On success, persists the verified caller-identity context (account,
+  ARN, user ID, profile, region, verifiedAt) as a `context` resource that
+  later workflow steps can reference.
+
+  Designed to be the first step of any AWS audit or read-only-recon
+  workflow, so a misconfigured shell can never reach AWS APIs.
+repository: "https://github.com/jentz/swamp-extensions"
+homepage: "https://github.com/jentz/swamp-extensions/tree/main/aws-context-guard"
+paths:
+  base: manifest
+models:
+  - models/aws_context_guard.ts
+workflows: []
+vaults: []
+drivers: []
+datastores: []
+reports: []
+additionalFiles:
+  - README.md
+  - LICENSE
+platforms:
+  - linux-x86_64
+  - linux-aarch64
+  - darwin-x86_64
+  - darwin-aarch64
+labels:
+  - aws
+  - audit
+  - safety
+  - sts
+  - identity
+  - readonly
+dependencies: []
