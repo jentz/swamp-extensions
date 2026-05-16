@@ -20,7 +20,7 @@ homepage: "https://github.com/jentz/swamp-extensions/tree/main/aws-context-guard
 paths:
   base: manifest
 models:
-  - models/aws_context_guard.ts
+  - aws_context_guard.ts
 workflows: []
 vaults: []
 drivers: []
@@ -28,7 +28,7 @@ datastores: []
 reports: []
 additionalFiles:
   - README.md
-  - LICENSE
+  - LICENSE.md
 platforms:
   - linux-x86_64
   - linux-aarch64

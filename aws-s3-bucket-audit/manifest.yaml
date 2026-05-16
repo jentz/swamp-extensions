@@ -33,10 +33,10 @@ vaults: []
 drivers: []
 datastores: []
 reports:
-  - reports/s3_bucket_audit.ts
+  - s3_bucket_audit.ts
 additionalFiles:
   - README.md
-  - LICENSE
+  - LICENSE.md
 platforms:
   - linux-x86_64
   - linux-aarch64

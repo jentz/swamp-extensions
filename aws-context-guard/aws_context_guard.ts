@@ -41,6 +41,14 @@ const ContextSchema = z.object({
   verifiedAt: z.iso.datetime(),
 });
 
+/**
+ * The `@jentz/aws-context-guard` model.
+ *
+ * Provides a single `verify` method that checks `AWS_PROFILE` suffix and
+ * `sts:GetCallerIdentity` account ID, then persists the verified caller
+ * identity as a `context` resource. Throws on any failure so the workflow
+ * step (with `allowFailure: false`) aborts before downstream work runs.
+ */
 export const model = {
   type: "@jentz/aws-context-guard",
   version: "2026.05.17.1",
@@ -59,6 +67,7 @@ export const model = {
         "Verify AWS profile suffix and caller-identity account match " +
         "expected values. Fails closed.",
       arguments: z.object({}),
+      // deno-lint-ignore no-explicit-any
       execute: async (_args: Record<string, never>, context: any) => {
         const g = context.globalArgs as z.infer<typeof GlobalArgsSchema>;
         const profile = Deno.env.get("AWS_PROFILE") ?? "";

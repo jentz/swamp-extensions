@@ -6,26 +6,26 @@
  */
 
 import {
+  assert,
   assertEquals,
   assertExists,
-  assert,
 } from "https://deno.land/std@0.224.0/assert/mod.ts";
 
 import {
   type BucketBundle,
-  type PolicyStatement,
-  checkVersioning,
   checkEncryption,
-  checkPublicAccessBlock,
-  checkOwnershipEnforced,
-  checkTLSOnlyPolicy,
   checkLifecycleExpiresNoncurrent,
+  checkOwnershipEnforced,
+  checkPublicAccessBlock,
   checkServerAccessLogging,
-  inventoryTags,
-  statementDeniesInsecureTransport,
-  parseFailOnThreshold,
+  checkTLSOnlyPolicy,
+  checkVersioning,
   findGateTrippers,
-} from "../reports/s3_bucket_audit.ts";
+  inventoryTags,
+  parseFailOnThreshold,
+  type PolicyStatement,
+  statementDeniesInsecureTransport,
+} from "../s3_bucket_audit.ts";
 
 // ---------------------------------------------------------------------------
 // Fixture data — matches shapes from .swamp/data raw files
@@ -71,8 +71,7 @@ const noncompliantBucketState = {
       {
         ServerSideEncryptionByDefault: {
           SSEAlgorithm: "aws:kms",
-          KMSMasterKeyID:
-            "arn:aws:kms:eu-west-1:222222222222:alias/aws/s3",
+          KMSMasterKeyID: "arn:aws:kms:eu-west-1:222222222222:alias/aws/s3",
         },
       },
     ],
@@ -695,7 +694,9 @@ Deno.test(
         "arn:aws:s3:::my-bucket",
         "arn:aws:s3:::my-bucket/*",
       ],
-      Condition: { Bool: { "aws:SecureTransport": false as unknown as string } },
+      Condition: {
+        Bool: { "aws:SecureTransport": false as unknown as string },
+      },
     };
     assert(statementDeniesInsecureTransport(stmt, "my-bucket"));
   },
@@ -754,7 +755,10 @@ Deno.test("checkLifecycleExpiresNoncurrent: PASS when rule with NoncurrentDays e
 });
 
 Deno.test("checkLifecycleExpiresNoncurrent: WARN when no lifecycle rules (noncompliant fixture)", () => {
-  assertEquals(checkLifecycleExpiresNoncurrent(noncompliantBundle()).status, "warn");
+  assertEquals(
+    checkLifecycleExpiresNoncurrent(noncompliantBundle()).status,
+    "warn",
+  );
 });
 
 Deno.test("checkLifecycleExpiresNoncurrent: WARN when rules exist but none Enabled with NoncurrentVersionExpiration", () => {
@@ -825,7 +829,10 @@ Deno.test("checkServerAccessLogging: WARN when destination equals source bucket"
     name,
     state: {
       BucketName: name,
-      LoggingConfiguration: { DestinationBucketName: name, LogFilePrefix: "logs/" },
+      LoggingConfiguration: {
+        DestinationBucketName: name,
+        LogFilePrefix: "logs/",
+      },
     } as unknown as BucketBundle["state"],
   };
   const f = checkServerAccessLogging(b);
@@ -894,7 +901,7 @@ const realBuckets: Array<{
       ownership: "pass",
       tls: "pass",
       lifecycle: "pass",
-      logging: "warn",  // no LoggingConfiguration in real fixture
+      logging: "warn", // no LoggingConfiguration in real fixture
       tags: "pass",
     },
   },
@@ -906,11 +913,11 @@ const realBuckets: Array<{
       versioning: "pass",
       encryption: "pass",
       publicAccess: "pass",
-      ownership: "fail",   // no OwnershipControls
+      ownership: "fail", // no OwnershipControls
       tls: "pass",
-      lifecycle: "warn",   // no LifecycleConfiguration
-      logging: "warn",     // no LoggingConfiguration
-      tags: "warn",        // no Tags
+      lifecycle: "warn", // no LifecycleConfiguration
+      logging: "warn", // no LoggingConfiguration
+      tags: "warn", // no Tags
     },
   },
 ];
@@ -967,7 +974,10 @@ for (const fix of realBuckets) {
       state: fix.state as BucketBundle["state"],
       policy: fix.policy as BucketBundle["policy"],
     };
-    assertEquals(checkLifecycleExpiresNoncurrent(b).status, fix.expected.lifecycle);
+    assertEquals(
+      checkLifecycleExpiresNoncurrent(b).status,
+      fix.expected.lifecycle,
+    );
   });
 
   Deno.test(`real fixture ${fix.label}: logging`, () => {
@@ -1013,7 +1023,7 @@ function mkFinding(
   status: "pass" | "fail" | "warn" | "skip",
   severity: "error" | "warn" | "info",
   id = `rule-${status}-${severity}`,
-): import("../reports/s3_bucket_audit.ts").Finding {
+): import("../s3_bucket_audit.ts").Finding {
   return {
     id,
     severity,
@@ -1037,12 +1047,12 @@ Deno.test("findGateTrippers — none threshold never trips", () => {
 
 Deno.test("findGateTrippers — error threshold only counts error-severity fail/warn", () => {
   const findings = [
-    mkFinding("fail", "error"),  // counted
-    mkFinding("warn", "error"),  // counted
-    mkFinding("fail", "warn"),   // not counted (below threshold)
-    mkFinding("warn", "info"),   // not counted
-    mkFinding("pass", "error"),  // not counted (passing)
-    mkFinding("skip", "error"),  // not counted (skipped)
+    mkFinding("fail", "error"), // counted
+    mkFinding("warn", "error"), // counted
+    mkFinding("fail", "warn"), // not counted (below threshold)
+    mkFinding("warn", "info"), // not counted
+    mkFinding("pass", "error"), // not counted (passing)
+    mkFinding("skip", "error"), // not counted (skipped)
   ];
   const trippers = findGateTrippers(findings, "error");
   assertEquals(trippers.length, 2);
@@ -1050,10 +1060,10 @@ Deno.test("findGateTrippers — error threshold only counts error-severity fail/
 
 Deno.test("findGateTrippers — warn threshold counts error+warn severity fail/warn", () => {
   const findings = [
-    mkFinding("fail", "error"),  // counted
-    mkFinding("warn", "warn"),   // counted
-    mkFinding("warn", "info"),   // not counted
-    mkFinding("pass", "warn"),   // not counted
+    mkFinding("fail", "error"), // counted
+    mkFinding("warn", "warn"), // counted
+    mkFinding("warn", "info"), // not counted
+    mkFinding("pass", "warn"), // not counted
   ];
   assertEquals(findGateTrippers(findings, "warn").length, 2);
 });
@@ -1063,8 +1073,8 @@ Deno.test("findGateTrippers — info threshold counts every fail/warn", () => {
     mkFinding("fail", "error"),
     mkFinding("warn", "warn"),
     mkFinding("warn", "info"),
-    mkFinding("pass", "info"),  // not counted
-    mkFinding("skip", "info"),  // not counted
+    mkFinding("pass", "info"), // not counted
+    mkFinding("skip", "info"), // not counted
   ];
   assertEquals(findGateTrippers(findings, "info").length, 3);
 });

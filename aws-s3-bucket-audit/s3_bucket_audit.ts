@@ -25,17 +25,29 @@
 
 import { z } from "npm:zod@4";
 
+/** Severity attached to a rule. `error` factors trip the gate at the default threshold. */
 export type Severity = "error" | "warn" | "info";
+
+/** Per-finding outcome. `skip` indicates the rule could not evaluate (e.g. missing data). */
 export type Status = "pass" | "fail" | "warn" | "skip";
 
+/** One rule's verdict for one bucket, with the observed and expected values that produced it. */
 export interface Finding {
+  /** Stable rule identifier (e.g. `bucket-versioning-enabled`). */
   id: string;
+  /** Severity attached to the rule that produced this finding. */
   severity: Severity;
+  /** Outcome of the rule for this bucket. */
   status: Status;
+  /** Name of the audited bucket. */
   bucket: string;
+  /** Observed values the rule inspected. */
   actual: Record<string, unknown>;
+  /** Target values the rule expected. */
   expected: Record<string, unknown>;
+  /** Human-readable summary of the finding. */
   message: string;
+  /** URLs to AWS documentation supporting the rule. */
   references: string[];
 }
 
@@ -48,7 +60,18 @@ const SECURITY_S3 =
 const BucketStateSchema = z.object({
   BucketName: z.string(),
 }).passthrough();
-type BucketState = z.infer<typeof BucketStateSchema>;
+
+/**
+ * Shape of an `@swamp/aws/s3/bucket.get` data record after parsing. Only
+ * `BucketName` is required; every other field is read defensively because
+ * the upstream CloudControl shape varies by service and region.
+ */
+export interface BucketState {
+  /** Bucket name. */
+  BucketName: string;
+  /** Any additional CloudControl fields (e.g. `VersioningConfiguration`, `BucketEncryption`, `Tags`). */
+  [key: string]: unknown;
+}
 
 // CloudControl returns `PolicyDocument` as a parsed object (despite the
 // upstream @swamp/aws/s3 schema declaring it `z.string()`), so we accept
@@ -58,13 +81,36 @@ const BucketPolicyStateSchema = z.object({
   PolicyDocument: z.union([z.string(), z.record(z.string(), z.unknown())])
     .optional(),
 }).passthrough();
-type BucketPolicyState = z.infer<typeof BucketPolicyStateSchema>;
 
+/**
+ * Shape of an `@swamp/aws/s3/bucket-policy.get` data record. `PolicyDocument`
+ * may arrive as a JSON string (legacy upstream behavior) or a parsed object
+ * (CloudControl); the TLS-policy check normalizes both.
+ */
+export interface BucketPolicyState {
+  /** Bucket the policy is attached to. */
+  Bucket: string;
+  /** Policy document as JSON string (legacy upstream) or parsed object (CloudControl). */
+  PolicyDocument?: string | Record<string, unknown>;
+  /** Any additional CloudControl fields. */
+  [key: string]: unknown;
+}
+
+/**
+ * Per-bucket state collected from workflow step outputs. Missing `state` or
+ * `policy` (or a populated `stateError` / `policyError`) trigger `skip`-status
+ * findings rather than workflow failures.
+ */
 export interface BucketBundle {
+  /** Bucket name (the join key for state + policy). */
   name: string;
+  /** Parsed `@swamp/aws/s3/bucket.get` data, when the upstream step succeeded. */
   state?: BucketState;
+  /** Diagnostic message when the bucket-state lookup failed. */
   stateError?: string;
+  /** Parsed `@swamp/aws/s3/bucket-policy.get` data, when the upstream step succeeded. */
   policy?: BucketPolicyState;
+  /** Diagnostic message when the bucket-policy lookup failed. */
   policyError?: string;
 }
 
@@ -78,6 +124,7 @@ function decodeJson<T>(bytes: Uint8Array | null): T | null {
 }
 
 async function readDataFile(
+  // deno-lint-ignore no-explicit-any
   context: any,
   modelType: string,
   modelId: string,
@@ -94,6 +141,7 @@ async function readDataFile(
   }
 }
 
+// deno-lint-ignore no-explicit-any
 async function collectBundles(context: any): Promise<BucketBundle[]> {
   const bundles = new Map<string, BucketBundle>();
 
@@ -194,6 +242,7 @@ function makeFinding(
   };
 }
 
+/** Rule: bucket-versioning-enabled. `error`, passes iff `VersioningConfiguration.Status` is `Enabled`. */
 export function checkVersioning(b: BucketBundle): Finding {
   const id = "bucket-versioning-enabled";
   const severity: Severity = "error";
@@ -223,6 +272,7 @@ export function checkVersioning(b: BucketBundle): Finding {
   });
 }
 
+/** Rule: bucket-encryption-enabled. `error`, passes iff a default encryption rule is configured. */
 export function checkEncryption(b: BucketBundle): Finding {
   const id = "bucket-encryption-enabled";
   const severity: Severity = "error";
@@ -259,6 +309,7 @@ export function checkEncryption(b: BucketBundle): Finding {
   });
 }
 
+/** Rule: bucket-public-access-blocked. `error`, passes iff all four Block Public Access flags are true. */
 export function checkPublicAccessBlock(b: BucketBundle): Finding {
   const id = "bucket-public-access-blocked";
   const severity: Severity = "error";
@@ -302,6 +353,7 @@ export function checkPublicAccessBlock(b: BucketBundle): Finding {
   });
 }
 
+/** Rule: bucket-ownership-enforced. `error`, passes iff `OwnershipControls` selects `BucketOwnerEnforced` (ACLs disabled). */
 export function checkOwnershipEnforced(b: BucketBundle): Finding {
   const id = "bucket-ownership-enforced";
   const severity: Severity = "error";
@@ -334,11 +386,20 @@ export function checkOwnershipEnforced(b: BucketBundle): Finding {
   });
 }
 
+/**
+ * Minimal IAM policy statement shape the TLS-only check evaluates. Fields are
+ * optional because real-world bucket policies emit only the keys they need.
+ */
 export interface PolicyStatement {
+  /** `Allow` or `Deny`. */
   Effect?: string;
+  /** Single action or array (e.g. `s3:*`, `["s3:GetObject", "s3:PutObject"]`). */
   Action?: string | string[];
+  /** Principal can be the wildcard `*`, an object like `{ AWS: "..." }`, or service-specific shapes. */
   Principal?: unknown;
+  /** Single ARN or array of ARNs. */
   Resource?: string | string[];
+  /** Per-operator condition map (e.g. `{ Bool: { "aws:SecureTransport": "false" } }`). */
   Condition?: Record<string, Record<string, unknown>>;
 }
 
@@ -411,6 +472,7 @@ export function statementDeniesInsecureTransport(
   return flagged.includes("false");
 }
 
+/** Rule: bucket-tls-only-policy. `error`. Verifies the bucket policy contains a canonical TLS-enforcing Deny (see {@link statementDeniesInsecureTransport}). */
 export function checkTLSOnlyPolicy(b: BucketBundle): Finding {
   const id = "bucket-tls-only-policy";
   const severity: Severity = "error";
@@ -441,8 +503,7 @@ export function checkTLSOnlyPolicy(b: BucketBundle): Finding {
         statement:
           "Deny on aws:SecureTransport=false (TLS-only access enforced).",
       },
-      message:
-        "No bucket policy attached; TLS-only access cannot be enforced.",
+      message: "No bucket policy attached; TLS-only access cannot be enforced.",
     });
   }
   let doc: { Statement?: PolicyStatement | PolicyStatement[] };
@@ -488,6 +549,7 @@ export function checkTLSOnlyPolicy(b: BucketBundle): Finding {
   });
 }
 
+/** Rule: bucket-lifecycle-expires-noncurrent-versions. `warn`. Passes when at least one enabled lifecycle rule expires noncurrent versions. */
 export function checkLifecycleExpiresNoncurrent(b: BucketBundle): Finding {
   const id = "bucket-lifecycle-expires-noncurrent-versions";
   const severity: Severity = "warn";
@@ -528,6 +590,7 @@ export function checkLifecycleExpiresNoncurrent(b: BucketBundle): Finding {
   });
 }
 
+/** Rule: bucket-server-access-logging. `warn`. Logging must be enabled and the destination must differ from the source bucket. */
 export function checkServerAccessLogging(b: BucketBundle): Finding {
   const id = "bucket-server-access-logging";
   const severity: Severity = "warn";
@@ -573,6 +636,7 @@ export function checkServerAccessLogging(b: BucketBundle): Finding {
   });
 }
 
+/** Rule: bucket-tag-inventory. `info`. Reports tag presence; emits a `warn` status when there are no tags. */
 export function inventoryTags(b: BucketBundle): Finding {
   const id = "bucket-tag-inventory";
   const severity: Severity = "info";
@@ -585,8 +649,9 @@ export function inventoryTags(b: BucketBundle): Finding {
       message: b.stateError ?? "no bucket state available",
     });
   }
-  const tags = (b.state.Tags as Array<{ Key?: string; Value?: string }> | undefined) ??
-    [];
+  const tags =
+    (b.state.Tags as Array<{ Key?: string; Value?: string }> | undefined) ??
+      [];
   const flat = tags.reduce<Record<string, string>>((acc, t) => {
     if (typeof t.Key === "string") acc[t.Key] = t.Value ?? "";
     return acc;
@@ -649,16 +714,19 @@ const THRESHOLD_RANK: Record<FailOnThreshold, number> = {
   info: 1,
 };
 
+/** Parse the `S3_BUCKET_AUDIT_FAILON` env value to a {@link FailOnThreshold}. Defaults to `error` for unset/garbage input. */
 export function parseFailOnThreshold(raw: string | undefined): FailOnThreshold {
   const value = (raw ?? "error").trim().toLowerCase();
   if (
-    value === "none" || value === "error" || value === "warn" || value === "info"
+    value === "none" || value === "error" || value === "warn" ||
+    value === "info"
   ) {
     return value;
   }
   return "error";
 }
 
+/** Filter `findings` down to those that cross the given severity threshold. `none` always returns empty. */
 export function findGateTrippers(
   findings: Finding[],
   threshold: FailOnThreshold,
@@ -744,12 +812,20 @@ function renderMarkdown(
   return lines.join("\n");
 }
 
+/**
+ * The `@jentz/aws-s3-bucket-audit` workflow-scope report. Runs once after
+ * all workflow steps complete, collects `@swamp/aws/s3/bucket` and
+ * `@swamp/aws/s3/bucket-policy` data, applies eight rules per bucket, and
+ * emits markdown plus JSON (including a `failOn` gate). Never throws —
+ * missing or unparseable data becomes `skip`-status findings.
+ */
 export const report = {
   name: "@jentz/aws-s3-bucket-audit",
   description:
     "Audit S3 buckets against standard security best practices (versioning, encryption, public-access block, ownership, TLS-only policy, lifecycle, logging) plus tag inventory. Operates on bucket state and bucket-policy data produced earlier in the workflow.",
   scope: "workflow" as const,
   labels: ["security", "s3", "audit"],
+  // deno-lint-ignore no-explicit-any
   execute: async (context: any) => {
     const workflowName = context.workflowName ?? "<unknown-workflow>";
     context.logger.info(
