@@ -46,15 +46,13 @@ swamp extension push aws-context-guard/manifest.yaml --dry-run
 
 ## Issues
 
-Bug reports, feature requests, security reports, and ripples (comments) go
-through `swamp issue` and are routed to this repo's issue tracker:
+Use `swamp issue` (Lab). GitHub Issues is disabled.
 
 ```sh
 swamp issue bug --extension @jentz/aws-context-guard
-swamp issue bug --extension @jentz/aws-s3-bucket-audit
+swamp issue feature --extension @jentz/aws-s3-bucket-audit
+swamp issue security --extension @jentz/aws-context-guard
 ```
-
-Or file directly: <https://github.com/jentz/swamp-extensions/issues>
 
 ## Versioning
 

@@ -130,7 +130,7 @@ part of the contract.
 
 ## Issues, contributing, license
 
-- Bugs and feature requests: <https://github.com/jentz/swamp-extensions/issues>
+- Bugs, features, security: `swamp issue bug --extension @jentz/aws-context-guard`
 - Source:
   <https://github.com/jentz/swamp-extensions/tree/main/aws-context-guard>
 - License: MIT (see [LICENSE.md](LICENSE.md))
