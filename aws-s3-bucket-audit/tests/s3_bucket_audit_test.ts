@@ -435,9 +435,34 @@ Deno.test(
   },
 );
 
-Deno.test("checkTLSOnlyPolicy: FAIL when PolicyDocument absent", () => {
-  assertEquals(checkTLSOnlyPolicy(noPolicyBundle()).status, "fail");
-});
+Deno.test(
+  "checkTLSOnlyPolicy: SKIP when no policy data and no policyError (workflow missing the bucket-policy lookup step)",
+  () => {
+    // noPolicyBundle has state but neither `policy` nor `policyError`.
+    // The audit can't conclude the bucket lacks a TLS policy — it never
+    // looked — so the result is SKIP, not FAIL.
+    const f = checkTLSOnlyPolicy(noPolicyBundle());
+    assertEquals(f.status, "skip");
+    assert(f.message.includes("@swamp/aws/s3/bucket-policy"));
+  },
+);
+
+Deno.test(
+  "checkTLSOnlyPolicy: FAIL when policy lookup ran and returned a policy with no PolicyDocument",
+  () => {
+    // Policy lookup succeeded (so `policy` is present) but the bucket has
+    // no PolicyDocument attached. That is a real audit failure: we looked
+    // and there's no TLS-enforcing policy.
+    const b: BucketBundle = {
+      name: "explicit-no-policy",
+      state: cleanBucketState as unknown as BucketBundle["state"],
+      policy: {
+        Bucket: "explicit-no-policy",
+      } as unknown as BucketBundle["policy"],
+    };
+    assertEquals(checkTLSOnlyPolicy(b).status, "fail");
+  },
+);
 
 Deno.test("checkTLSOnlyPolicy: FAIL when PolicyDocument is empty string", () => {
   const b: BucketBundle = {
@@ -1171,6 +1196,54 @@ Deno.test("checkTLSOnlyPolicy: PASS when Principal is { AWS: ['*'] } (array wild
 // ---------------------------------------------------------------------------
 // TLS-only policy: case-insensitive aws:SecureTransport condition key
 // ---------------------------------------------------------------------------
+
+Deno.test(
+  "checkTLSOnlyPolicy: PASS when Condition operator is BoolIfExists",
+  () => {
+    // BoolIfExists is strictly stronger than Bool (denies the request when
+    // the key is absent too) and is the form AWS docs and most Terraform
+    // modules use. Treating it as PASS prevents false-FAILs on widespread,
+    // valid TLS-enforcing policies.
+    const b = statePolicy(
+      { BucketName: "bool-if-exists-bucket" },
+      {
+        Bucket: "bool-if-exists-bucket",
+        PolicyDocument: {
+          Statement: [
+            {
+              Effect: "Deny",
+              Principal: "*",
+              Action: "s3:*",
+              Resource: [
+                "arn:aws:s3:::bool-if-exists-bucket",
+                "arn:aws:s3:::bool-if-exists-bucket/*",
+              ],
+              Condition: { BoolIfExists: { "aws:SecureTransport": "false" } },
+            },
+          ],
+        },
+      },
+    );
+    assertEquals(checkTLSOnlyPolicy(b).status, "pass");
+  },
+);
+
+Deno.test(
+  "statementDeniesInsecureTransport: true for BoolIfExists operator",
+  () => {
+    const stmt: PolicyStatement = {
+      Effect: "Deny",
+      Principal: "*",
+      Action: "s3:*",
+      Resource: [
+        "arn:aws:s3:::b",
+        "arn:aws:s3:::b/*",
+      ],
+      Condition: { BoolIfExists: { "aws:SecureTransport": "false" } },
+    };
+    assert(statementDeniesInsecureTransport(stmt, "b"));
+  },
+);
 
 Deno.test("checkTLSOnlyPolicy: PASS when condition key is lowercase 'aws:securetransport'", () => {
   // IAM condition keys are case-insensitive per AWS docs. The operator

@@ -507,7 +507,10 @@ function findSecureTransportValue(
  *   - Principal: covers everyone (`*`, `{AWS: "*"}`, or `{AWS: ["*"]}`)
  *   - Action: covers all S3 operations (`s3:*` or `*`)
  *   - Resource: covers both the bucket root and `bucket/*` (any AWS partition)
- *   - Condition: Bool with aws:SecureTransport (case-insensitive) = false
+ *   - Condition: `Bool` OR `BoolIfExists` with aws:SecureTransport
+ *     (case-insensitive) = false. `BoolIfExists` is accepted because it is
+ *     strictly stronger than `Bool` (denies the request when the key is
+ *     absent too) and is the form most AWS docs and Terraform modules use.
  */
 export function statementDeniesInsecureTransport(
   stmt: PolicyStatement,
@@ -517,20 +520,44 @@ export function statementDeniesInsecureTransport(
   if (!isPrincipalWildcard(stmt.Principal)) return false;
   if (!actionCoversAllS3(stmt.Action)) return false;
   if (!resourceCoversBucket(stmt.Resource, bucketName)) return false;
-  const condBool = stmt.Condition?.Bool;
-  if (!condBool) return false;
-  const value = findSecureTransportValue(condBool);
-  if (value === undefined) return false;
-  const flagged = Array.isArray(value)
-    ? value.map((v) => String(v).toLowerCase())
-    : [String(value).toLowerCase()];
-  return flagged.includes("false");
+  const operators = [stmt.Condition?.Bool, stmt.Condition?.BoolIfExists]
+    .filter((c): c is Record<string, unknown> => !!c);
+  if (operators.length === 0) return false;
+  for (const op of operators) {
+    const value = findSecureTransportValue(op);
+    if (value === undefined) continue;
+    const flagged = Array.isArray(value)
+      ? value.map((v) => String(v).toLowerCase())
+      : [String(value).toLowerCase()];
+    if (flagged.includes("false")) return true;
+  }
+  return false;
 }
 
 /** Rule: bucket-tls-only-policy. `error`. Verifies the bucket policy contains a canonical TLS-enforcing Deny (see {@link statementDeniesInsecureTransport}). */
 export function checkTLSOnlyPolicy(b: BucketBundle): Finding {
   const id = "bucket-tls-only-policy";
   const severity: Severity = "error";
+  // No policy data at all and no error from a policy lookup: the workflow
+  // never attempted a bucket-policy lookup for this bucket. We don't know
+  // whether the bucket has a TLS-enforcing policy, so SKIP rather than
+  // FAIL (false-FAIL would shame perfectly-fine policies into looking
+  // broken).
+  if (!b.policy && !b.policyError) {
+    return makeFinding({
+      id,
+      severity,
+      status: "skip",
+      bucket: b.name,
+      actual: { policy: null },
+      expected: {
+        statement:
+          "Deny on aws:SecureTransport=false (TLS-only access enforced).",
+      },
+      message:
+        "No bucket-policy data for this bucket; add a @swamp/aws/s3/bucket-policy lookup step to evaluate TLS enforcement.",
+    });
+  }
   if (b.policyError && !b.policy?.PolicyDocument) {
     return makeFinding({
       id,
@@ -904,7 +931,7 @@ export const report = {
       );
       const more = trippers.length > 5 ? ` + ${trippers.length - 5} more` : "";
       context.logger.warn(
-        "S3 bucket audit gate tripped (failOn={threshold}): {count} finding(s) at/above threshold — {sample}{more}. Run bin/audit-gate.sh after `swamp workflow run` for a non-zero exit.",
+        "S3 bucket audit gate tripped (failOn={threshold}): {count} finding(s) at/above threshold — {sample}{more}. See README → 'Failing CI/CD on gate trips' for a shell wrapper that translates this into a non-zero exit.",
         {
           threshold,
           count: trippers.length,

@@ -23,6 +23,41 @@ Eight rules across three severities:
 References for all rules:
 [AWS S3 security best practices](https://docs.aws.amazon.com/AmazonS3/latest/userguide/security-best-practices.html).
 
+## What this does NOT check
+
+A passing audit is necessary but not sufficient. The following controls are
+deliberately out of scope for this extension and must be evaluated separately:
+
+- **MFA Delete** — strongly recommended for state buckets and other
+  irreplaceable data. Cannot be enabled via the console and requires the
+  root account or a dedicated tool to configure; not exposed via the
+  bucket-state lookups this report consumes.
+- **Object Lock / retention configuration** — required for several
+  compliance regimes (SEC 17a-4, HIPAA). Not evaluated here.
+- **KMS key rotation** — when `bucket-encryption-enabled` passes with
+  `aws:kms`, this audit does not check whether the key is customer-managed
+  (vs. AWS-managed `aws/s3`) nor whether automatic rotation is enabled.
+  Both checks would require a separate KMS lookup.
+- **Replication configuration** — cross-region replication and same-region
+  replication are not evaluated.
+- **Minimum TLS version** — `bucket-tls-only-policy` ensures *some* TLS is
+  required (`aws:SecureTransport=false` is denied) but does not enforce
+  TLS 1.2+ via `aws:SecureTransportVersion`. AWS guidance is trending
+  toward an explicit minimum-version requirement.
+- **Over-broad `Allow` statements** — the TLS check confirms the presence
+  of a Deny, but does not flag bucket policies that grant `s3:*` to
+  `Principal: *` outside that Deny pattern.
+- **CloudTrail data events / server-access logging analytics** — logging is
+  checked for existence only; whether it is actually being ingested and
+  alerted on is out of scope.
+- **`Public` ACL / object ownership at the object level** — this audit
+  evaluates the bucket-level controls (Object Ownership = BucketOwnerEnforced
+  disables ACLs entirely) but does not enumerate per-object ACLs.
+
+A "PASS" from this audit means the eight evaluated controls match
+recommended values for the audited bucket — not that the bucket is
+secure under every threat model.
+
 ## Installation
 
 ```sh
@@ -89,7 +124,8 @@ jobs:
         forEach: { item: bucketName, in: ${{ inputs.bucketNames }} }
         task:
           type: model_method
-          modelIdOrName: audit-bucket-policy
+          modelType: "@swamp/aws/s3/bucket-policy"
+          modelName: "audit-bucket-policy-${{ self.bucketName }}"
           methodName: get
           inputs:
             identifier: ${{ self.bucketName }}
@@ -196,19 +232,48 @@ machine-readable source of truth).
 ### Failing CI/CD on gate trips
 
 To turn a tripped gate into a non-zero exit code (so CI fails the build), pair
-this report with a small shell wrapper that reads the JSON output. Example:
+this report with a small shell wrapper that reads the JSON output. The wrapper
+below distinguishes a tripped gate (`exit 1`) from infrastructure problems
+(`exit 2`) — silencing errors hides bugs in CI, so we let them surface.
 
 ```sh
 #!/usr/bin/env bash
-# audit-gate.sh — exit 1 when the report's gate tripped
+# audit-gate.sh — exit non-zero when the S3 bucket audit gate tripped.
+#   exit 0  gate did not trip
+#   exit 1  gate tripped
+#   exit 2  report data could not be read (missing workflow, bad JSON, etc.)
 set -euo pipefail
+
 workflow="${1:?usage: audit-gate.sh <workflow-name>}"
-output=$(swamp data get reports "$workflow" 2>/dev/null | jq -r '.json')
-gate_tripped=$(echo "$output" | jq -r '.gateTripped')
-if [ "$gate_tripped" = "true" ]; then
-  echo "$output" | jq -r '.trippers[]' >&2
-  exit 1
+
+if ! output=$(swamp data get reports "$workflow"); then
+  echo "audit-gate: failed to read report output for workflow '$workflow'" >&2
+  exit 2
 fi
+if [ -z "$output" ]; then
+  echo "audit-gate: empty report output for workflow '$workflow'" >&2
+  exit 2
+fi
+
+# `// "missing"` makes a null/absent field detectable instead of silently
+# comparing as the string "null".
+gate_tripped=$(printf '%s' "$output" | jq -r '.json.gateTripped // "missing"')
+
+case "$gate_tripped" in
+  true)
+    echo "audit-gate: S3 bucket audit gate tripped:" >&2
+    printf '%s' "$output" \
+      | jq -r '.json.trippers[] | "  - \(.bucket): \(.id) (\(.severity)/\(.status))"' >&2
+    exit 1
+    ;;
+  false)
+    exit 0
+    ;;
+  *)
+    echo "audit-gate: 'json.gateTripped' missing from report output for workflow '$workflow'" >&2
+    exit 2
+    ;;
+esac
 ```
 
 ```sh
@@ -222,7 +287,8 @@ swamp workflow run audit-tf-state-buckets \
 | -------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
 | Report runs but finds no buckets             | No step in the workflow has `modelType == "@swamp/aws/s3/bucket"` (or `"@swamp/aws/s3/bucket-policy"`).                                              | Add the bucket-state / bucket-policy lookup steps before the report.                                                        |
 | Every finding is `skip`                      | Step ran but data file is missing or unparseable.                                                                                                    | Check `.swamp/data/` for the rendered `raw` files; verify upstream extension version.                                       |
-| TLS-only-policy passes despite a narrow Deny | The Deny statement is properly scoped (Principal `*`, Action `s3:*`, Resource covers both ARNs, Condition matches). The check is strict on all four. | Read the rule definition in `reports/s3_bucket_audit.ts` — if your policy looks correct, file an issue with the policy doc. |
+| TLS-only-policy passes despite a narrow Deny | The Deny statement is properly scoped (Principal `*`, Action `s3:*`, Resource covers both ARNs, Condition `Bool` or `BoolIfExists` matches). The check is strict on all four. | Read the rule definition in `reports/s3_bucket_audit.ts` — if your policy looks correct, file an issue with the policy doc. |
+| TLS-only-policy is `skip` for every bucket | Workflow has bucket-state lookups but no `@swamp/aws/s3/bucket-policy` lookup step. Without policy data the audit can't evaluate TLS enforcement. | Add a `forEach` step that runs `@swamp/aws/s3/bucket-policy.get` for each bucket alongside the existing bucket-state lookup. |
 | Report data is empty after a `throw`         | A previous version of the report threw on gate trip; current behavior surfaces the gate via JSON only.                                               | Upgrade to the current version.                                                                                             |
 
 ## Versioning
