@@ -282,13 +282,13 @@ swamp workflow run audit-tf-state-buckets \
 
 ## Failure modes
 
-| Symptom                                      | Likely cause                                                                                                                                                                  | Fix                                                                                                                          |
-| -------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
-| Report runs but finds no buckets             | No step in the workflow has `modelType == "@swamp/aws/s3/bucket"` (or `"@swamp/aws/s3/bucket-policy"`).                                                                       | Add the bucket-state / bucket-policy lookup steps before the report.                                                         |
-| Every finding is `skip`                      | Step ran but data file is missing or unparseable.                                                                                                                             | Check `.swamp/data/` for the rendered `raw` files; verify upstream extension version.                                        |
-| TLS-only-policy passes despite a narrow Deny | The Deny statement is properly scoped (Principal `*`, Action `s3:*`, Resource covers both ARNs, Condition `Bool` or `BoolIfExists` matches). The check is strict on all four. | Read the rule definition in `reports/s3_bucket_audit.ts` — if your policy looks correct, file via `swamp issue bug --extension @jentz/aws-s3-bucket-audit` with the policy doc.  |
-| TLS-only-policy is `skip` for every bucket   | Workflow has bucket-state lookups but no `@swamp/aws/s3/bucket-policy` lookup step. Without policy data the audit can't evaluate TLS enforcement.                             | Add a `forEach` step that runs `@swamp/aws/s3/bucket-policy.get` for each bucket alongside the existing bucket-state lookup. |
-| Report data is empty after a `throw`         | A previous version of the report threw on gate trip; current behavior surfaces the gate via JSON only.                                                                        | Upgrade to the current version.                                                                                              |
+| Symptom                                      | Likely cause                                                                                                                                                                  | Fix                                                                                                                                                                             |
+| -------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Report runs but finds no buckets             | No step in the workflow has `modelType == "@swamp/aws/s3/bucket"` (or `"@swamp/aws/s3/bucket-policy"`).                                                                       | Add the bucket-state / bucket-policy lookup steps before the report.                                                                                                            |
+| Every finding is `skip`                      | Step ran but data file is missing or unparseable.                                                                                                                             | Check `.swamp/data/` for the rendered `raw` files; verify upstream extension version.                                                                                           |
+| TLS-only-policy passes despite a narrow Deny | The Deny statement is properly scoped (Principal `*`, Action `s3:*`, Resource covers both ARNs, Condition `Bool` or `BoolIfExists` matches). The check is strict on all four. | Read the rule definition in `reports/s3_bucket_audit.ts` — if your policy looks correct, file via `swamp issue bug --extension @jentz/aws-s3-bucket-audit` with the policy doc. |
+| TLS-only-policy is `skip` for every bucket   | Workflow has bucket-state lookups but no `@swamp/aws/s3/bucket-policy` lookup step. Without policy data the audit can't evaluate TLS enforcement.                             | Add a `forEach` step that runs `@swamp/aws/s3/bucket-policy.get` for each bucket alongside the existing bucket-state lookup.                                                    |
+| Report data is empty after a `throw`         | A previous version of the report threw on gate trip; current behavior surfaces the gate via JSON only.                                                                        | Upgrade to the current version.                                                                                                                                                 |
 
 ## Versioning
 
@@ -300,7 +300,8 @@ is not considered breaking.
 
 ## Issues, contributing, license
 
-- Bugs, features, security: `swamp issue bug --extension @jentz/aws-s3-bucket-audit`
+- Bugs, features, security:
+  `swamp issue bug --extension @jentz/aws-s3-bucket-audit`
 - Source:
   <https://github.com/jentz/swamp-extensions/tree/main/aws-s3-bucket-audit>
 - License: MIT (see [LICENSE.md](LICENSE.md))
