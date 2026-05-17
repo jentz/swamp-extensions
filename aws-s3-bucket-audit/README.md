@@ -18,7 +18,7 @@ Eight rules across three severities:
 | `bucket-tls-only-policy`                       | error    | Bucket policy includes a Deny with `Principal: *`, `Action: s3:*`, `Resource` covering both bucket ARN and `bucket/*`, and `Condition: Bool { aws:SecureTransport: "false" }` |
 | `bucket-lifecycle-expires-noncurrent-versions` | warn     | At least one enabled lifecycle rule expires noncurrent object versions                                                                                                        |
 | `bucket-server-access-logging`                 | warn     | Logging configured with a destination bucket that is NOT the source bucket                                                                                                    |
-| `bucket-tag-inventory`                         | info     | Tag presence is reported; absence emits a `warn` status (informational, see notes)                                                                                            |
+| `bucket-tag-inventory`                         | info     | Always `pass` when state is available; `actual.tagCount=0` is the sentinel for "no tags". Pure inventory metadata — never trips the gate, even under `failOn=info`            |
 
 References for all rules:
 [AWS S3 security best practices](https://docs.aws.amazon.com/AmazonS3/latest/userguide/security-best-practices.html).

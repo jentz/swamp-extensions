@@ -889,16 +889,16 @@ Deno.test("inventoryTags: PASS when bucket has tags", () => {
   assert((f.actual as { tagCount: number }).tagCount >= 2);
 });
 
-Deno.test("inventoryTags: WARN when no tags (noncompliant fixture)", () => {
-  assertEquals(inventoryTags(noncompliantBundle()).status, "warn");
+Deno.test("inventoryTags: PASS when no tags (noncompliant fixture)", () => {
+  const f = inventoryTags(noncompliantBundle());
+  assertEquals(f.status, "pass");
+  assertEquals((f.actual as { tagCount: number }).tagCount, 0);
 });
 
-Deno.test("inventoryTags: WARN when Tags field absent", () => {
-  const b: BucketBundle = {
-    name: "no-tags",
-    state: { BucketName: "no-tags" } as unknown as BucketBundle["state"],
-  };
-  assertEquals(inventoryTags(b).status, "warn");
+Deno.test("inventoryTags: PASS when Tags field absent", () => {
+  const f = inventoryTags(stateOnly({ BucketName: "no-tags" }));
+  assertEquals(f.status, "pass");
+  assertEquals((f.actual as { tagCount: number }).tagCount, 0);
 });
 
 Deno.test("inventoryTags: SKIP when state missing", () => {
@@ -951,7 +951,7 @@ const realBuckets: Array<{
       tls: "pass",
       lifecycle: "warn", // no LifecycleConfiguration
       logging: "warn", // no LoggingConfiguration
-      tags: "warn", // no Tags
+      tags: "pass", // tag inventory is informational; no Tags is not a finding
     },
   },
 ];
@@ -1111,6 +1111,16 @@ Deno.test("findGateTrippers — info threshold counts every fail/warn", () => {
     mkFinding("skip", "info"), // not counted
   ];
   assertEquals(findGateTrippers(findings, "info").length, 3);
+});
+
+// Regression: a tag-less bucket must not trip the gate under any threshold,
+// including failOn=info. Tag inventory is pure metadata; tagCount=0 is the
+// sentinel for "no tags", not an audit finding.
+Deno.test("inventoryTags: never trips gate, even under failOn=info", () => {
+  const findings = [inventoryTags(noncompliantBundle())];
+  assertEquals(findGateTrippers(findings, "info"), []);
+  assertEquals(findGateTrippers(findings, "warn"), []);
+  assertEquals(findGateTrippers(findings, "error"), []);
 });
 
 // ---------------------------------------------------------------------------
