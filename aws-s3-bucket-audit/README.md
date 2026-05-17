@@ -29,34 +29,34 @@ A passing audit is necessary but not sufficient. The following controls are
 deliberately out of scope for this extension and must be evaluated separately:
 
 - **MFA Delete** — strongly recommended for state buckets and other
-  irreplaceable data. Cannot be enabled via the console and requires the
-  root account or a dedicated tool to configure; not exposed via the
-  bucket-state lookups this report consumes.
-- **Object Lock / retention configuration** — required for several
-  compliance regimes (SEC 17a-4, HIPAA). Not evaluated here.
-- **KMS key rotation** — when `bucket-encryption-enabled` passes with
-  `aws:kms`, this audit does not check whether the key is customer-managed
-  (vs. AWS-managed `aws/s3`) nor whether automatic rotation is enabled.
-  Both checks would require a separate KMS lookup.
+  irreplaceable data. Cannot be enabled via the console and requires the root
+  account or a dedicated tool to configure; not exposed via the bucket-state
+  lookups this report consumes.
+- **Object Lock / retention configuration** — required for several compliance
+  regimes (SEC 17a-4, HIPAA). Not evaluated here.
+- **KMS key rotation** — when `bucket-encryption-enabled` passes with `aws:kms`,
+  this audit does not check whether the key is customer-managed (vs. AWS-managed
+  `aws/s3`) nor whether automatic rotation is enabled. Both checks would require
+  a separate KMS lookup.
 - **Replication configuration** — cross-region replication and same-region
   replication are not evaluated.
-- **Minimum TLS version** — `bucket-tls-only-policy` ensures *some* TLS is
-  required (`aws:SecureTransport=false` is denied) but does not enforce
-  TLS 1.2+ via `aws:SecureTransportVersion`. AWS guidance is trending
-  toward an explicit minimum-version requirement.
-- **Over-broad `Allow` statements** — the TLS check confirms the presence
-  of a Deny, but does not flag bucket policies that grant `s3:*` to
-  `Principal: *` outside that Deny pattern.
+- **Minimum TLS version** — `bucket-tls-only-policy` ensures _some_ TLS is
+  required (`aws:SecureTransport=false` is denied) but does not enforce TLS 1.2+
+  via `aws:SecureTransportVersion`. AWS guidance is trending toward an explicit
+  minimum-version requirement.
+- **Over-broad `Allow` statements** — the TLS check confirms the presence of a
+  Deny, but does not flag bucket policies that grant `s3:*` to `Principal: *`
+  outside that Deny pattern.
 - **CloudTrail data events / server-access logging analytics** — logging is
-  checked for existence only; whether it is actually being ingested and
-  alerted on is out of scope.
-- **`Public` ACL / object ownership at the object level** — this audit
-  evaluates the bucket-level controls (Object Ownership = BucketOwnerEnforced
-  disables ACLs entirely) but does not enumerate per-object ACLs.
+  checked for existence only; whether it is actually being ingested and alerted
+  on is out of scope.
+- **`Public` ACL / object ownership at the object level** — this audit evaluates
+  the bucket-level controls (Object Ownership = BucketOwnerEnforced disables
+  ACLs entirely) but does not enumerate per-object ACLs.
 
-A "PASS" from this audit means the eight evaluated controls match
-recommended values for the audited bucket — not that the bucket is
-secure under every threat model.
+A "PASS" from this audit means the eight evaluated controls match recommended
+values for the audited bucket — not that the bucket is secure under every threat
+model.
 
 ## Installation
 
@@ -155,13 +155,12 @@ from policy). Missing data is handled per-rule:
 - If bucket **state** is missing or unparseable, every state-dependent rule
   emits `skip` (no data to evaluate against).
 - If the bucket **policy** lookup failed or returned no policy, the
-  `bucket-tls-only-policy` rule emits `fail`. No policy means no TLS
-  enforcement exists, which is a real audit failure rather than an
-  unknown.
-- If a step failed entirely (or its data is missing / schema-mismatched),
-  the bucket name is recovered from the step's `methodArgs.identifier` so
-  the bucket still appears in the report with a populated `stateError` or
-  `policyError`, rather than silently disappearing.
+  `bucket-tls-only-policy` rule emits `fail`. No policy means no TLS enforcement
+  exists, which is a real audit failure rather than an unknown.
+- If a step failed entirely (or its data is missing / schema-mismatched), the
+  bucket name is recovered from the step's `methodArgs.identifier` so the bucket
+  still appears in the report with a populated `stateError` or `policyError`,
+  rather than silently disappearing.
 
 ## Output
 
@@ -225,8 +224,8 @@ S3_BUCKET_AUDIT_FAILON=warn swamp workflow run audit-tf-state-buckets
 ```
 
 When the gate trips, the JSON output sets `gateTripped: true` and populates
-`trippers` with **every** finding that crossed the threshold. The workflow
-log includes a single WARN line naming the first five (the JSON is the
+`trippers` with **every** finding that crossed the threshold. The workflow log
+includes a single WARN line naming the first five (the JSON is the
 machine-readable source of truth).
 
 ### Failing CI/CD on gate trips
@@ -283,13 +282,13 @@ swamp workflow run audit-tf-state-buckets \
 
 ## Failure modes
 
-| Symptom                                      | Likely cause                                                                                                                                         | Fix                                                                                                                         |
-| -------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
-| Report runs but finds no buckets             | No step in the workflow has `modelType == "@swamp/aws/s3/bucket"` (or `"@swamp/aws/s3/bucket-policy"`).                                              | Add the bucket-state / bucket-policy lookup steps before the report.                                                        |
-| Every finding is `skip`                      | Step ran but data file is missing or unparseable.                                                                                                    | Check `.swamp/data/` for the rendered `raw` files; verify upstream extension version.                                       |
-| TLS-only-policy passes despite a narrow Deny | The Deny statement is properly scoped (Principal `*`, Action `s3:*`, Resource covers both ARNs, Condition `Bool` or `BoolIfExists` matches). The check is strict on all four. | Read the rule definition in `reports/s3_bucket_audit.ts` — if your policy looks correct, file an issue with the policy doc. |
-| TLS-only-policy is `skip` for every bucket | Workflow has bucket-state lookups but no `@swamp/aws/s3/bucket-policy` lookup step. Without policy data the audit can't evaluate TLS enforcement. | Add a `forEach` step that runs `@swamp/aws/s3/bucket-policy.get` for each bucket alongside the existing bucket-state lookup. |
-| Report data is empty after a `throw`         | A previous version of the report threw on gate trip; current behavior surfaces the gate via JSON only.                                               | Upgrade to the current version.                                                                                             |
+| Symptom                                      | Likely cause                                                                                                                                                                  | Fix                                                                                                                          |
+| -------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
+| Report runs but finds no buckets             | No step in the workflow has `modelType == "@swamp/aws/s3/bucket"` (or `"@swamp/aws/s3/bucket-policy"`).                                                                       | Add the bucket-state / bucket-policy lookup steps before the report.                                                         |
+| Every finding is `skip`                      | Step ran but data file is missing or unparseable.                                                                                                                             | Check `.swamp/data/` for the rendered `raw` files; verify upstream extension version.                                        |
+| TLS-only-policy passes despite a narrow Deny | The Deny statement is properly scoped (Principal `*`, Action `s3:*`, Resource covers both ARNs, Condition `Bool` or `BoolIfExists` matches). The check is strict on all four. | Read the rule definition in `reports/s3_bucket_audit.ts` — if your policy looks correct, file an issue with the policy doc.  |
+| TLS-only-policy is `skip` for every bucket   | Workflow has bucket-state lookups but no `@swamp/aws/s3/bucket-policy` lookup step. Without policy data the audit can't evaluate TLS enforcement.                             | Add a `forEach` step that runs `@swamp/aws/s3/bucket-policy.get` for each bucket alongside the existing bucket-state lookup. |
+| Report data is empty after a `throw`         | A previous version of the report threw on gate trip; current behavior surfaces the gate via JSON only.                                                                        | Upgrade to the current version.                                                                                              |
 
 ## Versioning
 

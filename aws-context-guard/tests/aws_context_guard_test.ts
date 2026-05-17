@@ -48,13 +48,13 @@ function makeContext(globalArgs: Record<string, unknown>) {
         warn: () => {},
         error: () => {},
       },
-      writeResource: async (
+      writeResource: (
         name: string,
         key: string,
         data: unknown,
       ) => {
         lastWrite = { name, key, data };
-        return { id: "fake-handle" };
+        return Promise.resolve({ id: "fake-handle" });
       },
     },
     getLastWrite: () => lastWrite,
@@ -265,4 +265,3 @@ Deno.test("globalArgs schema-parse failure — throws with field detail", async 
     "invalid globalArgs",
   );
 });
-

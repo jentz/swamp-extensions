@@ -17,8 +17,8 @@ jobs:
       - uses: denoland/setup-deno@v2
         with:
           deno-version: v2.x
-      - run: deno fmt --check
-      - run: deno lint
+      - run: deno fmt --check --ignore=.swamp.yaml,.swamp/,.swamp-sources.yaml
+      - run: deno lint --ignore=.swamp/
       - name: test
         run: |
           deno test \
