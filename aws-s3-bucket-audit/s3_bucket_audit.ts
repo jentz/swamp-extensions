@@ -702,7 +702,7 @@ export function checkServerAccessLogging(b: BucketBundle): Finding {
   });
 }
 
-/** Rule: bucket-tag-inventory. `info`. Reports tag presence; emits a `warn` status when there are no tags. */
+/** Rule: bucket-tag-inventory. `info`. Pure inventory metadata — always `pass` when state is available; `actual.tagCount=0` is the sentinel for "no tags". */
 export function inventoryTags(b: BucketBundle): Finding {
   const id = "bucket-tag-inventory";
   const severity: Severity = "info";
@@ -717,7 +717,7 @@ export function inventoryTags(b: BucketBundle): Finding {
   return makeFinding({
     id,
     severity,
-    status: tags.length > 0 ? "pass" : "warn",
+    status: "pass",
     bucket: b.name,
     actual: { tagCount: tags.length, tags: flat },
     expected: { tags: "any (informational)" },
