@@ -6,10 +6,10 @@ package with its own manifest, source, tests, and README.
 
 ## Extensions
 
-| Extension                                            | Type   | Purpose                                                                                                                                           |
-| ---------------------------------------------------- | ------ | ------------------------------------------------------------------------------------------------------------------------------------------------- |
-| [`@jentz/aws-context-guard`](aws-context-guard/)     | model  | Workflow-safety primitive. Fails closed before any AWS work runs by verifying `AWS_PROFILE` suffix and `sts:GetCallerIdentity` account ID.        |
-| [`@jentz/aws-s3-bucket-audit`](aws-s3-bucket-audit/) | report | Workflow-scope report that audits S3 buckets against eight standard security best practices. Emits markdown + JSON with a `failOn` severity gate. |
+| Extension                                            | Type   | Purpose                                                                                                                                     |
+| ---------------------------------------------------- | ------ | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| [`@jentz/aws-context-guard`](aws-context-guard/)     | model  | Workflow-safety primitive. Fails closed before any AWS work runs by verifying `AWS_PROFILE` suffix and `sts:GetCallerIdentity` account ID.  |
+| [`@jentz/aws-s3-bucket-audit`](aws-s3-bucket-audit/) | report | Workflow-scope report that audits S3 buckets against standard security best practices. Emits markdown + JSON with a `failOn` severity gate. |
 
 ## Installation
 
@@ -46,13 +46,8 @@ swamp extension push aws-context-guard/manifest.yaml --dry-run
 
 ## Issues
 
-Use `swamp issue` (Lab). GitHub Issues is disabled.
-
-```sh
-swamp issue bug --extension @jentz/aws-context-guard
-swamp issue feature --extension @jentz/aws-s3-bucket-audit
-swamp issue security --extension @jentz/aws-context-guard
-```
+Bug reports, feature requests, and security disclosures for either extension go
+to GitHub Issues: <https://github.com/jentz/swamp-extensions/issues>
 
 ## Versioning
 
