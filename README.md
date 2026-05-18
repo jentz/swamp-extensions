@@ -49,9 +49,9 @@ swamp extension push aws-context-guard/manifest.yaml --dry-run
 Bug reports and feature requests for any extension in this repo go to GitHub
 Issues: <https://github.com/jentz/swamp-extensions/issues>
 
-For security vulnerabilities, please do not open a public issue. A private
-reporting channel will be added shortly; in the meantime contact the publisher
-directly via the email on the corresponding GitHub profile.
+For security vulnerabilities, please file a private report via GitHub Security
+Advisories rather than the public issue tracker:
+<https://github.com/jentz/swamp-extensions/security/advisories/new>
 
 ## Versioning
 

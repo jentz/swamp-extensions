@@ -132,8 +132,8 @@ part of the contract.
 
 - Bug reports and feature requests:
   <https://github.com/jentz/swamp-extensions/issues>
-- Security vulnerabilities: do not open a public issue; see the repo-root README
-  for the current reporting channel.
+- Security vulnerabilities (private report, not a public issue):
+  <https://github.com/jentz/swamp-extensions/security/advisories/new>
 - Source:
   <https://github.com/jentz/swamp-extensions/tree/main/aws-context-guard>
 - License: MIT (see [LICENSE.md](LICENSE.md))
