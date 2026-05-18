@@ -15,6 +15,7 @@ import {
   type BucketBundle,
   checkEncryption,
   checkLifecycleExpiresNoncurrent,
+  checkNoOverbroadAllow,
   checkOwnershipEnforced,
   checkPublicAccessBlock,
   checkServerAccessLogging,
@@ -28,6 +29,7 @@ import {
   report,
   statementDeniesBelowTls12,
   statementDeniesInsecureTransport,
+  statementGrantsOverbroadAllow,
 } from "../s3_bucket_audit.ts";
 
 // ---------------------------------------------------------------------------
@@ -1038,6 +1040,404 @@ Deno.test(
       Condition: { Bool: { "s3:TlsVersion": "1.2" } },
     };
     assert(!statementDeniesBelowTls12(stmt, "b"));
+  },
+);
+
+// ---------------------------------------------------------------------------
+// Rule — bucket-no-overbroad-allow (error)
+// ---------------------------------------------------------------------------
+
+/**
+ * overbroad-allow-bucket — bucket policy containing a canonical TLS-only
+ * Deny AND a wide-open Allow s3:* Principal:* on bucket+bucket/* with no
+ * narrowing Condition. This is the exact false-PASS case that the new
+ * rule exists to catch: bucket-tls-only-policy passes (TLS Deny present),
+ * but bucket-no-overbroad-allow must FAIL.
+ */
+const overbroadAllowPolicy = {
+  Bucket: "overbroad-bucket",
+  PolicyDocument: {
+    Version: "2012-10-17",
+    Statement: [
+      {
+        Sid: "DenyInsecureTransport",
+        Effect: "Deny",
+        Principal: "*",
+        Action: "s3:*",
+        Resource: [
+          "arn:aws:s3:::overbroad-bucket",
+          "arn:aws:s3:::overbroad-bucket/*",
+        ],
+        Condition: { Bool: { "aws:SecureTransport": "false" } },
+      },
+      {
+        Sid: "WideOpenAllow",
+        Effect: "Allow",
+        Principal: "*",
+        Action: "s3:*",
+        Resource: [
+          "arn:aws:s3:::overbroad-bucket",
+          "arn:aws:s3:::overbroad-bucket/*",
+        ],
+      },
+    ],
+  },
+};
+
+Deno.test(
+  "checkNoOverbroadAllow: PASS on cleanBundle (no Allow at all)",
+  () => {
+    const f = checkNoOverbroadAllow(cleanBundle());
+    assertEquals(f.id, "bucket-no-overbroad-allow");
+    assertEquals(f.severity, "error");
+    assertEquals(f.status, "pass");
+  },
+);
+
+Deno.test(
+  "checkNoOverbroadAllow: PASS on noncompliantBundle (Allow is scoped to a specific Principal)",
+  () => {
+    // noncompliantBucketPolicy's Allow targets a specific AWS account ARN,
+    // not Principal:*. Not overbroad.
+    assertEquals(checkNoOverbroadAllow(noncompliantBundle()).status, "pass");
+  },
+);
+
+Deno.test(
+  "checkNoOverbroadAllow: FAIL on overbroad Allow (s3:* Principal:* no Condition) — false-PASS gap closed",
+  () => {
+    // Closes the audit gap: checkTLSOnlyPolicy still PASSes on this
+    // fixture (TLS Deny is present), but checkNoOverbroadAllow must FAIL.
+    const b = statePolicy(
+      { BucketName: "overbroad-bucket" },
+      overbroadAllowPolicy,
+    );
+    assertEquals(checkTLSOnlyPolicy(b).status, "pass");
+    const f = checkNoOverbroadAllow(b);
+    assertEquals(f.status, "fail");
+    assertEquals(
+      (f.actual as { overbroadCount: number }).overbroadCount,
+      1,
+    );
+    assertEquals(
+      (f.actual as { overbroadStatements: string[] }).overbroadStatements,
+      ["WideOpenAllow"],
+    );
+    assert(f.message.includes("WideOpenAllow"));
+  },
+);
+
+Deno.test(
+  "checkNoOverbroadAllow: FAIL when only Condition is aws:SecureTransport (TLS Condition does not narrow)",
+  () => {
+    // A TLS-only Condition on an otherwise-overbroad Allow leaves the
+    // bucket effectively public for any TLS request. Must FAIL.
+    const b = statePolicy(
+      { BucketName: "tls-only-allow" },
+      {
+        Bucket: "tls-only-allow",
+        PolicyDocument: {
+          Statement: [
+            {
+              Sid: "TlsOnlyButOverbroad",
+              Effect: "Allow",
+              Principal: "*",
+              Action: "s3:*",
+              Resource: [
+                "arn:aws:s3:::tls-only-allow",
+                "arn:aws:s3:::tls-only-allow/*",
+              ],
+              Condition: { Bool: { "aws:SecureTransport": "true" } },
+            },
+          ],
+        },
+      },
+    );
+    assertEquals(checkNoOverbroadAllow(b).status, "fail");
+  },
+);
+
+Deno.test(
+  "checkNoOverbroadAllow: FAIL with Action wildcard '*' (all-services form)",
+  () => {
+    const b = statePolicy(
+      { BucketName: "star-action" },
+      {
+        Bucket: "star-action",
+        PolicyDocument: {
+          Statement: [
+            {
+              Effect: "Allow",
+              Principal: "*",
+              Action: "*",
+              Resource: [
+                "arn:aws:s3:::star-action",
+                "arn:aws:s3:::star-action/*",
+              ],
+            },
+          ],
+        },
+      },
+    );
+    assertEquals(checkNoOverbroadAllow(b).status, "fail");
+  },
+);
+
+Deno.test(
+  "checkNoOverbroadAllow: PASS when narrowed by aws:PrincipalOrgID",
+  () => {
+    const b = statePolicy(
+      { BucketName: "org-scoped" },
+      {
+        Bucket: "org-scoped",
+        PolicyDocument: {
+          Statement: [
+            {
+              Effect: "Allow",
+              Principal: "*",
+              Action: "s3:*",
+              Resource: [
+                "arn:aws:s3:::org-scoped",
+                "arn:aws:s3:::org-scoped/*",
+              ],
+              Condition: {
+                StringEquals: { "aws:PrincipalOrgID": "o-1234567890" },
+              },
+            },
+          ],
+        },
+      },
+    );
+    assertEquals(checkNoOverbroadAllow(b).status, "pass");
+  },
+);
+
+Deno.test(
+  "checkNoOverbroadAllow: PASS when narrowed by aws:SourceVpce",
+  () => {
+    const b = statePolicy(
+      { BucketName: "vpce-scoped" },
+      {
+        Bucket: "vpce-scoped",
+        PolicyDocument: {
+          Statement: [
+            {
+              Effect: "Allow",
+              Principal: "*",
+              Action: "s3:*",
+              Resource: [
+                "arn:aws:s3:::vpce-scoped",
+                "arn:aws:s3:::vpce-scoped/*",
+              ],
+              Condition: {
+                StringEquals: { "aws:SourceVpce": "vpce-0abc123def456" },
+              },
+            },
+          ],
+        },
+      },
+    );
+    assertEquals(checkNoOverbroadAllow(b).status, "pass");
+  },
+);
+
+Deno.test(
+  "checkNoOverbroadAllow: PASS when narrowed by aws:SourceIp (IpAddress operator)",
+  () => {
+    const b = statePolicy(
+      { BucketName: "ip-scoped" },
+      {
+        Bucket: "ip-scoped",
+        PolicyDocument: {
+          Statement: [
+            {
+              Effect: "Allow",
+              Principal: "*",
+              Action: "s3:*",
+              Resource: [
+                "arn:aws:s3:::ip-scoped",
+                "arn:aws:s3:::ip-scoped/*",
+              ],
+              Condition: {
+                IpAddress: { "aws:SourceIp": "203.0.113.0/24" },
+              },
+            },
+          ],
+        },
+      },
+    );
+    assertEquals(checkNoOverbroadAllow(b).status, "pass");
+  },
+);
+
+Deno.test(
+  "checkNoOverbroadAllow: PASS when narrowing-key is in mixed case (case-insensitive matching)",
+  () => {
+    const b = statePolicy(
+      { BucketName: "mixed-case-narrow" },
+      {
+        Bucket: "mixed-case-narrow",
+        PolicyDocument: {
+          Statement: [
+            {
+              Effect: "Allow",
+              Principal: "*",
+              Action: "s3:*",
+              Resource: [
+                "arn:aws:s3:::mixed-case-narrow",
+                "arn:aws:s3:::mixed-case-narrow/*",
+              ],
+              Condition: {
+                StringEquals: { "AWS:PrincipalOrgID": "o-mixedcase" },
+              },
+            },
+          ],
+        },
+      },
+    );
+    assertEquals(checkNoOverbroadAllow(b).status, "pass");
+  },
+);
+
+Deno.test(
+  "checkNoOverbroadAllow: PASS when Resource is narrower than bucket+bucket/*",
+  () => {
+    // Allow scoped to a prefix below the bucket root does not match
+    // resourceCoversBucket, so the statement isn't overbroad.
+    const b = statePolicy(
+      { BucketName: "prefix-scoped" },
+      {
+        Bucket: "prefix-scoped",
+        PolicyDocument: {
+          Statement: [
+            {
+              Effect: "Allow",
+              Principal: "*",
+              Action: "s3:*",
+              Resource: "arn:aws:s3:::prefix-scoped/public/*",
+            },
+          ],
+        },
+      },
+    );
+    assertEquals(checkNoOverbroadAllow(b).status, "pass");
+  },
+);
+
+Deno.test(
+  "checkNoOverbroadAllow: SKIP when no policy lookup step (no policy, no policyError)",
+  () => {
+    const f = checkNoOverbroadAllow(noPolicyBundle());
+    assertEquals(f.status, "skip");
+    assert(f.message.includes("@swamp/aws/s3/bucket-policy"));
+  },
+);
+
+Deno.test(
+  "checkNoOverbroadAllow: SKIP on unparseable string PolicyDocument",
+  () => {
+    const b: BucketBundle = {
+      name: "bad-json-overbroad",
+      state: cleanBucketState as unknown as BucketBundle["state"],
+      policy: {
+        Bucket: "bad-json-overbroad",
+        PolicyDocument: "NOT VALID JSON {{{",
+      } as unknown as BucketBundle["policy"],
+    };
+    assertEquals(checkNoOverbroadAllow(b).status, "skip");
+  },
+);
+
+Deno.test(
+  "checkNoOverbroadAllow: PASS when PolicyDocument is empty (no Allow can exist)",
+  () => {
+    // No PolicyDocument at all means no overbroad Allow can be present.
+    // bucket-tls-only-policy FAILs the bucket for this case; this rule
+    // PASSes cleanly since there's nothing to flag.
+    const b: BucketBundle = {
+      name: "empty-policy-allow",
+      state: cleanBucketState as unknown as BucketBundle["state"],
+      policy: {
+        Bucket: "empty-policy-allow",
+      } as unknown as BucketBundle["policy"],
+    };
+    assertEquals(checkNoOverbroadAllow(b).status, "pass");
+  },
+);
+
+// Regression: existing cleanBundle and noncompliantBundle outcomes
+// for every other rule must be unchanged after this rule lands.
+Deno.test(
+  "regression: cleanBundle TLS-only-policy still PASSES after bucket-no-overbroad-allow added",
+  () => {
+    assertEquals(checkTLSOnlyPolicy(cleanBundle()).status, "pass");
+  },
+);
+
+Deno.test(
+  "regression: noncompliantBundle TLS-only-policy still PASSES after bucket-no-overbroad-allow added",
+  () => {
+    assertEquals(checkTLSOnlyPolicy(noncompliantBundle()).status, "pass");
+  },
+);
+
+// --- statementGrantsOverbroadAllow unit tests ---
+
+Deno.test(
+  "statementGrantsOverbroadAllow: true for canonical wide-open Allow",
+  () => {
+    const stmt: PolicyStatement = {
+      Effect: "Allow",
+      Principal: "*",
+      Action: "s3:*",
+      Resource: ["arn:aws:s3:::b", "arn:aws:s3:::b/*"],
+    };
+    assert(statementGrantsOverbroadAllow(stmt, "b"));
+  },
+);
+
+Deno.test(
+  "statementGrantsOverbroadAllow: false when Effect is Deny",
+  () => {
+    const stmt: PolicyStatement = {
+      Effect: "Deny",
+      Principal: "*",
+      Action: "s3:*",
+      Resource: ["arn:aws:s3:::b", "arn:aws:s3:::b/*"],
+    };
+    assert(!statementGrantsOverbroadAllow(stmt, "b"));
+  },
+);
+
+Deno.test(
+  "statementGrantsOverbroadAllow: false when Principal is a specific account ARN",
+  () => {
+    const stmt: PolicyStatement = {
+      Effect: "Allow",
+      Principal: { AWS: "arn:aws:iam::123456789012:root" },
+      Action: "s3:*",
+      Resource: ["arn:aws:s3:::b", "arn:aws:s3:::b/*"],
+    };
+    assert(!statementGrantsOverbroadAllow(stmt, "b"));
+  },
+);
+
+Deno.test(
+  "statementGrantsOverbroadAllow: false when Condition narrows via aws:SourceArn",
+  () => {
+    const stmt: PolicyStatement = {
+      Effect: "Allow",
+      Principal: "*",
+      Action: "s3:*",
+      Resource: ["arn:aws:s3:::b", "arn:aws:s3:::b/*"],
+      Condition: {
+        ArnLike: {
+          "aws:SourceArn":
+            "arn:aws:cloudfront::123456789012:distribution/E1234567",
+        },
+      },
+    };
+    assert(!statementGrantsOverbroadAllow(stmt, "b"));
   },
 );
 

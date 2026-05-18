@@ -403,6 +403,8 @@ export function checkOwnershipEnforced(b: BucketBundle): Finding {
  * optional because real-world bucket policies emit only the keys they need.
  */
 export interface PolicyStatement {
+  /** Optional statement identifier; used in audit messages to point at the offending statement. */
+  Sid?: string;
   /** `Allow` or `Deny`. */
   Effect?: string;
   /** Single action or array (e.g. `s3:*`, `["s3:GetObject", "s3:PutObject"]`). */
@@ -576,6 +578,74 @@ export function statementDeniesBelowTls12(
   return false;
 }
 
+/**
+ * IAM condition keys whose presence in a Condition block scopes an Allow
+ * statement to a smaller surface than "anyone, anywhere". Matched
+ * case-insensitively against the keys inside any operator block.
+ *
+ * Notably absent: `aws:SecureTransport` and `s3:TlsVersion`. Both scope
+ * *transport* (TLS enforced, minimum version), not *who*, so a wide-open
+ * Allow with only a TLS condition is still effectively public.
+ */
+const NARROWING_CONDITION_KEYS = new Set([
+  "aws:principalorgid",
+  "aws:principalorgpaths",
+  "aws:sourcearn",
+  "aws:sourceaccount",
+  "aws:sourcevpc",
+  "aws:sourcevpce",
+  "aws:sourceip",
+]);
+
+/**
+ * Returns true if `condition` contains at least one of the narrowing
+ * condition keys above. Key matching is case-insensitive (mirrors the
+ * `findSecureTransportValue` / `findTlsVersionValue` precedent — IAM
+ * matches condition keys case-insensitively). Operator names (`Bool`,
+ * `StringEquals`, `IpAddress`, etc.) are case-sensitive per IAM behavior,
+ * but this helper iterates every operator regardless of name, so any
+ * operator carrying a narrowing key counts (`IpAddress` and
+ * `NotIpAddress` both narrow via `aws:SourceIp`, for example).
+ */
+function isNarrowingCondition(
+  condition: PolicyStatement["Condition"],
+): boolean {
+  if (!condition) return false;
+  for (const operatorMap of Object.values(condition)) {
+    if (!operatorMap || typeof operatorMap !== "object") continue;
+    for (const key of Object.keys(operatorMap)) {
+      if (NARROWING_CONDITION_KEYS.has(key.toLowerCase())) return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Returns true when `stmt` grants wide-open access to the bucket:
+ *   - Effect: Allow
+ *   - Principal: covers everyone (`*`, `{AWS: "*"}`, or `{AWS: ["*"]}`)
+ *   - Action: covers all S3 operations (`s3:*` or `*`)
+ *   - Resource: covers both the bucket root and `bucket/*` (any AWS partition)
+ *   - Condition: empty or carries no narrowing key (per
+ *     {@link NARROWING_CONDITION_KEYS}). A TLS-only Condition does NOT
+ *     narrow — it scopes transport, not who.
+ *
+ * The TLS-only-Deny pattern (`statementDeniesInsecureTransport`) coexists
+ * with a wide-open Allow without conflict — Deny wins for non-TLS
+ * requests, Allow grants everything else. This predicate exists so the
+ * audit can flag that exact false-PASS gap.
+ */
+export function statementGrantsOverbroadAllow(
+  stmt: PolicyStatement,
+  bucketName: string,
+): boolean {
+  if (stmt.Effect !== "Allow") return false;
+  if (!isPrincipalWildcard(stmt.Principal)) return false;
+  if (!actionCoversAllS3(stmt.Action)) return false;
+  if (!resourceCoversBucket(stmt.Resource, bucketName)) return false;
+  return !isNarrowingCondition(stmt.Condition);
+}
+
 /** Rule: bucket-tls-only-policy. `error`. Verifies the bucket policy contains a canonical TLS-enforcing Deny (see {@link statementDeniesInsecureTransport}). */
 export function checkTLSOnlyPolicy(b: BucketBundle): Finding {
   const id = "bucket-tls-only-policy";
@@ -670,6 +740,127 @@ export function checkTLSOnlyPolicy(b: BucketBundle): Finding {
     message: ok
       ? "Bucket policy denies non-TLS access."
       : "Bucket policy does not include a Deny on aws:SecureTransport=false.",
+  });
+}
+
+/**
+ * Rule: bucket-no-overbroad-allow. `error`. FAILs when the bucket policy
+ * contains an Allow statement that grants wide-open access to the bucket
+ * (see {@link statementGrantsOverbroadAllow}).
+ *
+ * `bucket-tls-only-policy` confirms a TLS-enforcing Deny exists but does
+ * not look at Allow statements elsewhere in the policy. A bucket with
+ * both a TLS Deny AND a wide-open Allow passes the TLS rule cleanly
+ * while being effectively public for any TLS request — this rule closes
+ * that audit gap.
+ *
+ * SKIP/FAIL branching mirrors {@link checkTLSOnlyPolicy} for missing
+ * policy data and unparseable PolicyDocument; only the per-statement
+ * predicate differs.
+ */
+export function checkNoOverbroadAllow(b: BucketBundle): Finding {
+  const id = "bucket-no-overbroad-allow";
+  const severity: Severity = "error";
+  if (!b.policy && !b.policyError) {
+    return makeFinding({
+      id,
+      severity,
+      status: "skip",
+      bucket: b.name,
+      actual: { policy: null },
+      expected: {
+        statement:
+          "No Allow with Principal:* and Action:s3:* on bucket+bucket/* without a narrowing Condition.",
+      },
+      message:
+        "No bucket-policy data for this bucket; add a @swamp/aws/s3/bucket-policy lookup step to evaluate Allow statements.",
+    });
+  }
+  if (b.policyError && !b.policy?.PolicyDocument) {
+    return makeFinding({
+      id,
+      severity,
+      status: "fail",
+      bucket: b.name,
+      actual: { policy: null, error: b.policyError },
+      expected: {
+        statement:
+          "No Allow with Principal:* and Action:s3:* on bucket+bucket/* without a narrowing Condition.",
+      },
+      message:
+        "No bucket policy attached or policy lookup failed; cannot confirm absence of overbroad Allow statements.",
+    });
+  }
+  const raw = b.policy?.PolicyDocument;
+  if (raw === undefined || raw === null || raw === "") {
+    // No PolicyDocument means no overbroad Allow can exist on this bucket.
+    // bucket-tls-only-policy already FAILs the bucket for missing TLS
+    // enforcement; this rule's job is narrower and PASSes cleanly.
+    return makeFinding({
+      id,
+      severity,
+      status: "pass",
+      bucket: b.name,
+      actual: { statementsEvaluated: 0, overbroadCount: 0 },
+      expected: {
+        statement:
+          "No Allow with Principal:* and Action:s3:* on bucket+bucket/* without a narrowing Condition.",
+      },
+      message: "No bucket policy attached; no overbroad Allow possible.",
+    });
+  }
+  let doc: { Statement?: PolicyStatement | PolicyStatement[] };
+  if (typeof raw === "string") {
+    try {
+      doc = JSON.parse(raw);
+    } catch {
+      return makeFinding({
+        id,
+        severity,
+        status: "skip",
+        bucket: b.name,
+        actual: { policy: "<unparseable>" },
+        expected: {
+          statement:
+            "No Allow with Principal:* and Action:s3:* on bucket+bucket/* without a narrowing Condition.",
+        },
+        message: "Bucket policy is not valid JSON; cannot evaluate.",
+      });
+    }
+  } else {
+    doc = raw as { Statement?: PolicyStatement | PolicyStatement[] };
+  }
+  const stmts = Array.isArray(doc.Statement)
+    ? doc.Statement
+    : doc.Statement
+    ? [doc.Statement]
+    : [];
+  const offenders: string[] = [];
+  stmts.forEach((s, i) => {
+    if (statementGrantsOverbroadAllow(s, b.name)) {
+      offenders.push(typeof s.Sid === "string" && s.Sid ? s.Sid : `#${i}`);
+    }
+  });
+  const ok = offenders.length === 0;
+  return makeFinding({
+    id,
+    severity,
+    status: ok ? "pass" : "fail",
+    bucket: b.name,
+    actual: {
+      statementsEvaluated: stmts.length,
+      overbroadCount: offenders.length,
+      overbroadStatements: offenders,
+    },
+    expected: {
+      statement:
+        "No Allow with Principal:* and Action:s3:* on bucket+bucket/* without a narrowing Condition.",
+    },
+    message: ok
+      ? "No overbroad-Allow statements in bucket policy."
+      : `Bucket policy contains ${offenders.length} overbroad-Allow statement(s): ${
+        offenders.join(", ")
+      }.`,
   });
 }
 
@@ -877,6 +1068,7 @@ const RULES: Array<(b: BucketBundle) => Finding> = [
   checkPublicAccessBlock,
   checkOwnershipEnforced,
   checkTLSOnlyPolicy,
+  checkNoOverbroadAllow,
   checkTLSMinVersion12,
   // bucket-dynamodb-lock-table — reserved id, deferred to v1.1 (lives in .tf backend).
   checkLifecycleExpiresNoncurrent,
@@ -1018,9 +1210,10 @@ function renderMarkdown(
 /**
  * The `@jentz/aws-s3-bucket-audit` workflow-scope report. Runs once after
  * all workflow steps complete, collects `@swamp/aws/s3/bucket` and
- * `@swamp/aws/s3/bucket-policy` data, applies nine rules per bucket, and
- * emits markdown plus JSON (including a `failOn` gate). Never throws —
- * missing or unparseable data becomes `skip`-status findings.
+ * `@swamp/aws/s3/bucket-policy` data, applies the rules registered in
+ * {@link RULES} per bucket, and emits markdown plus JSON (including a
+ * `failOn` gate). Never throws — missing or unparseable data becomes
+ * `skip`-status findings.
  */
 export const report = {
   name: "@jentz/aws-s3-bucket-audit",

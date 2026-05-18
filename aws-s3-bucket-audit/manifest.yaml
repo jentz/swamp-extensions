@@ -1,6 +1,6 @@
 manifestVersion: 1
 name: "@jentz/aws-s3-bucket-audit"
-version: "2026.05.18.1"
+version: "2026.05.18.2"
 description: |
   Workflow-scope report that audits S3 buckets against standard security
   best practices. Operates on bucket state and bucket-policy data produced
@@ -14,6 +14,7 @@ description: |
     - bucket-public-access-blocked           (error)
     - bucket-ownership-enforced              (error)
     - bucket-tls-only-policy                 (error)
+    - bucket-no-overbroad-allow              (error)
     - bucket-tls-min-version-1.2             (warn)
     - bucket-lifecycle-expires-noncurrent-versions (warn)
     - bucket-server-access-logging           (warn)
