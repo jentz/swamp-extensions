@@ -1446,7 +1446,9 @@ Deno.test("collectBundles: succeeded step with unparseable JSON surfaces with pa
   const j = out.json;
   assertEquals(j.summary.buckets, 1);
   assertEquals(j.buckets[0].name, "y");
-  const versioning = j.findings.find((f) => f.id === "bucket-versioning-enabled");
+  const versioning = j.findings.find((f) =>
+    f.id === "bucket-versioning-enabled"
+  );
   assertExists(versioning);
   assertEquals(versioning.status, "skip");
   assert(versioning.message.includes("data file"));
@@ -1478,7 +1480,9 @@ Deno.test("collectBundles: succeeded step with schema-mismatched data surfaces v
   const j = out.json;
   assertEquals(j.summary.buckets, 1);
   assertEquals(j.buckets[0].name, "z");
-  const versioning = j.findings.find((f) => f.id === "bucket-versioning-enabled");
+  const versioning = j.findings.find((f) =>
+    f.id === "bucket-versioning-enabled"
+  );
   assertExists(versioning);
   assertEquals(versioning.status, "skip");
   assert(versioning.message.includes("did not match expected shape"));
