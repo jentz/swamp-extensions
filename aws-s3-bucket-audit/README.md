@@ -310,7 +310,10 @@ accept the trip and remediate.
 
 ## Issues, contributing, license
 
-- Bugs, features, security: <https://github.com/jentz/swamp-extensions/issues>
+- Bug reports and feature requests:
+  <https://github.com/jentz/swamp-extensions/issues>
+- Security vulnerabilities: do not open a public issue; see the repo-root README
+  for the current reporting channel.
 - Source:
   <https://github.com/jentz/swamp-extensions/tree/main/aws-s3-bucket-audit>
 - License: MIT (see [LICENSE.md](LICENSE.md))
