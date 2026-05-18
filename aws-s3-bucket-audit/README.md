@@ -7,7 +7,7 @@ those step outputs and produces structured, lint-style findings.
 
 ## What it checks
 
-Nine rules across three severities:
+Rules across three severities:
 
 | Rule ID                                        | Severity | Pass condition                                                                                                                                                                                                                  |
 | ---------------------------------------------- | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -16,6 +16,7 @@ Nine rules across three severities:
 | `bucket-public-access-blocked`                 | error    | All four BPA flags `true` (`BlockPublicAcls`, `BlockPublicPolicy`, `IgnorePublicAcls`, `RestrictPublicBuckets`)                                                                                                                 |
 | `bucket-ownership-enforced`                    | error    | `OwnershipControls.Rules` contains `ObjectOwnership: BucketOwnerEnforced` (ACLs disabled)                                                                                                                                       |
 | `bucket-tls-only-policy`                       | error    | Bucket policy includes a Deny with `Principal: *`, `Action: s3:*`, `Resource` covering both bucket ARN and `bucket/*`, and `Condition: Bool { aws:SecureTransport: "false" }`                                                   |
+| `bucket-no-overbroad-allow`                    | error    | No Allow statement grants `Action: s3:*` to `Principal: *` on `Resource` covering both bucket ARN and `bucket/*` without a narrowing Condition (`aws:PrincipalOrgID`, `aws:Source{Arn,Account,Vpc,Vpce,Ip}`, etc.)              |
 | `bucket-tls-min-version-1.2`                   | warn     | Bucket policy includes a Deny with `Principal: *`, `Action: s3:*`, `Resource` covering both bucket ARN and `bucket/*`, and `Condition: NumericLessThan` (or `NumericLessThanIfExists`) on `s3:TlsVersion` with a floor `>= 1.2` |
 | `bucket-lifecycle-expires-noncurrent-versions` | warn     | At least one enabled lifecycle rule expires noncurrent object versions                                                                                                                                                          |
 | `bucket-server-access-logging`                 | warn     | Logging configured with a destination bucket that is NOT the source bucket                                                                                                                                                      |
@@ -47,9 +48,6 @@ deliberately out of scope for this extension and must be evaluated separately:
   below TLS 1.2 via the `s3:TlsVersion` condition key. Because that rule is
   severity `warn` it does not trip the default `error`-tier gate; set
   `S3_BUCKET_AUDIT_FAILON=warn` to make it gate-tripping.
-- **Over-broad `Allow` statements** — the TLS check confirms the presence of a
-  Deny, but does not flag bucket policies that grant `s3:*` to `Principal: *`
-  outside that Deny pattern.
 - **CloudTrail data events / server-access logging analytics** — logging is
   checked for existence only; whether it is actually being ingested and alerted
   on is out of scope.
@@ -57,7 +55,7 @@ deliberately out of scope for this extension and must be evaluated separately:
   the bucket-level controls (Object Ownership = BucketOwnerEnforced disables
   ACLs entirely) but does not enumerate per-object ACLs.
 
-A "PASS" from this audit means the nine evaluated controls match recommended
+A "PASS" from this audit means every evaluated control matches recommended
 values for the audited bucket — not that the bucket is secure under every threat
 model.
 
