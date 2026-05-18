@@ -18,7 +18,11 @@
  *   }
  *
  * The report itself never throws; missing or unparseable data produces a
- * `skip` status finding instead of failing the workflow.
+ * `skip` status finding so per-rule, per-bucket diagnostic detail survives
+ * in the findings JSON. As of swamp PR #1394 a thrown report persists a
+ * generic `{ error, reportName, scope, message }` fallback artifact, but
+ * the rich findings JSON is lost — so the skip-not-throw policy is
+ * preserved deliberately, not for lack of alternatives.
  *
  * @module
  */
@@ -127,6 +131,9 @@ function decodeJson<T>(bytes: Uint8Array | null): T | null {
   try {
     return JSON.parse(TEXT_DECODER.decode(bytes)) as T;
   } catch {
+    // Return null and let the caller record a per-bucket skip; throwing
+    // here would collapse all findings into swamp's generic post-#1394
+    // error artifact and erase which bucket/step produced the bad bytes.
     return null;
   }
 }
@@ -481,6 +488,23 @@ function findSecureTransportValue(
 }
 
 /**
+ * Find the `s3:TlsVersion` condition value, treating the IAM condition key
+ * as case-insensitive. The operator (`NumericLessThan` /
+ * `NumericLessThanIfExists`) IS case-sensitive in IAM. `s3:TlsVersion` is
+ * the only documented AWS condition key for the TLS version on S3
+ * requests — `aws:SecureTransportVersion` and `aws:TlsVersion` are not
+ * real keys.
+ */
+function findTlsVersionValue(
+  condOp: Record<string, unknown>,
+): unknown {
+  const key = Object.keys(condOp).find((k) =>
+    k.toLowerCase() === "s3:tlsversion"
+  );
+  return key ? condOp[key] : undefined;
+}
+
+/**
  * Returns true when `stmt` is a properly-scoped TLS-enforcing Deny:
  *   - Effect: Deny
  *   - Principal: covers everyone (`*`, `{AWS: "*"}`, or `{AWS: ["*"]}`)
@@ -509,6 +533,45 @@ export function statementDeniesInsecureTransport(
       ? value.map((v) => String(v).toLowerCase())
       : [String(value).toLowerCase()];
     if (flagged.includes("false")) return true;
+  }
+  return false;
+}
+
+/**
+ * Returns true when `stmt` is a properly-scoped Deny enforcing a TLS
+ * minimum version of 1.2 or higher:
+ *   - Effect: Deny
+ *   - Principal: covers everyone (`*`, `{AWS: "*"}`, or `{AWS: ["*"]}`)
+ *   - Action: covers all S3 operations (`s3:*` or `*`)
+ *   - Resource: covers both the bucket root and `bucket/*` (any AWS partition)
+ *   - Condition: `NumericLessThan` OR `NumericLessThanIfExists` with
+ *     `s3:TlsVersion` (case-insensitive) value parseable as a number >= 1.2
+ *
+ * Independent of {@link statementDeniesInsecureTransport} — a bucket can
+ * satisfy one without the other.
+ */
+export function statementDeniesBelowTls12(
+  stmt: PolicyStatement,
+  bucketName: string,
+): boolean {
+  if (stmt.Effect !== "Deny") return false;
+  if (!isPrincipalWildcard(stmt.Principal)) return false;
+  if (!actionCoversAllS3(stmt.Action)) return false;
+  if (!resourceCoversBucket(stmt.Resource, bucketName)) return false;
+  const operators = [
+    stmt.Condition?.NumericLessThan,
+    stmt.Condition?.NumericLessThanIfExists,
+  ].filter((c): c is Record<string, unknown> => !!c);
+  if (operators.length === 0) return false;
+  for (const op of operators) {
+    const value = findTlsVersionValue(op);
+    if (value === undefined) continue;
+    const candidates = Array.isArray(value) ? value : [value];
+    for (const v of candidates) {
+      const n = typeof v === "number" ? v : Number(v);
+      if (!Number.isFinite(n)) continue;
+      if (n >= 1.2) return true;
+    }
   }
   return false;
 }
@@ -607,6 +670,108 @@ export function checkTLSOnlyPolicy(b: BucketBundle): Finding {
     message: ok
       ? "Bucket policy denies non-TLS access."
       : "Bucket policy does not include a Deny on aws:SecureTransport=false.",
+  });
+}
+
+/**
+ * Rule: bucket-tls-min-version-1.2. `warn`. Verifies the bucket policy
+ * contains a Deny scoped identically to `bucket-tls-only-policy` but with
+ * a `NumericLessThan` / `NumericLessThanIfExists` condition on
+ * `s3:TlsVersion` set to 1.2 or higher (see {@link statementDeniesBelowTls12}).
+ *
+ * SKIP/FAIL branching mirrors {@link checkTLSOnlyPolicy} so the two rules
+ * are evaluated independently — existing PASS audits on `bucket-tls-only-policy`
+ * do not regress when this rule is added.
+ */
+export function checkTLSMinVersion12(b: BucketBundle): Finding {
+  const id = "bucket-tls-min-version-1.2";
+  const severity: Severity = "warn";
+  if (!b.policy && !b.policyError) {
+    return makeFinding({
+      id,
+      severity,
+      status: "skip",
+      bucket: b.name,
+      actual: { policy: null },
+      expected: {
+        statement:
+          "Deny on s3:TlsVersion < 1.2 (NumericLessThan or NumericLessThanIfExists, value >= 1.2).",
+      },
+      message:
+        "No bucket-policy data for this bucket; add a @swamp/aws/s3/bucket-policy lookup step to evaluate TLS minimum version.",
+    });
+  }
+  if (b.policyError && !b.policy?.PolicyDocument) {
+    return makeFinding({
+      id,
+      severity,
+      status: "warn",
+      bucket: b.name,
+      actual: { policy: null, error: b.policyError },
+      expected: {
+        statement:
+          "Deny on s3:TlsVersion < 1.2 (NumericLessThan or NumericLessThanIfExists, value >= 1.2).",
+      },
+      message:
+        "No bucket policy attached or policy lookup failed; minimum TLS version cannot be enforced.",
+    });
+  }
+  const raw = b.policy?.PolicyDocument;
+  if (raw === undefined || raw === null || raw === "") {
+    return makeFinding({
+      id,
+      severity,
+      status: "warn",
+      bucket: b.name,
+      actual: { policy: null },
+      expected: {
+        statement:
+          "Deny on s3:TlsVersion < 1.2 (NumericLessThan or NumericLessThanIfExists, value >= 1.2).",
+      },
+      message:
+        "No bucket policy attached; minimum TLS version cannot be enforced.",
+    });
+  }
+  let doc: { Statement?: PolicyStatement | PolicyStatement[] };
+  if (typeof raw === "string") {
+    try {
+      doc = JSON.parse(raw);
+    } catch {
+      return makeFinding({
+        id,
+        severity,
+        status: "skip",
+        bucket: b.name,
+        actual: { policy: "<unparseable>" },
+        expected: {
+          statement:
+            "Deny on s3:TlsVersion < 1.2 (NumericLessThan or NumericLessThanIfExists, value >= 1.2).",
+        },
+        message: "Bucket policy is not valid JSON; cannot evaluate.",
+      });
+    }
+  } else {
+    doc = raw as { Statement?: PolicyStatement | PolicyStatement[] };
+  }
+  const stmts = Array.isArray(doc.Statement)
+    ? doc.Statement
+    : doc.Statement
+    ? [doc.Statement]
+    : [];
+  const ok = stmts.some((s) => statementDeniesBelowTls12(s, b.name));
+  return makeFinding({
+    id,
+    severity,
+    status: ok ? "pass" : "warn",
+    bucket: b.name,
+    actual: { statementsEvaluated: stmts.length, tlsMinVersionDeny: ok },
+    expected: {
+      statement:
+        "Deny on s3:TlsVersion < 1.2 (NumericLessThan or NumericLessThanIfExists, value >= 1.2).",
+    },
+    message: ok
+      ? "Bucket policy denies access with TLS version below 1.2."
+      : "Bucket policy does not include a Deny on s3:TlsVersion < 1.2.",
   });
 }
 
@@ -712,6 +877,7 @@ const RULES: Array<(b: BucketBundle) => Finding> = [
   checkPublicAccessBlock,
   checkOwnershipEnforced,
   checkTLSOnlyPolicy,
+  checkTLSMinVersion12,
   // bucket-dynamodb-lock-table — reserved id, deferred to v1.1 (lives in .tf backend).
   checkLifecycleExpiresNoncurrent,
   checkServerAccessLogging,
@@ -852,7 +1018,7 @@ function renderMarkdown(
 /**
  * The `@jentz/aws-s3-bucket-audit` workflow-scope report. Runs once after
  * all workflow steps complete, collects `@swamp/aws/s3/bucket` and
- * `@swamp/aws/s3/bucket-policy` data, applies eight rules per bucket, and
+ * `@swamp/aws/s3/bucket-policy` data, applies nine rules per bucket, and
  * emits markdown plus JSON (including a `failOn` gate). Never throws —
  * missing or unparseable data becomes `skip`-status findings.
  */
@@ -895,10 +1061,13 @@ export const report = {
     );
 
     // failOn is advisory inside the report — swamp catches and logs thrown
-    // report errors but does not fail the workflow run, and on a throw the
-    // report's data is not persisted. So we surface gate state in the JSON
-    // and log a clear warning; the shell helper bin/audit-gate.sh reads this
-    // and exits non-zero for CI/script integration.
+    // report errors but does not fail the workflow run. As of swamp PR
+    // #1394 a thrown report persists a generic
+    // `{ error, reportName, scope, message }` fallback artifact at
+    // `report-<name>-json`, but the rich findings JSON is lost. So we
+    // surface gate state in the JSON and log a clear warning rather than
+    // throwing; the shell helper documented in the README reads this and
+    // exits non-zero for CI/script integration.
     const threshold = parseFailOnThreshold(
       Deno.env.get("S3_BUCKET_AUDIT_FAILON"),
     );

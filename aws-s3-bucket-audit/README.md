@@ -7,18 +7,19 @@ those step outputs and produces structured, lint-style findings.
 
 ## What it checks
 
-Eight rules across three severities:
+Nine rules across three severities:
 
-| Rule ID                                        | Severity | Pass condition                                                                                                                                                                |
-| ---------------------------------------------- | -------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `bucket-versioning-enabled`                    | error    | `VersioningConfiguration.Status == "Enabled"`                                                                                                                                 |
-| `bucket-encryption-enabled`                    | error    | At least one default encryption rule (`AES256`, `aws:kms`, or `aws:kms:dsse`)                                                                                                 |
-| `bucket-public-access-blocked`                 | error    | All four BPA flags `true` (`BlockPublicAcls`, `BlockPublicPolicy`, `IgnorePublicAcls`, `RestrictPublicBuckets`)                                                               |
-| `bucket-ownership-enforced`                    | error    | `OwnershipControls.Rules` contains `ObjectOwnership: BucketOwnerEnforced` (ACLs disabled)                                                                                     |
-| `bucket-tls-only-policy`                       | error    | Bucket policy includes a Deny with `Principal: *`, `Action: s3:*`, `Resource` covering both bucket ARN and `bucket/*`, and `Condition: Bool { aws:SecureTransport: "false" }` |
-| `bucket-lifecycle-expires-noncurrent-versions` | warn     | At least one enabled lifecycle rule expires noncurrent object versions                                                                                                        |
-| `bucket-server-access-logging`                 | warn     | Logging configured with a destination bucket that is NOT the source bucket                                                                                                    |
-| `bucket-tag-inventory`                         | info     | Always `pass` when state is available; `actual.tagCount=0` is the sentinel for "no tags". Pure inventory metadata — never trips the gate, even under `failOn=info`            |
+| Rule ID                                        | Severity | Pass condition                                                                                                                                                                                                                  |
+| ---------------------------------------------- | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `bucket-versioning-enabled`                    | error    | `VersioningConfiguration.Status == "Enabled"`                                                                                                                                                                                   |
+| `bucket-encryption-enabled`                    | error    | At least one default encryption rule (`AES256`, `aws:kms`, or `aws:kms:dsse`)                                                                                                                                                   |
+| `bucket-public-access-blocked`                 | error    | All four BPA flags `true` (`BlockPublicAcls`, `BlockPublicPolicy`, `IgnorePublicAcls`, `RestrictPublicBuckets`)                                                                                                                 |
+| `bucket-ownership-enforced`                    | error    | `OwnershipControls.Rules` contains `ObjectOwnership: BucketOwnerEnforced` (ACLs disabled)                                                                                                                                       |
+| `bucket-tls-only-policy`                       | error    | Bucket policy includes a Deny with `Principal: *`, `Action: s3:*`, `Resource` covering both bucket ARN and `bucket/*`, and `Condition: Bool { aws:SecureTransport: "false" }`                                                   |
+| `bucket-tls-min-version-1.2`                   | warn     | Bucket policy includes a Deny with `Principal: *`, `Action: s3:*`, `Resource` covering both bucket ARN and `bucket/*`, and `Condition: NumericLessThan` (or `NumericLessThanIfExists`) on `s3:TlsVersion` with a floor `>= 1.2` |
+| `bucket-lifecycle-expires-noncurrent-versions` | warn     | At least one enabled lifecycle rule expires noncurrent object versions                                                                                                                                                          |
+| `bucket-server-access-logging`                 | warn     | Logging configured with a destination bucket that is NOT the source bucket                                                                                                                                                      |
+| `bucket-tag-inventory`                         | info     | Always `pass` when state is available; `actual.tagCount=0` is the sentinel for "no tags". Pure inventory metadata — never trips the gate, even under `failOn=info`                                                              |
 
 References for all rules:
 [AWS S3 security best practices](https://docs.aws.amazon.com/AmazonS3/latest/userguide/security-best-practices.html).
@@ -41,9 +42,11 @@ deliberately out of scope for this extension and must be evaluated separately:
 - **Replication configuration** — cross-region replication and same-region
   replication are not evaluated.
 - **Minimum TLS version** — `bucket-tls-only-policy` ensures _some_ TLS is
-  required (`aws:SecureTransport=false` is denied) but does not enforce TLS 1.2+
-  via `aws:SecureTransportVersion`. AWS guidance is trending toward an explicit
-  minimum-version requirement.
+  required (`aws:SecureTransport=false` is denied), and
+  `bucket-tls-min-version-1.2` flags policies that do not also Deny requests
+  below TLS 1.2 via the `s3:TlsVersion` condition key. Because that rule is
+  severity `warn` it does not trip the default `error`-tier gate; set
+  `S3_BUCKET_AUDIT_FAILON=warn` to make it gate-tripping.
 - **Over-broad `Allow` statements** — the TLS check confirms the presence of a
   Deny, but does not flag bucket policies that grant `s3:*` to `Principal: *`
   outside that Deny pattern.
@@ -54,7 +57,7 @@ deliberately out of scope for this extension and must be evaluated separately:
   the bucket-level controls (Object Ownership = BucketOwnerEnforced disables
   ACLs entirely) but does not enumerate per-object ACLs.
 
-A "PASS" from this audit means the eight evaluated controls match recommended
+A "PASS" from this audit means the nine evaluated controls match recommended
 values for the audited bucket — not that the bucket is secure under every threat
 model.
 
@@ -297,6 +300,15 @@ new rule with default `error` severity, renaming a rule id, removing a field
 from the JSON output — bump the date and carry release notes. Adding info/warn
 rules, tightening a check's semantics, or extending the JSON output additively
 is not considered breaking.
+
+**Soft-breaking changes at non-default `FAILON` thresholds.** The "additive
+warn/info rules are not breaking" guarantee above holds at the default
+`S3_BUCKET_AUDIT_FAILON=error` threshold. If you have set
+`S3_BUCKET_AUDIT_FAILON=warn` or `S3_BUCKET_AUDIT_FAILON=info`, a newly-added
+rule of that severity can trip a previously-passing gate on a CalVer bump. This
+is a deliberate posture upgrade rather than a regression — pin a specific CalVer
+if you need to evaluate the new rule before letting it gate your workflow, or
+accept the trip and remediate.
 
 ## Issues, contributing, license
 
