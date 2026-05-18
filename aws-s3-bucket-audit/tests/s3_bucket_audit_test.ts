@@ -1337,10 +1337,11 @@ Deno.test("checkTLSOnlyPolicy: PASS for GovCloud partition (arn:aws-us-gov:s3:::
 // collectBundles recovery paths (via report.execute integration)
 //
 // collectBundles is internal; drive it through report.execute() with a
-// faked context that includes a temp repoDir and prewritten data files.
-// When an upstream step succeeds but its data is unparseable or schema-
-// mismatched, the bucket name must still surface via methodArgs.identifier
-// so the bucket appears in the report rather than silently disappearing.
+// faked context whose dataRepository.getContent is backed by an in-memory
+// map. When an upstream step succeeds but its data is unparseable or
+// schema-mismatched, the bucket name must still surface via
+// methodArgs.identifier so the bucket appears in the report rather than
+// silently disappearing.
 // ---------------------------------------------------------------------------
 
 interface FakeStepExecution {
@@ -1354,18 +1355,25 @@ interface FakeStepExecution {
   dataHandles?: Array<{ name: string; version: number }>;
 }
 
-async function writeRaw(
-  repoDir: string,
-  modelType: string,
-  modelId: string,
-  dataName: string,
-  version: number,
-  content: string,
-) {
-  const dir =
-    `${repoDir}/.swamp/data/${modelType}/${modelId}/${dataName}/${version}`;
-  await Deno.mkdir(dir, { recursive: true });
-  await Deno.writeTextFile(`${dir}/raw`, content);
+/** Pre-seeded data artifact: [modelType, modelId, dataName, version, content]. */
+type DataEntry = [string, string, string, number, string];
+
+function makeDataRepository(entries: DataEntry[]) {
+  const enc = new TextEncoder();
+  const key = (t: string, i: string, n: string, v: number) =>
+    `${t}|${i}|${n}|${v}`;
+  const store = new Map(
+    entries.map(([t, i, n, v, c]) => [key(t, i, n, v), enc.encode(c)]),
+  );
+  return {
+    getContent: (
+      type: string,
+      modelId: string,
+      dataName: string,
+      version: number,
+    ): Promise<Uint8Array | null> =>
+      Promise.resolve(store.get(key(type, modelId, dataName, version)) ?? null),
+  };
 }
 
 function silentLogger() {
@@ -1378,59 +1386,52 @@ function silentLogger() {
 }
 
 async function runReport(
-  repoDir: string,
+  dataEntries: DataEntry[],
   stepExecutions: FakeStepExecution[],
 ) {
   const ctx = {
-    repoDir,
     workflowName: "test-workflow",
     stepExecutions,
     logger: silentLogger(),
+    dataRepository: makeDataRepository(dataEntries),
   };
   return await report.execute(ctx);
 }
 
 Deno.test("collectBundles: failed step with no data surfaces via methodArgs.identifier", async () => {
-  const repoDir = await Deno.makeTempDir({ prefix: "s3audit-test-" });
-  try {
-    const out = await runReport(repoDir, [
-      {
-        jobName: "lookup",
-        stepName: "bucket-state-x",
-        modelType: "@swamp/aws/s3/bucket",
-        modelId: "audit-bucket-x",
-        status: "failed",
-        methodArgs: { identifier: "x" },
-        dataHandles: [],
-      },
-    ]);
-    const j = out.json;
-    assertEquals(j.summary.buckets, 1);
-    assertEquals(j.buckets[0].name, "x");
-    // Every state-dependent rule should emit `skip` with the stateError reason.
-    const versioning = j.findings.find((f) =>
-      f.id === "bucket-versioning-enabled"
-    );
-    assertExists(versioning);
-    assertEquals(versioning.status, "skip");
-    assertEquals(versioning.message, "bucket lookup step failed");
-  } finally {
-    await Deno.remove(repoDir, { recursive: true });
-  }
+  const out = await runReport([], [
+    {
+      jobName: "lookup",
+      stepName: "bucket-state-x",
+      modelType: "@swamp/aws/s3/bucket",
+      modelId: "audit-bucket-x",
+      status: "failed",
+      methodArgs: { identifier: "x" },
+      dataHandles: [],
+    },
+  ]);
+  const j = out.json;
+  assertEquals(j.summary.buckets, 1);
+  assertEquals(j.buckets[0].name, "x");
+  // Every state-dependent rule should emit `skip` with the stateError reason.
+  const versioning = j.findings.find((f) =>
+    f.id === "bucket-versioning-enabled"
+  );
+  assertExists(versioning);
+  assertEquals(versioning.status, "skip");
+  assertEquals(versioning.message, "bucket lookup step failed");
 });
 
 Deno.test("collectBundles: succeeded step with unparseable JSON surfaces with parse-error reason", async () => {
-  const repoDir = await Deno.makeTempDir({ prefix: "s3audit-test-" });
-  try {
-    await writeRaw(
-      repoDir,
+  const out = await runReport(
+    [[
       "@swamp/aws/s3/bucket",
       "audit-bucket-y",
       "default",
       1,
       "this is not valid json {{{",
-    );
-    const out = await runReport(repoDir, [
+    ]],
+    [
       {
         jobName: "lookup",
         stepName: "bucket-state-y",
@@ -1440,35 +1441,29 @@ Deno.test("collectBundles: succeeded step with unparseable JSON surfaces with pa
         methodArgs: { identifier: "y" },
         dataHandles: [{ name: "default", version: 1 }],
       },
-    ]);
-    const j = out.json;
-    assertEquals(j.summary.buckets, 1);
-    assertEquals(j.buckets[0].name, "y");
-    const versioning = j.findings.find((f) =>
-      f.id === "bucket-versioning-enabled"
-    );
-    assertExists(versioning);
-    assertEquals(versioning.status, "skip");
-    assert(versioning.message.includes("data file"));
-  } finally {
-    await Deno.remove(repoDir, { recursive: true });
-  }
+    ],
+  );
+  const j = out.json;
+  assertEquals(j.summary.buckets, 1);
+  assertEquals(j.buckets[0].name, "y");
+  const versioning = j.findings.find((f) => f.id === "bucket-versioning-enabled");
+  assertExists(versioning);
+  assertEquals(versioning.status, "skip");
+  assert(versioning.message.includes("data file"));
 });
 
 Deno.test("collectBundles: succeeded step with schema-mismatched data surfaces via fallback identifier", async () => {
   // Valid JSON but missing the required BucketName field. The bucket must
   // still surface via methodArgs.identifier rather than disappearing.
-  const repoDir = await Deno.makeTempDir({ prefix: "s3audit-test-" });
-  try {
-    await writeRaw(
-      repoDir,
+  const out = await runReport(
+    [[
       "@swamp/aws/s3/bucket",
       "audit-bucket-z",
       "default",
       1,
       JSON.stringify({ NotBucketName: "wrong-shape" }),
-    );
-    const out = await runReport(repoDir, [
+    ]],
+    [
       {
         jobName: "lookup",
         stepName: "bucket-state-z",
@@ -1478,19 +1473,15 @@ Deno.test("collectBundles: succeeded step with schema-mismatched data surfaces v
         methodArgs: { identifier: "z" },
         dataHandles: [{ name: "default", version: 1 }],
       },
-    ]);
-    const j = out.json;
-    assertEquals(j.summary.buckets, 1);
-    assertEquals(j.buckets[0].name, "z");
-    const versioning = j.findings.find((f) =>
-      f.id === "bucket-versioning-enabled"
-    );
-    assertExists(versioning);
-    assertEquals(versioning.status, "skip");
-    assert(versioning.message.includes("did not match expected shape"));
-  } finally {
-    await Deno.remove(repoDir, { recursive: true });
-  }
+    ],
+  );
+  const j = out.json;
+  assertEquals(j.summary.buckets, 1);
+  assertEquals(j.buckets[0].name, "z");
+  const versioning = j.findings.find((f) => f.id === "bucket-versioning-enabled");
+  assertExists(versioning);
+  assertEquals(versioning.status, "skip");
+  assert(versioning.message.includes("did not match expected shape"));
 });
 
 Deno.test("checkTLSOnlyPolicy: bucket name with dots is matched literally (regex escape)", () => {

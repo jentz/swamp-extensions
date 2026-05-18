@@ -131,24 +131,6 @@ function decodeJson<T>(bytes: Uint8Array | null): T | null {
   }
 }
 
-async function readDataFile(
-  // deno-lint-ignore no-explicit-any
-  context: any,
-  modelType: string,
-  modelId: string,
-  dataName: string,
-  version: number,
-): Promise<Uint8Array | null> {
-  const path =
-    `${context.repoDir}/.swamp/data/${modelType}/${modelId}/${dataName}/${version}/raw`;
-  try {
-    return await Deno.readFile(path);
-  } catch (err) {
-    if (err instanceof Deno.errors.NotFound) return null;
-    throw err;
-  }
-}
-
 // deno-lint-ignore no-explicit-any
 async function collectBundles(context: any): Promise<BucketBundle[]> {
   const bundles = new Map<string, BucketBundle>();
@@ -163,9 +145,7 @@ async function collectBundles(context: any): Promise<BucketBundle[]> {
   };
 
   for (const step of context.stepExecutions ?? []) {
-    const typeStr = typeof step.modelType === "string"
-      ? step.modelType
-      : (step.modelType?.toString?.() ?? "");
+    const typeStr: string = step.modelType;
     const isBucket = typeStr === BUCKET_TYPE;
     const isPolicy = typeStr === POLICY_TYPE;
     if (!isBucket && !isPolicy) continue;
@@ -184,8 +164,7 @@ async function collectBundles(context: any): Promise<BucketBundle[]> {
     };
 
     for (const handle of step.dataHandles ?? []) {
-      const bytes = await readDataFile(
-        context,
+      const bytes: Uint8Array | null = await context.dataRepository.getContent(
         typeStr,
         step.modelId,
         handle.name,
