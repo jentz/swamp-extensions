@@ -777,10 +777,16 @@ export function checkNoOverbroadAllow(b: BucketBundle): Finding {
     });
   }
   if (b.policyError && !b.policy?.PolicyDocument) {
+    // Lookup failure is an infrastructure issue, not a bucket finding.
+    // SKIP rather than FAIL so a bucket whose policy lookup failed
+    // doesn't produce a duplicate tripper alongside bucket-tls-only-policy
+    // (which correctly FAILs the same bucket — absence of a TLS-only Deny
+    // IS a posture finding; this rule asks the opposite question, where
+    // "couldn't verify" is genuinely unknown rather than overbroad).
     return makeFinding({
       id,
       severity,
-      status: "fail",
+      status: "skip",
       bucket: b.name,
       actual: { policy: null, error: b.policyError },
       expected: {
@@ -788,7 +794,7 @@ export function checkNoOverbroadAllow(b: BucketBundle): Finding {
           "No Allow with Principal:* and Action:s3:* on bucket+bucket/* without a narrowing Condition.",
       },
       message:
-        "No bucket policy attached or policy lookup failed; cannot confirm absence of overbroad Allow statements.",
+        "Bucket-policy lookup failed; cannot evaluate overbroad-Allow statements.",
     });
   }
   const raw = b.policy?.PolicyDocument;

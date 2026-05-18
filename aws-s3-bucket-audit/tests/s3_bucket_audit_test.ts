@@ -1334,6 +1334,37 @@ Deno.test(
 );
 
 Deno.test(
+  "checkNoOverbroadAllow: SKIP when policy lookup step failed (policyError, no PolicyDocument)",
+  () => {
+    // bucket-tls-only-policy already FAILs the same bucket (correctly --
+    // absence of a TLS-only Deny is a posture finding). This rule asks
+    // the opposite question, so a failed lookup is "unknown", not a
+    // finding. SKIP eliminates the duplicate-tripper noise that would
+    // otherwise appear in the trippers list and the gate.sh output.
+    const b: BucketBundle = {
+      name: "policy-lookup-failed",
+      policyError: "bucket-policy lookup step failed",
+    };
+    const f = checkNoOverbroadAllow(b);
+    assertEquals(f.status, "skip");
+    assert(f.message.includes("lookup failed"));
+  },
+);
+
+// Sister assertion: the existing tls-only-policy behavior on the same
+// bundle stays unchanged (FAIL). This pins the asymmetry as deliberate.
+Deno.test(
+  "checkTLSOnlyPolicy: still FAILs on policyError (pinned vs the no-overbroad-allow SKIP)",
+  () => {
+    const b: BucketBundle = {
+      name: "policy-lookup-failed",
+      policyError: "bucket-policy lookup step failed",
+    };
+    assertEquals(checkTLSOnlyPolicy(b).status, "fail");
+  },
+);
+
+Deno.test(
   "checkNoOverbroadAllow: SKIP on unparseable string PolicyDocument",
   () => {
     const b: BucketBundle = {
