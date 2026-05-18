@@ -18,7 +18,7 @@ jobs:
         with:
           deno-version: v2.x
       - run: deno fmt --check '--ignore=.swamp.yaml,.swamp/,.swamp-sources.yaml,LICENSE.md,*/LICENSE.md,AGENTS.md,CLAUDE.md'
-      - run: deno lint --ignore=.swamp/
+      - run: deno lint --ignore=.swamp/,.opencode/
       - name: test
         run: |
           deno test \
