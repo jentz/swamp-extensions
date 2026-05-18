@@ -149,4 +149,13 @@ vite.config.ts.timestamp-*
 
 # Local extension sources (developer-specific, not shared)
 .swamp-sources.yaml
+
+# Agent skills (managed by swamp)
+.agents/skills/
+
+# Claude Code configuration (managed by swamp)
+.claude/worktrees/
+.claude/settings.local.json
+.claude/scheduled_tasks.lock
+.claude/scheduled_tasks.json
 # END swamp managed section
