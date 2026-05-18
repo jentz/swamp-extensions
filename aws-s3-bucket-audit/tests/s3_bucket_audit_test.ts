@@ -18,6 +18,7 @@ import {
   checkOwnershipEnforced,
   checkPublicAccessBlock,
   checkServerAccessLogging,
+  checkTLSMinVersion12,
   checkTLSOnlyPolicy,
   checkVersioning,
   findGateTrippers,
@@ -25,6 +26,7 @@ import {
   parseFailOnThreshold,
   type PolicyStatement,
   report,
+  statementDeniesBelowTls12,
   statementDeniesInsecureTransport,
 } from "../s3_bucket_audit.ts";
 
@@ -779,6 +781,267 @@ Deno.test(
 );
 
 // ---------------------------------------------------------------------------
+// Rule — bucket-tls-min-version-1.2 (warn)
+// ---------------------------------------------------------------------------
+
+/**
+ * clean-bucket-with-tls12 — bucket policy with both the canonical TLS-only
+ * Deny AND a separate NumericLessThan Deny on s3:TlsVersion. Mirrors what
+ * a fully-hardened bucket policy looks like; both rules pass.
+ */
+const cleanBucketWithTls12Policy = {
+  Bucket: "tls12-bucket",
+  PolicyDocument: {
+    Version: "2012-10-17",
+    Statement: [
+      {
+        Sid: "DenyInsecureTransport",
+        Effect: "Deny",
+        Principal: "*",
+        Action: "s3:*",
+        Resource: [
+          "arn:aws:s3:::tls12-bucket",
+          "arn:aws:s3:::tls12-bucket/*",
+        ],
+        Condition: { Bool: { "aws:SecureTransport": "false" } },
+      },
+      {
+        Sid: "DenyBelowTls12",
+        Effect: "Deny",
+        Principal: "*",
+        Action: "s3:*",
+        Resource: [
+          "arn:aws:s3:::tls12-bucket",
+          "arn:aws:s3:::tls12-bucket/*",
+        ],
+        Condition: { NumericLessThan: { "s3:TlsVersion": "1.2" } },
+      },
+    ],
+  },
+};
+
+Deno.test("checkTLSMinVersion12: PASS with NumericLessThan 1.2", () => {
+  const b = statePolicy(
+    { BucketName: "tls12-bucket" },
+    cleanBucketWithTls12Policy,
+  );
+  const f = checkTLSMinVersion12(b);
+  assertEquals(f.id, "bucket-tls-min-version-1.2");
+  assertEquals(f.severity, "warn");
+  assertEquals(f.status, "pass");
+});
+
+Deno.test("checkTLSMinVersion12: PASS with NumericLessThanIfExists 1.2", () => {
+  const b = statePolicy(
+    { BucketName: "ifexists-bucket" },
+    {
+      Bucket: "ifexists-bucket",
+      PolicyDocument: {
+        Statement: [
+          {
+            Effect: "Deny",
+            Principal: "*",
+            Action: "s3:*",
+            Resource: [
+              "arn:aws:s3:::ifexists-bucket",
+              "arn:aws:s3:::ifexists-bucket/*",
+            ],
+            Condition: {
+              NumericLessThanIfExists: { "s3:TlsVersion": "1.2" },
+            },
+          },
+        ],
+      },
+    },
+  );
+  assertEquals(checkTLSMinVersion12(b).status, "pass");
+});
+
+Deno.test("checkTLSMinVersion12: PASS when configured TLS floor is 1.3", () => {
+  // A NumericLessThan 1.3 Deny enforces a higher floor than 1.2 and so
+  // still satisfies the rule's >= 1.2 requirement.
+  const b = statePolicy(
+    { BucketName: "tls13-bucket" },
+    {
+      Bucket: "tls13-bucket",
+      PolicyDocument: {
+        Statement: [
+          {
+            Effect: "Deny",
+            Principal: "*",
+            Action: "s3:*",
+            Resource: [
+              "arn:aws:s3:::tls13-bucket",
+              "arn:aws:s3:::tls13-bucket/*",
+            ],
+            Condition: { NumericLessThan: { "s3:TlsVersion": "1.3" } },
+          },
+        ],
+      },
+    },
+  );
+  assertEquals(checkTLSMinVersion12(b).status, "pass");
+});
+
+Deno.test(
+  "checkTLSMinVersion12: PASS when condition key is mixed-case 's3:tlsversion'",
+  () => {
+    // IAM condition keys are case-insensitive, mirroring the existing
+    // aws:SecureTransport handling.
+    const b = statePolicy(
+      { BucketName: "mixed-case-key" },
+      {
+        Bucket: "mixed-case-key",
+        PolicyDocument: {
+          Statement: [
+            {
+              Effect: "Deny",
+              Principal: "*",
+              Action: "s3:*",
+              Resource: [
+                "arn:aws:s3:::mixed-case-key",
+                "arn:aws:s3:::mixed-case-key/*",
+              ],
+              Condition: { NumericLessThan: { "s3:tlsversion": "1.2" } },
+            },
+          ],
+        },
+      },
+    );
+    assertEquals(checkTLSMinVersion12(b).status, "pass");
+  },
+);
+
+Deno.test(
+  "checkTLSMinVersion12: WARN when only the generic TLS Deny is present (no min-version Deny)",
+  () => {
+    // cleanBundle has a TLS-only Deny but no s3:TlsVersion Deny.
+    // bucket-tls-only-policy passes; bucket-tls-min-version-1.2 must warn.
+    const f = checkTLSMinVersion12(cleanBundle());
+    assertEquals(f.status, "warn");
+  },
+);
+
+Deno.test("checkTLSMinVersion12: WARN when min-version floor is 1.0", () => {
+  const b = statePolicy(
+    { BucketName: "tls10-bucket" },
+    {
+      Bucket: "tls10-bucket",
+      PolicyDocument: {
+        Statement: [
+          {
+            Effect: "Deny",
+            Principal: "*",
+            Action: "s3:*",
+            Resource: [
+              "arn:aws:s3:::tls10-bucket",
+              "arn:aws:s3:::tls10-bucket/*",
+            ],
+            Condition: { NumericLessThan: { "s3:TlsVersion": "1.0" } },
+          },
+        ],
+      },
+    },
+  );
+  assertEquals(checkTLSMinVersion12(b).status, "warn");
+});
+
+Deno.test(
+  "checkTLSMinVersion12: SKIP when no policy lookup step (no policy, no policyError)",
+  () => {
+    const f = checkTLSMinVersion12(noPolicyBundle());
+    assertEquals(f.status, "skip");
+    assert(f.message.includes("@swamp/aws/s3/bucket-policy"));
+  },
+);
+
+Deno.test(
+  "checkTLSMinVersion12: SKIP on unparseable string PolicyDocument",
+  () => {
+    const b: BucketBundle = {
+      name: "bad-json-tls12",
+      state: cleanBucketState as unknown as BucketBundle["state"],
+      policy: {
+        Bucket: "bad-json-tls12",
+        PolicyDocument: "NOT VALID JSON {{{",
+      } as unknown as BucketBundle["policy"],
+    };
+    assertEquals(checkTLSMinVersion12(b).status, "skip");
+  },
+);
+
+// Regression: the existing TLS-only rule must continue to PASS on cleanBundle
+// after the new rule lands. cleanBundle's policy has the canonical TLS Deny
+// but no s3:TlsVersion Deny, so the two rules diverge — guard against any
+// accidental coupling between them.
+Deno.test(
+  "checkTLSOnlyPolicy: still PASSES on cleanBundle after adding checkTLSMinVersion12",
+  () => {
+    assertEquals(checkTLSOnlyPolicy(cleanBundle()).status, "pass");
+  },
+);
+
+// --- statementDeniesBelowTls12 unit tests ---
+
+Deno.test(
+  "statementDeniesBelowTls12: true for canonical NumericLessThan 1.2",
+  () => {
+    const stmt: PolicyStatement = {
+      Effect: "Deny",
+      Principal: "*",
+      Action: "s3:*",
+      Resource: [
+        "arn:aws:s3:::my-bucket",
+        "arn:aws:s3:::my-bucket/*",
+      ],
+      Condition: { NumericLessThan: { "s3:TlsVersion": "1.2" } },
+    };
+    assert(statementDeniesBelowTls12(stmt, "my-bucket"));
+  },
+);
+
+Deno.test(
+  "statementDeniesBelowTls12: true when value is numeric (not string)",
+  () => {
+    const stmt: PolicyStatement = {
+      Effect: "Deny",
+      Principal: "*",
+      Action: "s3:*",
+      Resource: ["arn:aws:s3:::b", "arn:aws:s3:::b/*"],
+      Condition: {
+        NumericLessThan: { "s3:TlsVersion": 1.2 as unknown as string },
+      },
+    };
+    assert(statementDeniesBelowTls12(stmt, "b"));
+  },
+);
+
+Deno.test("statementDeniesBelowTls12: false when Effect is Allow", () => {
+  const stmt: PolicyStatement = {
+    Effect: "Allow",
+    Principal: "*",
+    Action: "s3:*",
+    Resource: ["arn:aws:s3:::b", "arn:aws:s3:::b/*"],
+    Condition: { NumericLessThan: { "s3:TlsVersion": "1.2" } },
+  };
+  assert(!statementDeniesBelowTls12(stmt, "b"));
+});
+
+Deno.test(
+  "statementDeniesBelowTls12: false when operator is Bool (wrong operator type)",
+  () => {
+    const stmt: PolicyStatement = {
+      Effect: "Deny",
+      Principal: "*",
+      Action: "s3:*",
+      Resource: ["arn:aws:s3:::b", "arn:aws:s3:::b/*"],
+      Condition: { Bool: { "s3:TlsVersion": "1.2" } },
+    };
+    assert(!statementDeniesBelowTls12(stmt, "b"));
+  },
+);
+
+// ---------------------------------------------------------------------------
 // Rule 6 — bucket-lifecycle-expires-noncurrent-versions
 // ---------------------------------------------------------------------------
 
@@ -1487,6 +1750,63 @@ Deno.test("collectBundles: succeeded step with schema-mismatched data surfaces v
   assertEquals(versioning.status, "skip");
   assert(versioning.message.includes("did not match expected shape"));
 });
+
+Deno.test(
+  "report.execute does not throw on unparseable PolicyDocument; emits skip findings for TLS rules",
+  async () => {
+    // Locks in the post-swamp#1394 skip-not-throw policy: a malformed
+    // PolicyDocument must surface as per-rule skip findings, not collapse
+    // into swamp's generic error fallback artifact.
+    const stateJson = JSON.stringify({ BucketName: "bad-policy-bucket" });
+    const policyJson = JSON.stringify({
+      Bucket: "bad-policy-bucket",
+      PolicyDocument: "NOT VALID JSON {{{",
+    });
+    const out = await runReport(
+      [
+        ["@swamp/aws/s3/bucket", "audit-state", "default", 1, stateJson],
+        [
+          "@swamp/aws/s3/bucket-policy",
+          "audit-policy",
+          "default",
+          1,
+          policyJson,
+        ],
+      ],
+      [
+        {
+          jobName: "lookup",
+          stepName: "bucket-state",
+          modelType: "@swamp/aws/s3/bucket",
+          modelId: "audit-state",
+          status: "succeeded",
+          methodArgs: { identifier: "bad-policy-bucket" },
+          dataHandles: [{ name: "default", version: 1 }],
+        },
+        {
+          jobName: "lookup",
+          stepName: "bucket-policy",
+          modelType: "@swamp/aws/s3/bucket-policy",
+          modelId: "audit-policy",
+          status: "succeeded",
+          methodArgs: { identifier: "bad-policy-bucket" },
+          dataHandles: [{ name: "default", version: 1 }],
+        },
+      ],
+    );
+    const j = out.json;
+    assertEquals(j.summary.buckets, 1);
+    assertEquals(j.buckets[0].name, "bad-policy-bucket");
+    const tlsOnly = j.findings.find((f) => f.id === "bucket-tls-only-policy");
+    const tlsMinVersion = j.findings.find((f) =>
+      f.id === "bucket-tls-min-version-1.2"
+    );
+    assertExists(tlsOnly);
+    assertExists(tlsMinVersion);
+    assertEquals(tlsOnly.status, "skip");
+    assertEquals(tlsMinVersion.status, "skip");
+  },
+);
 
 Deno.test("checkTLSOnlyPolicy: bucket name with dots is matched literally (regex escape)", () => {
   // S3 bucket names allow dots (`my.bucket.example`). The regex must
