@@ -22,6 +22,7 @@ import {
   checkTLSMinVersion12,
   checkTLSOnlyPolicy,
   checkVersioning,
+  escapeMarkdownTableCell,
   findGateTrippers,
   inventoryTags,
   parseFailOnThreshold,
@@ -2149,7 +2150,7 @@ Deno.test(
   },
 );
 
-Deno.test("checkTLSOnlyPolicy: bucket name with dots is matched literally (regex escape)", () => {
+Deno.test("checkTLSOnlyPolicy: bucket name with dots is matched literally", () => {
   // S3 bucket names allow dots (`my.bucket.example`). The regex must
   // treat them as literal characters, not "any char". Wrong-bucket ARNs
   // must still fail.
@@ -2198,4 +2199,13 @@ Deno.test("checkTLSOnlyPolicy: bucket name with dots is matched literally (regex
     },
   );
   assertEquals(checkTLSOnlyPolicy(wrongBucket).status, "fail");
+});
+
+Deno.test("escapeMarkdownTableCell escapes backslashes and pipes, and flattens newlines", () => {
+  const raw = "path\\to\\file | literal \\| pipe\nnext line\r\nend";
+  const rendered = escapeMarkdownTableCell(raw);
+  assertEquals(
+    rendered,
+    "path\\\\to\\\\file \\| literal \\\\\\| pipe next line end",
+  );
 });

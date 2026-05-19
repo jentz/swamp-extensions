@@ -67,6 +67,8 @@ const VALID_SSE_ALGORITHMS: readonly string[] = [
   "aws:kms:dsse",
 ];
 
+const AWS_PARTITIONS = ["aws", "aws-cn", "aws-us-gov"] as const;
+
 const BucketStateSchema = z.object({
   BucketName: z.string(),
 }).passthrough();
@@ -449,21 +451,18 @@ function resourceCoversBucket(
   bucketName: string,
 ): boolean {
   if (resource === undefined) return false;
-  const resources = Array.isArray(resource) ? resource : [resource];
+  const resources = new Set(
+    (Array.isArray(resource) ? resource : [resource]).filter((r): r is string =>
+      typeof r === "string"
+    ),
+  );
   // Bare wildcard covers everything.
-  if (resources.includes("*")) return true;
-  // Bucket names allow dots and dashes; escape them so they're literal in
-  // the regex (cheap; both are valid S3 name chars).
-  const escapedName = bucketName.replace(/[.\-]/g, "\\$&");
-  const rootRe = new RegExp(`^arn:aws[^:]*:s3:::${escapedName}$`);
-  const contentRe = new RegExp(`^arn:aws[^:]*:s3:::${escapedName}/\\*$`);
-  const hasRoot = resources.some((r) =>
-    typeof r === "string" && rootRe.test(r)
-  );
-  const hasContent = resources.some((r) =>
-    typeof r === "string" && contentRe.test(r)
-  );
-  return hasRoot && hasContent;
+  if (resources.has("*")) return true;
+  return AWS_PARTITIONS.some((partition) => {
+    const rootArn = `arn:${partition}:s3:::${bucketName}`;
+    const contentArn = `arn:${partition}:s3:::${bucketName}/*`;
+    return resources.has(rootArn) && resources.has(contentArn);
+  });
 }
 
 /**
@@ -1104,6 +1103,16 @@ function statusGlyph(status: Status): string {
   }
 }
 
+/** Escape markdown table cell content without relying on partial string replacement. */
+export function escapeMarkdownTableCell(value: string): string {
+  return value
+    .replaceAll("\\", "\\\\")
+    .replaceAll("|", "\\|")
+    .replaceAll("\r\n", " ")
+    .replaceAll("\n", " ")
+    .replaceAll("\r", " ");
+}
+
 function renderMarkdown(
   workflowName: string,
   buckets: Array<{ name: string; findings: Finding[] }>,
@@ -1133,7 +1142,7 @@ function renderMarkdown(
     lines.push("| Check | Severity | Status | Message |");
     lines.push("| --- | --- | --- | --- |");
     for (const f of b.findings) {
-      const msg = f.message.replace(/\|/g, "\\|");
+      const msg = escapeMarkdownTableCell(f.message);
       lines.push(
         `| ${f.id} | ${f.severity} | ${statusGlyph(f.status)} | ${msg} |`,
       );
