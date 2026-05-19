@@ -83,25 +83,17 @@ export interface BucketState {
   [key: string]: unknown;
 }
 
-// CloudControl returns `PolicyDocument` as a parsed object (despite the
-// upstream @swamp/aws/s3 schema declaring it `z.string()`), so we accept
-// either shape and normalize to a string in `checkTLSOnlyPolicy`.
 const BucketPolicyStateSchema = z.object({
   Bucket: z.string(),
-  PolicyDocument: z.union([z.string(), z.record(z.string(), z.unknown())])
-    .optional(),
+  PolicyDocument: z.record(z.string(), z.unknown()).optional(),
 }).passthrough();
 
-/**
- * Shape of an `@swamp/aws/s3/bucket-policy.get` data record. `PolicyDocument`
- * may arrive as a JSON string (legacy upstream behavior) or a parsed object
- * (CloudControl); the TLS-policy check normalizes both.
- */
+/** Shape of an `@swamp/aws/s3/bucket-policy.get` data record. */
 export interface BucketPolicyState {
   /** Bucket the policy is attached to. */
   Bucket: string;
-  /** Policy document as JSON string (legacy upstream) or parsed object (CloudControl). */
-  PolicyDocument?: string | Record<string, unknown>;
+  /** Policy document as returned by CloudControl (always a parsed object). */
+  PolicyDocument?: Record<string, unknown>;
   /** Any additional CloudControl fields. */
   [key: string]: unknown;
 }
@@ -686,7 +678,7 @@ export function checkTLSOnlyPolicy(b: BucketBundle): Finding {
     });
   }
   const raw = b.policy?.PolicyDocument;
-  if (raw === undefined || raw === null || raw === "") {
+  if (raw === undefined || raw === null) {
     return makeFinding({
       id,
       severity,
@@ -700,27 +692,7 @@ export function checkTLSOnlyPolicy(b: BucketBundle): Finding {
       message: "No bucket policy attached; TLS-only access cannot be enforced.",
     });
   }
-  let doc: { Statement?: PolicyStatement | PolicyStatement[] };
-  if (typeof raw === "string") {
-    try {
-      doc = JSON.parse(raw);
-    } catch {
-      return makeFinding({
-        id,
-        severity,
-        status: "skip",
-        bucket: b.name,
-        actual: { policy: "<unparseable>" },
-        expected: {
-          statement:
-            "Deny on aws:SecureTransport=false (TLS-only access enforced).",
-        },
-        message: "Bucket policy is not valid JSON; cannot evaluate.",
-      });
-    }
-  } else {
-    doc = raw as { Statement?: PolicyStatement | PolicyStatement[] };
-  }
+  const doc = raw as { Statement?: PolicyStatement | PolicyStatement[] };
   const stmts = Array.isArray(doc.Statement)
     ? doc.Statement
     : doc.Statement
@@ -755,8 +727,7 @@ export function checkTLSOnlyPolicy(b: BucketBundle): Finding {
  * that audit gap.
  *
  * SKIP/FAIL branching mirrors {@link checkTLSOnlyPolicy} for missing
- * policy data and unparseable PolicyDocument; only the per-statement
- * predicate differs.
+ * policy data; only the per-statement predicate differs.
  */
 export function checkNoOverbroadAllow(b: BucketBundle): Finding {
   const id = "bucket-no-overbroad-allow";
@@ -798,7 +769,7 @@ export function checkNoOverbroadAllow(b: BucketBundle): Finding {
     });
   }
   const raw = b.policy?.PolicyDocument;
-  if (raw === undefined || raw === null || raw === "") {
+  if (raw === undefined || raw === null) {
     // No PolicyDocument means no overbroad Allow can exist on this bucket.
     // bucket-tls-only-policy already FAILs the bucket for missing TLS
     // enforcement; this rule's job is narrower and PASSes cleanly.
@@ -815,27 +786,7 @@ export function checkNoOverbroadAllow(b: BucketBundle): Finding {
       message: "No bucket policy attached; no overbroad Allow possible.",
     });
   }
-  let doc: { Statement?: PolicyStatement | PolicyStatement[] };
-  if (typeof raw === "string") {
-    try {
-      doc = JSON.parse(raw);
-    } catch {
-      return makeFinding({
-        id,
-        severity,
-        status: "skip",
-        bucket: b.name,
-        actual: { policy: "<unparseable>" },
-        expected: {
-          statement:
-            "No Allow with Principal:* and Action:s3:* on bucket+bucket/* without a narrowing Condition.",
-        },
-        message: "Bucket policy is not valid JSON; cannot evaluate.",
-      });
-    }
-  } else {
-    doc = raw as { Statement?: PolicyStatement | PolicyStatement[] };
-  }
+  const doc = raw as { Statement?: PolicyStatement | PolicyStatement[] };
   const stmts = Array.isArray(doc.Statement)
     ? doc.Statement
     : doc.Statement
@@ -914,7 +865,7 @@ export function checkTLSMinVersion12(b: BucketBundle): Finding {
     });
   }
   const raw = b.policy?.PolicyDocument;
-  if (raw === undefined || raw === null || raw === "") {
+  if (raw === undefined || raw === null) {
     return makeFinding({
       id,
       severity,
@@ -929,27 +880,7 @@ export function checkTLSMinVersion12(b: BucketBundle): Finding {
         "No bucket policy attached; minimum TLS version cannot be enforced.",
     });
   }
-  let doc: { Statement?: PolicyStatement | PolicyStatement[] };
-  if (typeof raw === "string") {
-    try {
-      doc = JSON.parse(raw);
-    } catch {
-      return makeFinding({
-        id,
-        severity,
-        status: "skip",
-        bucket: b.name,
-        actual: { policy: "<unparseable>" },
-        expected: {
-          statement:
-            "Deny on s3:TlsVersion < 1.2 (NumericLessThan or NumericLessThanIfExists, value >= 1.2).",
-        },
-        message: "Bucket policy is not valid JSON; cannot evaluate.",
-      });
-    }
-  } else {
-    doc = raw as { Statement?: PolicyStatement | PolicyStatement[] };
-  }
+  const doc = raw as { Statement?: PolicyStatement | PolicyStatement[] };
   const stmts = Array.isArray(doc.Statement)
     ? doc.Statement
     : doc.Statement
