@@ -378,7 +378,7 @@ Deno.test("checkOwnershipEnforced: SKIP when state missing", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Rule 5 — bucket-tls-only-policy (including PolicyDocument union-schema tests)
+// Rule 5 — bucket-tls-only-policy
 // ---------------------------------------------------------------------------
 
 Deno.test(
@@ -394,48 +394,6 @@ Deno.test(
   "checkTLSOnlyPolicy: PASS with object-form PolicyDocument (noncompliant fixture — multi-statement)",
   () => {
     assertEquals(checkTLSOnlyPolicy(noncompliantBundle()).status, "pass");
-  },
-);
-
-Deno.test(
-  "checkTLSOnlyPolicy: PASS with string-form PolicyDocument (same content as clean-bucket)",
-  () => {
-    // Serialize the policy document to a JSON string — simulates the original
-    // upstream CloudControl behavior where PolicyDocument arrives as a string.
-    const stringFormPolicy = {
-      Bucket: cleanBucketState.BucketName,
-      PolicyDocument: JSON.stringify(cleanBucketPolicy.PolicyDocument),
-    };
-    const b: BucketBundle = {
-      name: cleanBucketState.BucketName,
-      state: cleanBucketState as unknown as BucketBundle["state"],
-      policy: stringFormPolicy as unknown as BucketBundle["policy"],
-    };
-    assertEquals(checkTLSOnlyPolicy(b).status, "pass");
-  },
-);
-
-Deno.test(
-  "checkTLSOnlyPolicy: identical findings for string vs object PolicyDocument",
-  () => {
-    const objectBundle: BucketBundle = {
-      name: cleanBucketState.BucketName,
-      state: cleanBucketState as unknown as BucketBundle["state"],
-      policy: cleanBucketPolicy as unknown as BucketBundle["policy"],
-    };
-    const stringBundle: BucketBundle = {
-      name: cleanBucketState.BucketName,
-      state: cleanBucketState as unknown as BucketBundle["state"],
-      policy: {
-        Bucket: cleanBucketState.BucketName,
-        PolicyDocument: JSON.stringify(cleanBucketPolicy.PolicyDocument),
-      } as unknown as BucketBundle["policy"],
-    };
-    const fo = checkTLSOnlyPolicy(objectBundle);
-    const fs = checkTLSOnlyPolicy(stringBundle);
-    assertEquals(fo.status, fs.status);
-    assertEquals(fo.id, fs.id);
-    assertEquals(fo.severity, fs.severity);
   },
 );
 
@@ -467,30 +425,6 @@ Deno.test(
     assertEquals(checkTLSOnlyPolicy(b).status, "fail");
   },
 );
-
-Deno.test("checkTLSOnlyPolicy: FAIL when PolicyDocument is empty string", () => {
-  const b: BucketBundle = {
-    name: "empty-policy",
-    state: cleanBucketState as unknown as BucketBundle["state"],
-    policy: {
-      Bucket: "empty-policy",
-      PolicyDocument: "",
-    } as unknown as BucketBundle["policy"],
-  };
-  assertEquals(checkTLSOnlyPolicy(b).status, "fail");
-});
-
-Deno.test("checkTLSOnlyPolicy: SKIP on unparseable string PolicyDocument", () => {
-  const b: BucketBundle = {
-    name: "bad-json",
-    state: cleanBucketState as unknown as BucketBundle["state"],
-    policy: {
-      Bucket: "bad-json",
-      PolicyDocument: "NOT VALID JSON {{{",
-    } as unknown as BucketBundle["policy"],
-  };
-  assertEquals(checkTLSOnlyPolicy(b).status, "skip");
-});
 
 Deno.test("checkTLSOnlyPolicy: FAIL on empty Statement array", () => {
   const b: BucketBundle = {
@@ -957,21 +891,6 @@ Deno.test(
   },
 );
 
-Deno.test(
-  "checkTLSMinVersion12: SKIP on unparseable string PolicyDocument",
-  () => {
-    const b: BucketBundle = {
-      name: "bad-json-tls12",
-      state: cleanBucketState as unknown as BucketBundle["state"],
-      policy: {
-        Bucket: "bad-json-tls12",
-        PolicyDocument: "NOT VALID JSON {{{",
-      } as unknown as BucketBundle["policy"],
-    };
-    assertEquals(checkTLSMinVersion12(b).status, "skip");
-  },
-);
-
 // Regression: the existing TLS-only rule must continue to PASS on cleanBundle
 // after the new rule lands. cleanBundle's policy has the canonical TLS Deny
 // but no s3:TlsVersion Deny, so the two rules diverge — guard against any
@@ -1365,22 +1284,7 @@ Deno.test(
 );
 
 Deno.test(
-  "checkNoOverbroadAllow: SKIP on unparseable string PolicyDocument",
-  () => {
-    const b: BucketBundle = {
-      name: "bad-json-overbroad",
-      state: cleanBucketState as unknown as BucketBundle["state"],
-      policy: {
-        Bucket: "bad-json-overbroad",
-        PolicyDocument: "NOT VALID JSON {{{",
-      } as unknown as BucketBundle["policy"],
-    };
-    assertEquals(checkNoOverbroadAllow(b).status, "skip");
-  },
-);
-
-Deno.test(
-  "checkNoOverbroadAllow: PASS when PolicyDocument is empty (no Allow can exist)",
+  "checkNoOverbroadAllow: PASS when PolicyDocument is absent (no Allow can exist)",
   () => {
     // No PolicyDocument at all means no overbroad Allow can be present.
     // bucket-tls-only-policy FAILs the bucket for this case; this rule
@@ -2183,11 +2087,12 @@ Deno.test("collectBundles: succeeded step with schema-mismatched data surfaces v
 });
 
 Deno.test(
-  "report.execute does not throw on unparseable PolicyDocument; emits skip findings for TLS rules",
+  "report.execute does not throw on malformed bucket-policy data; emits per-rule findings",
   async () => {
-    // Locks in the post-swamp#1394 skip-not-throw policy: a malformed
-    // PolicyDocument must surface as per-rule skip findings, not collapse
-    // into swamp's generic error fallback artifact.
+    // Locks in the post-swamp#1394 non-throw invariant for malformed
+    // bucket-policy data: collectBundles records the schema mismatch as a
+    // policyError and each rule surfaces its own finding instead of the
+    // report collapsing into swamp's generic error fallback artifact.
     const stateJson = JSON.stringify({ BucketName: "bad-policy-bucket" });
     const policyJson = JSON.stringify({
       Bucket: "bad-policy-bucket",
@@ -2229,13 +2134,18 @@ Deno.test(
     assertEquals(j.summary.buckets, 1);
     assertEquals(j.buckets[0].name, "bad-policy-bucket");
     const tlsOnly = j.findings.find((f) => f.id === "bucket-tls-only-policy");
+    const noOverbroad = j.findings.find((f) =>
+      f.id === "bucket-no-overbroad-allow"
+    );
     const tlsMinVersion = j.findings.find((f) =>
       f.id === "bucket-tls-min-version-1.2"
     );
     assertExists(tlsOnly);
+    assertExists(noOverbroad);
     assertExists(tlsMinVersion);
-    assertEquals(tlsOnly.status, "skip");
-    assertEquals(tlsMinVersion.status, "skip");
+    assertEquals(tlsOnly.status, "fail");
+    assertEquals(noOverbroad.status, "skip");
+    assertEquals(tlsMinVersion.status, "warn");
   },
 );
 
