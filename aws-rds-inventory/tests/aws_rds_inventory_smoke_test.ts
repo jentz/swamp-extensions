@@ -98,7 +98,7 @@ async function runWithFixture(
   const logger = {
     info: (msg: string) => logs.push({ level: "info", message: msg }),
     debug: (msg: string) => logs.push({ level: "debug", message: msg }),
-    warning: (msg: string) => logs.push({ level: "warning", message: msg }),
+    warn: (msg: string) => logs.push({ level: "warn", message: msg }),
     error: (msg: string) => logs.push({ level: "error", message: msg }),
   };
 
@@ -255,7 +255,7 @@ Deno.test("smoke: a selector that throws on parse fails before any AWS call", as
     logger: {
       info: () => {},
       debug: () => {},
-      warning: () => {},
+      warn: () => {},
       error: () => {},
     },
     createCelEnvironment: makeCelEnvironment,
@@ -285,4 +285,105 @@ Deno.test("smoke: every test finishes in under 5 seconds", () => {
   // per-test 5s threshold should still hold; if it doesn't, push the new
   // test out of the smoke harness.
   assert(true);
+});
+
+Deno.test("smoke: collectInstances stops paginating once every wanted id is found", async () => {
+  // DescribeDBInstances pagination is unbounded for accounts with many
+  // standalone instances. The inventory only ever wants the cluster
+  // members' identifiers, so once those are all collected we should stop
+  // hitting the API. Build a fixture cluster whose two members live on
+  // page one and let pages two and three carry unrelated standalone
+  // instances — the second/third pages must never be requested.
+  const clusterMembers = [
+    { DBInstanceIdentifier: "wanted-1", IsClusterWriter: true },
+    { DBInstanceIdentifier: "wanted-2", IsClusterWriter: false },
+  ];
+  const fixture: Fixture = {
+    description: "multi-page-shortcircuit",
+    clusters: [{
+      DBClusterIdentifier: "cluster-shortcircuit",
+      Engine: "aurora-mysql",
+      Status: "available",
+      DBClusterMembers: clusterMembers,
+    }],
+    instances: [],
+  };
+
+  const instancePages: Array<{ DBInstances: unknown[]; Marker?: string }> = [
+    {
+      DBInstances: [
+        { DBInstanceIdentifier: "wanted-1", DBInstanceClass: "db.r7g.large" },
+        { DBInstanceIdentifier: "wanted-2", DBInstanceClass: "db.r8g.large" },
+      ],
+      Marker: "page-2",
+    },
+    {
+      DBInstances: [
+        {
+          DBInstanceIdentifier: "unrelated-a",
+          DBInstanceClass: "db.t4g.medium",
+        },
+      ],
+      Marker: "page-3",
+    },
+    {
+      DBInstances: [
+        {
+          DBInstanceIdentifier: "unrelated-b",
+          DBInstanceClass: "db.t4g.medium",
+        },
+      ],
+    },
+  ];
+
+  let clustersCalls = 0;
+  let instancesCalls = 0;
+  const api: RdsApi = {
+    describeDBClusters: () => {
+      clustersCalls++;
+      return Promise.resolve({
+        DBClusters: fixture.clusters as AwsCluster[],
+      });
+    },
+    describeDBInstances: (marker?: string) => {
+      instancesCalls++;
+      // marker semantics: first call has marker=undefined → page 0; subsequent
+      // calls pass back whatever Marker the previous page returned.
+      const idx = marker === undefined
+        ? 0
+        : instancePages.findIndex((_p, i) =>
+          i > 0 && instancePages[i - 1].Marker === marker
+        );
+      const page = instancePages[idx];
+      return Promise.resolve({
+        DBInstances: page.DBInstances as AwsInstance[],
+        Marker: page.Marker,
+      });
+    },
+  };
+
+  const result = await runListClusters({
+    api,
+    context: {
+      globalArgs: { region: "eu-west-1" },
+      logger: {
+        info: () => {},
+        debug: () => {},
+        warn: () => {},
+        error: () => {},
+      },
+      createCelEnvironment: makeCelEnvironment,
+      writeResource: (spec: string, key: string, data: unknown) =>
+        Promise.resolve({ id: `${spec}:${key}`, data }),
+    },
+  });
+
+  assertEquals(result.dataHandles.length, 3); // 1 cluster + 2 instances
+  assertEquals(clustersCalls, 1);
+  assertEquals(
+    instancesCalls,
+    1,
+    "DescribeDBInstances must short-circuit after page 1 — both wanted ids " +
+      "are present, so pages 2 and 3 are unnecessary work",
+  );
 });

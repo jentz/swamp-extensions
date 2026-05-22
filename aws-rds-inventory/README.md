@@ -152,15 +152,15 @@ The resolved region is logged at `info` level on every run.
 
 For each cluster, the selector sees an object with these fields:
 
-| Field                 | Type                 | Notes                                                                             |
-| --------------------- | -------------------- | --------------------------------------------------------------------------------- |
-| `DBClusterIdentifier` | `string`             | Cluster name from AWS.                                                            |
-| `Engine`              | `string`             | e.g. `aurora-mysql`, `aurora-postgresql`, `mysql`, `postgres`, `mariadb`.         |
-| `EngineVersion`       | `string?`            | Optional — may be absent on some failed states.                                   |
-| `Status`              | `string?`            | e.g. `available`, `creating`.                                                     |
-| `MultiAZ`             | `boolean?`           | True for Multi-AZ DB clusters.                                                    |
-| `members`             | array of objects     | One element per cluster member; see fields below.                                 |
-| `tags`                | `map<string,string>` | Cluster-level tags, converted from AWS's `[{Key,Value},...]` array to a flat map. |
+| Field                 | Type                 | Notes                                                                                       |
+| --------------------- | -------------------- | ------------------------------------------------------------------------------------------- |
+| `DBClusterIdentifier` | `string`             | Cluster name from AWS.                                                                      |
+| `Engine`              | `string`             | e.g. `aurora-mysql`, `aurora-postgresql`, `mysql`, `postgres`, `mariadb`. Empty if missing. |
+| `EngineVersion`       | `string`             | Empty string if AWS omitted it; never `undefined`.                                          |
+| `Status`              | `string`             | e.g. `available`, `creating`. Empty string if missing.                                      |
+| `MultiAZ`             | `boolean`            | `true` for Multi-AZ DB clusters; defaults to `false` when AWS omits the field.              |
+| `members`             | array of objects     | One element per cluster member; see fields below.                                           |
+| `tags`                | `map<string,string>` | Cluster-level tags, converted from AWS's `[{Key,Value},...]` array to a flat map.           |
 
 Each `members[i]` carries `DBInstanceIdentifier`, `DBInstanceClass`, `Role`
 (`"writer"` or `"reader"`), and an optional `AvailabilityZone`.
@@ -196,10 +196,11 @@ Bracket access is required for tag keys that contain hyphens, dots, or other
 characters that aren't valid CEL identifiers — `tags["cost-center"]` works,
 `tags.cost-center` does not.
 
-**Optional fields are always defined.** `EngineVersion`, `Status`, `MultiAZ`,
-and member `AvailabilityZone` are always populated with concrete defaults (`""`
-or `false`) when AWS omits them, so selectors can write `EngineVersion != ""`
-without a `has()` guard.
+**No `undefined` in the selector context.** Every cluster-level field above is
+always populated — empty string for missing strings, `false` for missing
+`MultiAZ`. The same goes for member-level `AvailabilityZone`: it's `""` when AWS
+omits it, never `undefined`. Selectors can write `EngineVersion != ""` or
+`m.AvailabilityZone == ""` without a `has()` guard.
 
 **Non-boolean results are rejected.** A selector like `members.size()` (without
 `== N`) evaluates to a number and is rejected with a clear error naming the

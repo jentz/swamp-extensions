@@ -71,8 +71,10 @@ export function isThrottlingError(error: unknown): boolean {
   }
   // Message fallback — anchored on word boundaries so the SDK's generic
   // Error wrappers still match but arbitrary user text containing
-  // "throttling" embedded in another word does not.
-  return /\b(?:ThrottlingException|Throttling|TooManyRequests|RequestLimitExceeded)\b/
+  // "throttling" embedded in another word does not. The token list must
+  // stay in sync with the name-switch above; `(?:Exception)?` keeps both
+  // bare and `*Exception`-suffixed forms in one branch per family.
+  return /\b(?:Throttling(?:Exception)?|TooManyRequests(?:Exception)?|RequestLimitExceeded|RequestThrottled(?:Exception)?)\b/
     .test(error.message);
 }
 
