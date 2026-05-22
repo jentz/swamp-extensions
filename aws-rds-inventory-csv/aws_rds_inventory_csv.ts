@@ -289,7 +289,7 @@ export async function collectInventory(
       }
 
       const inst = res.data;
-      const key = `${inst.DBClusterIdentifier} ${inst.DBInstanceIdentifier}`;
+      const key = `${inst.DBClusterIdentifier}/${inst.DBInstanceIdentifier}`;
       const existing = seenInstanceKeys.get(key);
       if (existing) {
         duplicates++;

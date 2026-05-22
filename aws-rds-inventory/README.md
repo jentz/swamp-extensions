@@ -141,7 +141,7 @@ There is **no silent us-east-1 fallback**. An inventory tool that lists
 resources in the wrong region risks reporting on the wrong account-level
 surface, so the resolution chain fails closed:
 
-1. `globalArg.region` (e.g. `--global region=eu-west-1`)
+1. `globalArg.region` (e.g. `--global-arg region=eu-west-1`)
 2. `AWS_REGION` environment variable
 3. `AWS_DEFAULT_REGION` environment variable
 4. Throw a descriptive error naming all three sources.
