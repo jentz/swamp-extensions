@@ -190,10 +190,10 @@ Create the model instances once, baking in the AWS context:
 
 ```sh
 swamp model create @jentz/aws-context-guard rds-inventory-guard \
-  --global expectedAccountId=000000000000
+  --global-arg expectedAccountId=000000000000
 
 swamp model create @jentz/aws-rds-inventory rds-inv \
-  --global region=eu-west-1
+  --global-arg region=eu-west-1
 ```
 
 Run the workflow:

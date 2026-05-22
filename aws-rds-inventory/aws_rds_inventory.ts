@@ -244,7 +244,7 @@ export function resolveRegion(
   throw new Error(
     "aws-rds-inventory: no AWS region configured. Set one of: " +
       "the 'region' global argument (e.g. " +
-      "`--global region=eu-west-1`), the AWS_REGION env var, or the " +
+      "`--global-arg region=eu-west-1`), the AWS_REGION env var, or the " +
       "AWS_DEFAULT_REGION env var. There is no silent us-east-1 fallback.",
   );
 }
