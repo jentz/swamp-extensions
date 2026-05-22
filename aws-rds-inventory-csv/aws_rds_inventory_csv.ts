@@ -160,6 +160,10 @@ export interface CollectedInventory {
   skipped: number;
   /** Count of (cluster_id, instance_id) duplicates observed across artifacts. */
   duplicates: number;
+  /** Count of instance handles iterated across all matching steps. */
+  instanceHandleCount: number;
+  /** Count of getContent calls that returned null/empty bytes for instance handles. */
+  getContentMisses: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -209,6 +213,8 @@ export async function collectInventory(
   let skipped = 0;
   let duplicates = 0;
   let matchingStepCount = 0;
+  let instanceHandleCount = 0;
+  let getContentMisses = 0;
   const observedModelTypes = new Set<string>();
 
   for (const step of context.stepExecutions ?? []) {
@@ -234,6 +240,7 @@ export async function collectInventory(
         continue;
       }
       if (specName !== INSTANCE_SPEC) continue;
+      instanceHandleCount++;
 
       const stepLabel = `${step.jobName}.${step.stepName}`;
       const bytes: Uint8Array | null = await context.dataRepository.getContent(
@@ -245,6 +252,7 @@ export async function collectInventory(
       const outcome = decodeJson(bytes);
       if (outcome.kind === "missing") {
         skipped++;
+        getContentMisses++;
         tryLog(
           logger,
           "warn",
@@ -340,7 +348,14 @@ export async function collectInventory(
     },
   );
 
-  return { instances, clusterArtifactIds, skipped, duplicates };
+  return {
+    instances,
+    clusterArtifactIds,
+    skipped,
+    duplicates,
+    instanceHandleCount,
+    getContentMisses,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -569,6 +584,8 @@ export const report = {
       clusterArtifactIds: new Set<string>(),
       skipped: 0,
       duplicates: 0,
+      instanceHandleCount: 0,
+      getContentMisses: 0,
     };
     let columns: ColumnName[] = [...DEFAULT_COLUMNS];
     let csv = renderCsv([], { columns });
@@ -607,7 +624,30 @@ export const report = {
       clusterCount = 0;
     }
 
+    // When every instance read came back null, the upstream actually
+    // succeeded — the bytes are on disk and in the catalog — but the
+    // workflow-scope dataRepository did not return them. This shows up
+    // for workflows that use direct execution to auto-create the model
+    // (modelType + modelName + inputs.* on the task) on the first run
+    // that produces data. Pre-creating the model with `swamp model
+    // create --global-arg ...` and then running the workflow avoids it.
     if (
+      inventory.instanceHandleCount > 0 &&
+      inventory.getContentMisses === inventory.instanceHandleCount
+    ) {
+      tryLog(
+        logger,
+        "warn",
+        "Upstream wrote {handles} instance handle(s) but dataRepository " +
+          "returned no bytes for any of them. Upstream succeeded — the " +
+          "data is in the catalog (try `swamp data get <model> <name>`). " +
+          "This is a swamp runtime issue for workflows that auto-create " +
+          "the upstream model. Workaround: `swamp model create " +
+          "@jentz/aws-rds-inventory <name> --global-arg region=<r> " +
+          "--global-arg selector=<expr>` before running the workflow.",
+        { handles: inventory.instanceHandleCount },
+      );
+    } else if (
       inventory.clusterArtifactIds.size > clusterCount &&
       inventory.clusterArtifactIds.size > 0
     ) {

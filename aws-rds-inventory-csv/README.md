@@ -118,6 +118,40 @@ add a region or account column upstream (extending the instance schema) rather
 than relying on the report to disambiguate. The report has no way to tell two
 same-named instances in different regions apart without that context.
 
+## Known limitation: empty CSV from workflow-scope report
+
+If the report renders an empty CSV body and the logs contain
+
+> Upstream wrote N instance handle(s) but dataRepository returned no bytes for
+> any of them.
+
+the upstream inventory model actually succeeded — the bytes are on disk and in
+the catalog. Verify with `swamp data get <model> <handle>` or by inspecting
+`.swamp/data/@jentz/aws-rds-inventory/<modelId>/<handle>/<version>/raw`. It's
+the workflow-scope report's `dataRepository.getContent` call that returns null.
+This reproduces on swamp 20260521 and is being tracked as a swamp runtime issue,
+not an extension bug.
+
+Workaround until swamp fixes the runtime: build the CSV from the on-disk JSON
+artifacts directly:
+
+```sh
+MODEL_ID=$(swamp model get rds-inv --json | jq -r .id)
+BASE=.swamp/data/@jentz/aws-rds-inventory/$MODEL_ID
+{
+  echo 'cluster_id,instance_id,instance_class,role,az,engine,engine_version'
+  for d in "$BASE"/instance-*/latest/raw; do
+    jq -r '[.DBClusterIdentifier,.DBInstanceIdentifier,.DBInstanceClass,
+            .Role,(.AvailabilityZone // ""),.Engine,(.EngineVersion // "")]
+           | @csv' "$d"
+  done
+} > inventory.csv
+```
+
+This sidesteps the report extension entirely and gives you a stable CSV; you
+lose column-override (`AWS_RDS_INVENTORY_CSV_COLUMNS`), automatic dedup, and the
+deterministic-tag-JSON column, but the row data is otherwise complete.
+
 ## Workflow Usage Example
 
 ```yaml
