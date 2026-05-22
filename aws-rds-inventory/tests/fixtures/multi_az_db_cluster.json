@@ -1,0 +1,43 @@
+{
+  "description": "Non-Aurora Multi-AZ DB cluster (mysql, 3 nodes).",
+  "clusters": [
+    {
+      "DBClusterIdentifier": "cluster-c",
+      "Engine": "mysql",
+      "EngineVersion": "8.0.36",
+      "Status": "available",
+      "MultiAZ": true,
+      "DBClusterMembers": [
+        { "DBInstanceIdentifier": "cluster-c-1", "IsClusterWriter": true },
+        { "DBInstanceIdentifier": "cluster-c-2", "IsClusterWriter": false },
+        { "DBInstanceIdentifier": "cluster-c-3", "IsClusterWriter": false }
+      ]
+    }
+  ],
+  "instances": [
+    {
+      "DBInstanceIdentifier": "cluster-c-1",
+      "DBInstanceClass": "db.m6gd.large",
+      "AvailabilityZone": "eu-west-1a",
+      "Engine": "mysql",
+      "EngineVersion": "8.0.36",
+      "DBInstanceStatus": "available"
+    },
+    {
+      "DBInstanceIdentifier": "cluster-c-2",
+      "DBInstanceClass": "db.m6gd.large",
+      "AvailabilityZone": "eu-west-1b",
+      "Engine": "mysql",
+      "EngineVersion": "8.0.36",
+      "DBInstanceStatus": "available"
+    },
+    {
+      "DBInstanceIdentifier": "cluster-c-3",
+      "DBInstanceClass": "db.m6gd.large",
+      "AvailabilityZone": "eu-west-1c",
+      "Engine": "mysql",
+      "EngineVersion": "8.0.36",
+      "DBInstanceStatus": "available"
+    }
+  ]
+}

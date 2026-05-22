@@ -1,0 +1,694 @@
+/**
+ * `@jentz/aws-rds-inventory` — list RDS DB clusters with per-member detail.
+ *
+ * Calls `DescribeDBClusters` and `DescribeDBInstances` against the configured
+ * AWS region, applies a user-supplied CEL selector to each cluster, and emits:
+ *
+ *   - one `cluster` resource per matched cluster
+ *   - one `instance` resource per cluster member, with a back-reference to its
+ *     cluster via `DBClusterIdentifier`
+ *
+ * Covers both Aurora (`aurora-mysql`, `aurora-postgresql`) and the non-Aurora
+ * Multi-AZ DB cluster variants returned by `DescribeDBClusters`. Standalone
+ * single-instance RDS instances (no cluster) are out of scope.
+ *
+ * Designed to run downstream of `@jentz/aws-context-guard` in a workflow so a
+ * misconfigured AWS profile or account can never reach the RDS APIs. For a
+ * CSV summary of the inventory, see the companion report extension
+ * `@jentz/aws-rds-inventory-csv`.
+ *
+ * @module
+ */
+
+import { z } from "npm:zod@4";
+import {
+  DescribeDBClustersCommand,
+  DescribeDBInstancesCommand,
+  RDSClient,
+} from "npm:@aws-sdk/client-rds@3.1021.0";
+import { withRetry } from "./_lib/retry.ts";
+
+// ---------------------------------------------------------------------------
+// Schemas
+// ---------------------------------------------------------------------------
+
+const GlobalArgsSchema = z.object({
+  region: z.string().optional().describe(
+    "AWS region to query. Resolution order: this globalArg, then AWS_REGION, " +
+      "then AWS_DEFAULT_REGION. If none are set the method throws — there is " +
+      "no silent us-east-1 fallback, since the wrong region for an inventory " +
+      "tool means listing the wrong account's resources.",
+  ),
+  selector: z.string().default("true").describe(
+    "CEL predicate evaluated per cluster. Default 'true' includes every " +
+      "cluster the API returns. The predicate sees the cluster's top-level " +
+      "fields (Engine, EngineVersion, Status, MultiAZ, ...), a members array " +
+      "of {DBInstanceIdentifier, DBInstanceClass, Role, AvailabilityZone}, " +
+      "and a tags map. Examples: " +
+      "'Engine.startsWith(\"aurora\") && members.size() == 3', " +
+      "'tags.Environment == \"prod\"', " +
+      "'members.exists(m, m.DBInstanceClass.startsWith(\"db.r7g\"))'.",
+  ),
+});
+
+const TagsSchema = z.record(z.string(), z.string()).default({});
+
+const ClusterSchema = z.object({
+  DBClusterIdentifier: z.string(),
+  Engine: z.string(),
+  EngineVersion: z.string().optional(),
+  Status: z.string().optional(),
+  Endpoint: z.string().optional(),
+  ReaderEndpoint: z.string().optional(),
+  MultiAZ: z.boolean().optional(),
+  tags: TagsSchema,
+});
+
+const InstanceSchema = z.object({
+  DBInstanceIdentifier: z.string(),
+  DBClusterIdentifier: z.string(),
+  DBInstanceClass: z.string(),
+  Role: z.enum(["writer", "reader"]),
+  AvailabilityZone: z.string().optional(),
+  Engine: z.string(),
+  EngineVersion: z.string().optional(),
+  Status: z.string().optional(),
+  tags: TagsSchema,
+});
+
+/**
+ * Shape of a single cluster resource written by `list_clusters`. Kept as an
+ * explicit interface (instead of `z.infer<>`) so the public API doesn't depend
+ * on a private schema constant — required for `deno doc --lint` to pass.
+ */
+export interface ClusterResource {
+  /** AWS cluster identifier; also the resource instance name. */
+  DBClusterIdentifier: string;
+  /** AWS engine string (`aurora-mysql`, `mysql`, ...). */
+  Engine: string;
+  /** Engine version, if returned. */
+  EngineVersion?: string;
+  /** Cluster lifecycle status (`available`, `creating`, ...). */
+  Status?: string;
+  /** Writer endpoint, if returned. */
+  Endpoint?: string;
+  /** Reader endpoint, if returned. */
+  ReaderEndpoint?: string;
+  /** Whether the cluster is multi-AZ. */
+  MultiAZ?: boolean;
+  /** Cluster tags, flattened from AWS's `[{Key,Value},...]` array. */
+  tags: Record<string, string>;
+}
+
+/**
+ * Shape of a single instance resource written by `list_clusters`. Back-
+ * references its cluster via `DBClusterIdentifier`.
+ */
+export interface InstanceResource {
+  /** AWS instance identifier; also the resource instance name. */
+  DBInstanceIdentifier: string;
+  /** Back-reference to the owning cluster. */
+  DBClusterIdentifier: string;
+  /** AWS instance class (e.g. `db.r7g.large`). */
+  DBInstanceClass: string;
+  /** Whether this member is the cluster writer or a reader. */
+  Role: "writer" | "reader";
+  /** Availability zone of the instance, if returned. */
+  AvailabilityZone?: string;
+  /** Engine string (falls back to the cluster's engine if absent on instance). */
+  Engine: string;
+  /** Engine version, if returned. */
+  EngineVersion?: string;
+  /** Instance lifecycle status (`available`, ...). */
+  Status?: string;
+  /** Per-instance tags, flattened from AWS's `[{Key,Value},...]` array. */
+  tags: Record<string, string>;
+}
+
+/**
+ * One member's selector-context view. Every field is always populated — empty
+ * strings stand in for absent optional values so CEL selectors don't have to
+ * grapple with JS `undefined`.
+ */
+export interface SelectorMember {
+  /** AWS instance identifier of this member; empty if the API omitted it. */
+  DBInstanceIdentifier: string;
+  /** Resolved instance class, or `"unknown"` if the instance was not returned. */
+  DBInstanceClass: string;
+  /** Writer or reader role, derived from `IsClusterWriter`. */
+  Role: "writer" | "reader";
+  /** Availability zone of the instance, or `""` if absent. */
+  AvailabilityZone: string;
+}
+
+/**
+ * Per-cluster predicate context. Exposed to the CEL selector as a flat object.
+ * The shape is part of the public contract — selector authors depend on these
+ * field names. Every field is always populated with a concrete value (empty
+ * string / `false`) so the CEL selector never sees `undefined`, which would
+ * be a runtime-CEL error.
+ */
+export interface SelectorContext {
+  /** AWS cluster identifier. */
+  DBClusterIdentifier: string;
+  /** AWS engine string, or `""` if absent. */
+  Engine: string;
+  /** Engine version, or `""` if absent. */
+  EngineVersion: string;
+  /** Cluster lifecycle status, or `""` if absent. */
+  Status: string;
+  /** Whether the cluster is multi-AZ. Defaults to `false` when AWS omits the field. */
+  MultiAZ: boolean;
+  /** Per-member rollup. Empty when the cluster has no members. */
+  members: SelectorMember[];
+  /** Cluster tag map. Always an object (possibly empty). */
+  tags: Record<string, string>;
+}
+
+// ---------------------------------------------------------------------------
+// Pure helpers (exported for unit-test access)
+// ---------------------------------------------------------------------------
+
+/**
+ * Build the swamp storage key for a `cluster` resource. Prefixing with the
+ * spec name disambiguates from `instance` keys — swamp storage is keyed by
+ * instance name across all specs in a model, so an AWS cluster named `foo`
+ * and an AWS DB instance named `foo` would otherwise collide on disk.
+ */
+export function clusterKey(dbClusterIdentifier: string): string {
+  return `cluster-${dbClusterIdentifier}`;
+}
+
+/**
+ * Build the swamp storage key for an `instance` resource. Includes the
+ * owning cluster identifier so the key is unique even if two clusters in
+ * different regions ever happened to converge in a future deployment.
+ */
+export function instanceKey(
+  dbClusterIdentifier: string,
+  dbInstanceIdentifier: string,
+): string {
+  return `instance-${dbClusterIdentifier}--${dbInstanceIdentifier}`;
+}
+
+/** AWS-style tag tuple as returned by `DescribeDBClusters`/`DescribeDBInstances`. */
+export interface AwsTag {
+  /** Tag key. */
+  Key?: string;
+  /** Tag value. */
+  Value?: string;
+}
+
+/**
+ * Convert AWS's `[{Key, Value}, ...]` tag array into a flat
+ * `{key: value}` map. Missing/empty input becomes `{}`. Tags with no `Key`
+ * (theoretically possible per the SDK types) are dropped. A `Value` of
+ * `undefined` is stored as the empty string so the schema stays
+ * `Record<string,string>`.
+ */
+export function tagsFromAws(
+  tagList: AwsTag[] | undefined,
+): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const t of tagList ?? []) {
+    if (typeof t.Key !== "string" || t.Key.length === 0) continue;
+    out[t.Key] = typeof t.Value === "string" ? t.Value : "";
+  }
+  return out;
+}
+
+/**
+ * Strict region-resolution chain. Returns the resolved region or throws with a
+ * message naming every source the caller can adjust.
+ *
+ * Order: explicit `globalArgs.region` → `AWS_REGION` env → `AWS_DEFAULT_REGION`
+ * env. A whitespace-only value at any step is treated as unset.
+ *
+ * @param globalArgs Validated global arguments object.
+ * @param env Env-var accessor; defaults to `Deno.env.get`. Override in tests.
+ */
+export function resolveRegion(
+  globalArgs: { region?: string },
+  env: (name: string) => string | undefined = (name) => Deno.env.get(name),
+): string {
+  const candidates: Array<[string, string | undefined]> = [
+    ["globalArg.region", globalArgs.region],
+    ["AWS_REGION env", env("AWS_REGION")],
+    ["AWS_DEFAULT_REGION env", env("AWS_DEFAULT_REGION")],
+  ];
+  for (const [, value] of candidates) {
+    if (typeof value === "string" && value.trim().length > 0) {
+      return value.trim();
+    }
+  }
+  throw new Error(
+    "aws-rds-inventory: no AWS region configured. Set one of: " +
+      "the 'region' global argument (e.g. " +
+      "`--global region=eu-west-1`), the AWS_REGION env var, or the " +
+      "AWS_DEFAULT_REGION env var. There is no silent us-east-1 fallback.",
+  );
+}
+
+/**
+ * Evaluate a CEL predicate against every cluster's selector context. Throws
+ * eagerly if the predicate doesn't return a boolean — surfacing
+ * `'count(...)' instead of 'count(...) == 3'` style mistakes before any
+ * AWS-side work happens.
+ *
+ * @param parsed Compiled predicate from `env.parse(selector)`.
+ * @param contexts Per-cluster contexts to evaluate against.
+ * @returns A boolean array aligned with `contexts` (same length, same order).
+ */
+export function evaluateSelector(
+  parsed: (ctx: Record<string, unknown>) => unknown,
+  contexts: SelectorContext[],
+): boolean[] {
+  return contexts.map((ctx) => {
+    const result = parsed(ctx as unknown as Record<string, unknown>);
+    if (typeof result !== "boolean") {
+      // String() instead of JSON.stringify() so BigInt-returning CEL
+      // expressions (`1 + 2` evaluates to a BigInt under cel-js) don't
+      // crash the error path.
+      throw new Error(
+        `aws-rds-inventory: selector must return a boolean, got ` +
+          `${typeof result} (value: ${String(result)}) for cluster ` +
+          `'${ctx.DBClusterIdentifier}'.`,
+      );
+    }
+    return result;
+  });
+}
+
+// ---------------------------------------------------------------------------
+// AWS-shape internals
+// ---------------------------------------------------------------------------
+
+/** Minimal member shape from `DescribeDBClusters` we depend on. */
+export interface AwsClusterMember {
+  /** AWS instance identifier. */
+  DBInstanceIdentifier?: string;
+  /** True when this member is the cluster writer. */
+  IsClusterWriter?: boolean;
+}
+
+/**
+ * Minimal cluster shape from `DescribeDBClusters` we depend on. Exported so
+ * test scaffolding can replay fixtures without importing the full AWS SDK
+ * types.
+ */
+export interface AwsCluster {
+  /** Cluster identifier. */
+  DBClusterIdentifier?: string;
+  /** Engine string. */
+  Engine?: string;
+  /** Engine version. */
+  EngineVersion?: string;
+  /** Lifecycle status. */
+  Status?: string;
+  /** Writer endpoint. */
+  Endpoint?: string;
+  /** Reader endpoint. */
+  ReaderEndpoint?: string;
+  /** Multi-AZ flag. */
+  MultiAZ?: boolean;
+  /** Cluster members. */
+  DBClusterMembers?: AwsClusterMember[];
+  /** Tag list from the API. */
+  TagList?: AwsTag[];
+}
+
+/**
+ * Minimal instance shape from `DescribeDBInstances` we depend on. Exported so
+ * tests can replay fixtures without importing the full AWS SDK types.
+ */
+export interface AwsInstance {
+  /** Instance identifier. */
+  DBInstanceIdentifier?: string;
+  /** AWS instance class. */
+  DBInstanceClass?: string;
+  /** Availability zone. */
+  AvailabilityZone?: string;
+  /** Engine string. */
+  Engine?: string;
+  /** Engine version. */
+  EngineVersion?: string;
+  /** Instance status (note the AWS field name). */
+  DBInstanceStatus?: string;
+  /** Tag list from the API. */
+  TagList?: AwsTag[];
+}
+
+/** Page returned by the `describeDBClusters` facade method. */
+export interface DescribeClustersPage {
+  /** Clusters returned on this page. */
+  DBClusters?: AwsCluster[];
+  /** Pagination cursor; absent on the final page. */
+  Marker?: string;
+}
+
+/** Page returned by the `describeDBInstances` facade method. */
+export interface DescribeInstancesPage {
+  /** Instances returned on this page. */
+  DBInstances?: AwsInstance[];
+  /** Pagination cursor; absent on the final page. */
+  Marker?: string;
+}
+
+/**
+ * Minimal facade over the bits of `RDSClient` this extension uses. Lets unit
+ * tests substitute an in-memory replay without monkey-patching the SDK.
+ */
+export interface RdsApi {
+  /** List clusters; one page per call. */
+  describeDBClusters(marker?: string): Promise<DescribeClustersPage>;
+  /** List instances; one page per call. */
+  describeDBInstances(marker?: string): Promise<DescribeInstancesPage>;
+}
+
+function rdsApiFromSdk(client: RDSClient): RdsApi {
+  return {
+    describeDBClusters: async (marker) => {
+      const resp = await client.send(
+        new DescribeDBClustersCommand({ Marker: marker, MaxRecords: 100 }),
+      );
+      return { DBClusters: resp.DBClusters, Marker: resp.Marker };
+    },
+    describeDBInstances: async (marker) => {
+      const resp = await client.send(
+        new DescribeDBInstancesCommand({ Marker: marker, MaxRecords: 100 }),
+      );
+      return { DBInstances: resp.DBInstances, Marker: resp.Marker };
+    },
+  };
+}
+
+// deno-lint-ignore no-explicit-any
+function retryDeps(logger: any) {
+  return {
+    random: () => Math.random(),
+    delay: (ms: number) => new Promise<void>((r) => setTimeout(r, ms)),
+    onRetry: (e: { operationName: string; attempt: number; delayMs: number }) =>
+      logger.debug(
+        "Throttled on {op} attempt {attempt}, waiting {delayMs}ms",
+        { op: e.operationName, attempt: e.attempt, delayMs: e.delayMs },
+      ),
+  };
+}
+
+/**
+ * Iterate paginated `DescribeDBClusters`, retrying throttled calls. Returns
+ * the raw AWS shapes so caller-side logic can pick them apart.
+ */
+async function collectClusters(
+  api: RdsApi,
+  // deno-lint-ignore no-explicit-any
+  logger: any,
+): Promise<AwsCluster[]> {
+  const all: AwsCluster[] = [];
+  let marker: string | undefined;
+  do {
+    const resp = await withRetry(
+      () => api.describeDBClusters(marker),
+      "DescribeDBClusters",
+      undefined,
+      retryDeps(logger),
+    );
+    all.push(...(resp.DBClusters ?? []));
+    marker = resp.Marker;
+  } while (marker);
+  return all;
+}
+
+/**
+ * Iterate paginated `DescribeDBInstances`, retrying throttled calls, keeping
+ * only instances whose identifier is in `wantedIds`.
+ */
+async function collectInstances(
+  api: RdsApi,
+  // deno-lint-ignore no-explicit-any
+  logger: any,
+  wantedIds: Set<string>,
+): Promise<Map<string, AwsInstance>> {
+  const map = new Map<string, AwsInstance>();
+  if (wantedIds.size === 0) return map;
+  let marker: string | undefined;
+  do {
+    const resp = await withRetry(
+      () => api.describeDBInstances(marker),
+      "DescribeDBInstances",
+      undefined,
+      retryDeps(logger),
+    );
+    for (const inst of resp.DBInstances ?? []) {
+      if (
+        inst.DBInstanceIdentifier && wantedIds.has(inst.DBInstanceIdentifier)
+      ) {
+        map.set(inst.DBInstanceIdentifier, inst);
+      }
+    }
+    marker = resp.Marker;
+  } while (marker);
+  return map;
+}
+
+/**
+ * Roll an AWS cluster + its members into a selector-context object. Every
+ * field is populated with a concrete value so CEL selectors don't have to
+ * defend against `undefined`.
+ */
+export function buildSelectorContext(
+  cluster: AwsCluster,
+  instances: Map<string, AwsInstance>,
+): SelectorContext {
+  const members = (cluster.DBClusterMembers ?? []).map((m) => {
+    const id = m.DBInstanceIdentifier ?? "";
+    const inst = instances.get(id);
+    return {
+      DBInstanceIdentifier: id,
+      DBInstanceClass: inst?.DBInstanceClass ?? "unknown",
+      Role: (m.IsClusterWriter ? "writer" : "reader") as "writer" | "reader",
+      AvailabilityZone: inst?.AvailabilityZone ?? "",
+    };
+  });
+  return {
+    DBClusterIdentifier: cluster.DBClusterIdentifier ?? "",
+    Engine: cluster.Engine ?? "",
+    EngineVersion: cluster.EngineVersion ?? "",
+    Status: cluster.Status ?? "",
+    MultiAZ: cluster.MultiAZ ?? false,
+    members,
+    tags: tagsFromAws(cluster.TagList),
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Method body — exposed for the smoke test to drive without a real RDSClient
+// ---------------------------------------------------------------------------
+
+/**
+ * Dependencies for {@link runListClusters}. Exported so the smoke test can
+ * inject its own AWS-facade replay and a fake runtime context.
+ */
+export interface ListClustersDeps {
+  /** Facade over the RDS SDK calls this method needs. */
+  api: RdsApi;
+  /**
+   * Swamp method-execution context. Typed `any` because the host injects the
+   * real type at runtime and `MethodContext` is not part of the
+   * extension-author-facing surface.
+   */
+  // deno-lint-ignore no-explicit-any
+  context: any;
+}
+
+/** Shape returned by {@link runListClusters}. */
+export interface ListClustersResult {
+  /** Data handles produced during the run, in write order. */
+  dataHandles: unknown[];
+}
+
+/**
+ * Core list_clusters logic, parameterized on its AWS facade and runtime
+ * context. The real model.execute wraps this with a default-configured
+ * RDSClient; the smoke test injects a replay-from-fixtures `RdsApi` instead.
+ *
+ * Returns the data handles produced during writes; surfaced for assertions.
+ */
+export async function runListClusters(
+  deps: ListClustersDeps,
+): Promise<ListClustersResult> {
+  const { api, context } = deps;
+  const globalArgs = GlobalArgsSchema.parse(context.globalArgs);
+  const region = resolveRegion(globalArgs);
+
+  context.logger.info(
+    "aws-rds-inventory: starting list_clusters (region={region})",
+    { region },
+  );
+
+  // Compile the selector BEFORE any AWS work — a bad selector should fail
+  // closed without spending API budget.
+  const env = context.createCelEnvironment();
+  let predicate: (ctx: Record<string, unknown>) => unknown;
+  try {
+    predicate = env.parse(globalArgs.selector);
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : String(err);
+    throw new Error(
+      `aws-rds-inventory: failed to parse selector ` +
+        `${JSON.stringify(globalArgs.selector)}: ${detail}`,
+    );
+  }
+
+  const rawClusters = await collectClusters(api, context.logger);
+  context.logger.info(
+    "Fetched {count} clusters from {region}",
+    { count: rawClusters.length, region },
+  );
+
+  const wantedIds = new Set<string>();
+  for (const c of rawClusters) {
+    for (const m of c.DBClusterMembers ?? []) {
+      if (m.DBInstanceIdentifier) wantedIds.add(m.DBInstanceIdentifier);
+    }
+  }
+  const instances = await collectInstances(api, context.logger, wantedIds);
+
+  const selectorContexts = rawClusters.map((c) =>
+    buildSelectorContext(c, instances)
+  );
+  const matches = evaluateSelector(predicate, selectorContexts);
+
+  const matchedClusters: AwsCluster[] = [];
+  const matchedContexts: SelectorContext[] = [];
+  for (let i = 0; i < rawClusters.length; i++) {
+    if (matches[i]) {
+      matchedClusters.push(rawClusters[i]);
+      matchedContexts.push(selectorContexts[i]);
+    }
+  }
+  context.logger.info(
+    "{count} clusters match selector",
+    { count: matchedClusters.length },
+  );
+
+  const handles: unknown[] = [];
+  let instanceCount = 0;
+
+  for (let i = 0; i < matchedClusters.length; i++) {
+    const cluster = matchedClusters[i];
+    const ctx = matchedContexts[i];
+    const clusterId = cluster.DBClusterIdentifier ?? "";
+    if (clusterId === "") {
+      context.logger.warning(
+        "Skipping cluster with no DBClusterIdentifier (engine={engine})",
+        { engine: cluster.Engine ?? "<unknown>" },
+      );
+      continue;
+    }
+
+    const clusterResource: ClusterResource = {
+      DBClusterIdentifier: clusterId,
+      Engine: cluster.Engine ?? "unknown",
+      EngineVersion: cluster.EngineVersion,
+      Status: cluster.Status,
+      Endpoint: cluster.Endpoint,
+      ReaderEndpoint: cluster.ReaderEndpoint,
+      MultiAZ: cluster.MultiAZ,
+      tags: ctx.tags,
+    };
+    handles.push(
+      await context.writeResource(
+        "cluster",
+        clusterKey(clusterId),
+        clusterResource,
+      ),
+    );
+
+    for (const m of ctx.members) {
+      if (!m.DBInstanceIdentifier) continue;
+      const awsInst = instances.get(m.DBInstanceIdentifier);
+      const instanceResource: InstanceResource = {
+        DBInstanceIdentifier: m.DBInstanceIdentifier,
+        DBClusterIdentifier: clusterId,
+        DBInstanceClass: m.DBInstanceClass,
+        Role: m.Role,
+        AvailabilityZone: m.AvailabilityZone,
+        Engine: awsInst?.Engine ?? cluster.Engine ?? "unknown",
+        EngineVersion: awsInst?.EngineVersion ?? cluster.EngineVersion,
+        Status: awsInst?.DBInstanceStatus,
+        tags: tagsFromAws(awsInst?.TagList),
+      };
+      instanceCount++;
+      handles.push(
+        await context.writeResource(
+          "instance",
+          instanceKey(clusterId, m.DBInstanceIdentifier),
+          instanceResource,
+        ),
+      );
+    }
+  }
+
+  context.logger.info(
+    "Wrote {clusters} cluster resources and {instances} instance resources",
+    {
+      clusters: matchedClusters.length,
+      instances: instanceCount,
+    },
+  );
+
+  return { dataHandles: handles };
+}
+
+// ---------------------------------------------------------------------------
+// Model export
+// ---------------------------------------------------------------------------
+
+/**
+ * The `@jentz/aws-rds-inventory` model.
+ *
+ * Single method `list_clusters` discovers RDS DB clusters via the SDK, filters
+ * them with a CEL selector, and writes one `cluster` + N `instance` factory
+ * resources.
+ */
+export const model = {
+  type: "@jentz/aws-rds-inventory",
+  version: "2026.05.22.0",
+  globalArguments: GlobalArgsSchema,
+  resources: {
+    cluster: {
+      description:
+        "RDS DB cluster summary. One resource per cluster the selector " +
+        "admits; instance-level details live on the sibling 'instance' spec.",
+      schema: ClusterSchema,
+      lifetime: "infinite" as const,
+      garbageCollection: 10,
+    },
+    instance: {
+      description:
+        "RDS DB cluster member instance. Back-references its cluster via " +
+        "DBClusterIdentifier. One resource per member.",
+      schema: InstanceSchema,
+      lifetime: "infinite" as const,
+      garbageCollection: 10,
+    },
+  },
+  methods: {
+    list_clusters: {
+      description:
+        "List RDS DB clusters matching the CEL selector, plus their members.",
+      arguments: z.object({}),
+      execute: (
+        _args: Record<string, never>,
+        // deno-lint-ignore no-explicit-any
+        context: any,
+      ): Promise<{ dataHandles: unknown[] }> => {
+        const globalArgs = GlobalArgsSchema.parse(context.globalArgs);
+        const region = resolveRegion(globalArgs);
+        const client = new RDSClient({ region });
+        return runListClusters({ api: rdsApiFromSdk(client), context });
+      },
+    },
+  },
+};

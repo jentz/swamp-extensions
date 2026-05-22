@@ -1,0 +1,5 @@
+{
+  "description": "Empty region — DescribeDBClusters returns no clusters.",
+  "clusters": [],
+  "instances": []
+}

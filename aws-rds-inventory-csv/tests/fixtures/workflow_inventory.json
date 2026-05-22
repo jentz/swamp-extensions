@@ -1,0 +1,222 @@
+{
+  "description": "Recorded workflow fixture with four clusters (Aurora MySQL 3-node, Aurora PostgreSQL 1+1, non-Aurora Multi-AZ DB, and a tagged Aurora MySQL 2-node) plus one bad artifact for the warn-and-skip path. All identifiers and tag values are anonymized.",
+  "workflowName": "rds-inventory-smoke",
+  "modelId": "rds-inv",
+  "clusterArtifacts": [
+    {
+      "specName": "cluster",
+      "handle": "cluster-cluster-a",
+      "body": {
+        "DBClusterIdentifier": "cluster-a",
+        "Engine": "aurora-mysql",
+        "EngineVersion": "8.0.mysql_aurora.3.08.2",
+        "Status": "available",
+        "MultiAZ": false,
+        "tags": { "Environment": "test", "Owner": "platform" }
+      }
+    },
+    {
+      "specName": "cluster",
+      "handle": "cluster-cluster-b",
+      "body": {
+        "DBClusterIdentifier": "cluster-b",
+        "Engine": "aurora-postgresql",
+        "EngineVersion": "16.4",
+        "Status": "available",
+        "MultiAZ": false,
+        "tags": {}
+      }
+    },
+    {
+      "specName": "cluster",
+      "handle": "cluster-cluster-c",
+      "body": {
+        "DBClusterIdentifier": "cluster-c",
+        "Engine": "mysql",
+        "EngineVersion": "8.0.39",
+        "Status": "available",
+        "MultiAZ": true,
+        "tags": { "Environment": "staging" }
+      }
+    },
+    {
+      "specName": "cluster",
+      "handle": "cluster-cluster-d",
+      "body": {
+        "DBClusterIdentifier": "cluster-d",
+        "Engine": "aurora-mysql",
+        "EngineVersion": "8.0.mysql_aurora.3.08.2",
+        "Status": "available",
+        "MultiAZ": false,
+        "tags": {
+          "Environment": "prod",
+          "Owner": "data-platform",
+          "CostCenter": "1234"
+        }
+      }
+    }
+  ],
+  "instanceArtifacts": [
+    {
+      "specName": "instance",
+      "handle": "instance-cluster-a--cluster-a-1",
+      "body": {
+        "DBInstanceIdentifier": "cluster-a-1",
+        "DBClusterIdentifier": "cluster-a",
+        "DBInstanceClass": "db.r7g.large",
+        "Role": "writer",
+        "AvailabilityZone": "eu-west-1a",
+        "Engine": "aurora-mysql",
+        "EngineVersion": "8.0.mysql_aurora.3.08.2",
+        "Status": "available",
+        "tags": {}
+      }
+    },
+    {
+      "specName": "instance",
+      "handle": "instance-cluster-a--cluster-a-2",
+      "body": {
+        "DBInstanceIdentifier": "cluster-a-2",
+        "DBClusterIdentifier": "cluster-a",
+        "DBInstanceClass": "db.r8g.large",
+        "Role": "reader",
+        "AvailabilityZone": "eu-west-1b",
+        "Engine": "aurora-mysql",
+        "EngineVersion": "8.0.mysql_aurora.3.08.2",
+        "Status": "available",
+        "tags": {}
+      }
+    },
+    {
+      "specName": "instance",
+      "handle": "instance-cluster-a--cluster-a-3",
+      "body": {
+        "DBInstanceIdentifier": "cluster-a-3",
+        "DBClusterIdentifier": "cluster-a",
+        "DBInstanceClass": "db.r8g.large",
+        "Role": "reader",
+        "AvailabilityZone": "eu-west-1c",
+        "Engine": "aurora-mysql",
+        "EngineVersion": "8.0.mysql_aurora.3.08.2",
+        "Status": "available",
+        "tags": {}
+      }
+    },
+    {
+      "specName": "instance",
+      "handle": "instance-cluster-b--cluster-b-1",
+      "body": {
+        "DBInstanceIdentifier": "cluster-b-1",
+        "DBClusterIdentifier": "cluster-b",
+        "DBInstanceClass": "db.r7g.xlarge",
+        "Role": "writer",
+        "AvailabilityZone": "eu-west-1a",
+        "Engine": "aurora-postgresql",
+        "EngineVersion": "16.4",
+        "Status": "available",
+        "tags": {}
+      }
+    },
+    {
+      "specName": "instance",
+      "handle": "instance-cluster-b--cluster-b-2",
+      "body": {
+        "DBInstanceIdentifier": "cluster-b-2",
+        "DBClusterIdentifier": "cluster-b",
+        "DBInstanceClass": "db.r8g.xlarge",
+        "Role": "reader",
+        "AvailabilityZone": "eu-west-1c",
+        "Engine": "aurora-postgresql",
+        "EngineVersion": "16.4",
+        "Status": "available",
+        "tags": {}
+      }
+    },
+    {
+      "specName": "instance",
+      "handle": "instance-cluster-c--cluster-c-1",
+      "body": {
+        "DBInstanceIdentifier": "cluster-c-1",
+        "DBClusterIdentifier": "cluster-c",
+        "DBInstanceClass": "db.m7g.large",
+        "Role": "writer",
+        "AvailabilityZone": "eu-west-1a",
+        "Engine": "mysql",
+        "EngineVersion": "8.0.39",
+        "Status": "available",
+        "tags": {}
+      }
+    },
+    {
+      "specName": "instance",
+      "handle": "instance-cluster-c--cluster-c-2",
+      "body": {
+        "DBInstanceIdentifier": "cluster-c-2",
+        "DBClusterIdentifier": "cluster-c",
+        "DBInstanceClass": "db.m7g.large",
+        "Role": "reader",
+        "AvailabilityZone": "eu-west-1b",
+        "Engine": "mysql",
+        "EngineVersion": "8.0.39",
+        "Status": "available",
+        "tags": {}
+      }
+    },
+    {
+      "specName": "instance",
+      "handle": "instance-cluster-c--cluster-c-3",
+      "body": {
+        "DBInstanceIdentifier": "cluster-c-3",
+        "DBClusterIdentifier": "cluster-c",
+        "DBInstanceClass": "db.m7g.large",
+        "Role": "reader",
+        "AvailabilityZone": "eu-west-1c",
+        "Engine": "mysql",
+        "EngineVersion": "8.0.39",
+        "Status": "available",
+        "tags": {}
+      }
+    },
+    {
+      "specName": "instance",
+      "handle": "instance-cluster-d--cluster-d-1",
+      "body": {
+        "DBInstanceIdentifier": "cluster-d-1",
+        "DBClusterIdentifier": "cluster-d",
+        "DBInstanceClass": "db.r7g.2xlarge",
+        "Role": "writer",
+        "AvailabilityZone": "eu-west-1a",
+        "Engine": "aurora-mysql",
+        "EngineVersion": "8.0.mysql_aurora.3.08.2",
+        "Status": "available",
+        "tags": {
+          "Environment": "prod",
+          "Owner": "data-platform"
+        }
+      }
+    },
+    {
+      "specName": "instance",
+      "handle": "instance-cluster-d--cluster-d-2",
+      "body": {
+        "DBInstanceIdentifier": "cluster-d-2",
+        "DBClusterIdentifier": "cluster-d",
+        "DBInstanceClass": "db.r8g.2xlarge",
+        "Role": "reader",
+        "AvailabilityZone": "eu-west-1c",
+        "Engine": "aurora-mysql",
+        "EngineVersion": "8.0.mysql_aurora.3.08.2",
+        "Status": "available",
+        "tags": {
+          "Environment": "prod",
+          "Owner": "data-platform"
+        }
+      }
+    }
+  ],
+  "malformedArtifact": {
+    "specName": "instance",
+    "handle": "instance-broken",
+    "rawText": "{this is not valid json"
+  }
+}

@@ -1,0 +1,51 @@
+{
+  "description": "Aurora MySQL cluster with 3 members (mixed instance classes).",
+  "clusters": [
+    {
+      "DBClusterIdentifier": "cluster-a",
+      "Engine": "aurora-mysql",
+      "EngineVersion": "8.0.mysql_aurora.3.08.2",
+      "Status": "available",
+      "Endpoint": "cluster-a.cluster-abc.eu-west-1.rds.amazonaws.com",
+      "ReaderEndpoint": "cluster-a.cluster-ro-abc.eu-west-1.rds.amazonaws.com",
+      "MultiAZ": true,
+      "DBClusterMembers": [
+        { "DBInstanceIdentifier": "cluster-a-1", "IsClusterWriter": true },
+        { "DBInstanceIdentifier": "cluster-a-2", "IsClusterWriter": false },
+        { "DBInstanceIdentifier": "cluster-a-3", "IsClusterWriter": false }
+      ],
+      "TagList": [
+        { "Key": "Environment", "Value": "prod" },
+        { "Key": "Team", "Value": "platform" }
+      ]
+    }
+  ],
+  "instances": [
+    {
+      "DBInstanceIdentifier": "cluster-a-1",
+      "DBInstanceClass": "db.r7g.large",
+      "AvailabilityZone": "eu-west-1a",
+      "Engine": "aurora-mysql",
+      "EngineVersion": "8.0.mysql_aurora.3.08.2",
+      "DBInstanceStatus": "available",
+      "TagList": [{ "Key": "Role", "Value": "writer" }]
+    },
+    {
+      "DBInstanceIdentifier": "cluster-a-2",
+      "DBInstanceClass": "db.r8g.large",
+      "AvailabilityZone": "eu-west-1b",
+      "Engine": "aurora-mysql",
+      "EngineVersion": "8.0.mysql_aurora.3.08.2",
+      "DBInstanceStatus": "available",
+      "TagList": []
+    },
+    {
+      "DBInstanceIdentifier": "cluster-a-3",
+      "DBInstanceClass": "db.r8g.large",
+      "AvailabilityZone": "eu-west-1c",
+      "Engine": "aurora-mysql",
+      "EngineVersion": "8.0.mysql_aurora.3.08.2",
+      "DBInstanceStatus": "available"
+    }
+  ]
+}

@@ -1,0 +1,56 @@
+manifestVersion: 1
+name: "@jentz/aws-rds-inventory-csv"
+version: "2026.05.22.0"
+description: |
+  Workflow-scope report that emits a CSV summary of RDS DB clusters and
+  their members, consuming the `instance` resources produced earlier in
+  the workflow by `@jentz/aws-rds-inventory`. Cluster artifacts are
+  counted (for partial-failure observability) but not decoded — every
+  column is rendered from instance state.
+
+  One row per cluster member. Default columns:
+
+    - cluster_id
+    - instance_id
+    - instance_class
+    - role (writer | reader)
+    - az
+    - engine
+    - engine_version
+    - tags (JSON object, keys sorted)
+
+  Override the column set with `AWS_RDS_INVENTORY_CSV_COLUMNS`
+  (comma-separated subset of the defaults in any order). Unknown columns
+  log a warning and are skipped — the report never throws.
+
+  The report API persists only `markdown` and `json` artifacts, so the
+  raw CSV is returned in both fields: the `markdown` artifact carries the
+  CSV body so `swamp report get` shows the table, and the `json` artifact
+  exposes it as `{ csv, rowCount, columns, ... }` for machine consumers.
+repository: "https://github.com/jentz/swamp-extensions"
+homepage: "https://github.com/jentz/swamp-extensions/tree/main/aws-rds-inventory-csv"
+paths:
+  base: manifest
+models: []
+workflows: []
+vaults: []
+drivers: []
+datastores: []
+reports:
+  - aws_rds_inventory_csv.ts
+additionalFiles:
+  - README.md
+  - LICENSE.md
+platforms:
+  - linux-x86_64
+  - linux-aarch64
+  - darwin-x86_64
+  - darwin-aarch64
+labels:
+  - aws
+  - rds
+  - inventory
+  - csv
+  - report
+  - cloud
+dependencies: []
