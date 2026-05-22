@@ -1,0 +1,35 @@
+{
+  "description": "Aurora PostgreSQL cluster with 1 writer + 1 reader.",
+  "clusters": [
+    {
+      "DBClusterIdentifier": "cluster-b",
+      "Engine": "aurora-postgresql",
+      "EngineVersion": "15.4",
+      "Status": "available",
+      "MultiAZ": true,
+      "DBClusterMembers": [
+        { "DBInstanceIdentifier": "cluster-b-1", "IsClusterWriter": true },
+        { "DBInstanceIdentifier": "cluster-b-2", "IsClusterWriter": false }
+      ],
+      "TagList": [{ "Key": "Environment", "Value": "staging" }]
+    }
+  ],
+  "instances": [
+    {
+      "DBInstanceIdentifier": "cluster-b-1",
+      "DBInstanceClass": "db.r7g.xlarge",
+      "AvailabilityZone": "eu-west-1a",
+      "Engine": "aurora-postgresql",
+      "EngineVersion": "15.4",
+      "DBInstanceStatus": "available"
+    },
+    {
+      "DBInstanceIdentifier": "cluster-b-2",
+      "DBInstanceClass": "db.r7g.xlarge",
+      "AvailabilityZone": "eu-west-1b",
+      "Engine": "aurora-postgresql",
+      "EngineVersion": "15.4",
+      "DBInstanceStatus": "available"
+    }
+  ]
+}

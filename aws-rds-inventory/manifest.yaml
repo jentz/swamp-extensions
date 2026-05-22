@@ -1,0 +1,48 @@
+manifestVersion: 1
+name: "@jentz/aws-rds-inventory"
+version: "2026.05.22.0"
+description: |
+  Lists RDS DB clusters in the configured AWS region and emits two
+  factory-style resources — one per cluster, one per cluster-member
+  instance.
+
+  Pairs with `@jentz/aws-context-guard` upstream in a workflow so a
+  misconfigured profile or account can never reach RDS APIs.
+
+  Covers both Aurora and the non-Aurora Multi-AZ DB cluster variants
+  exposed by `DescribeDBClusters`. Standalone single-instance RDS (no
+  cluster) is out of scope.
+
+  Cluster filtering is a single CEL selector evaluated per cluster — the
+  default `true` includes every cluster the API returns. Predicates can
+  filter on engine, member count, instance classes, AWS tags, etc.
+
+  For a CSV summary of the inventory, see the companion report extension
+  `@jentz/aws-rds-inventory-csv`.
+repository: "https://github.com/jentz/swamp-extensions"
+homepage: "https://github.com/jentz/swamp-extensions/tree/main/aws-rds-inventory"
+paths:
+  base: manifest
+models:
+  - aws_rds_inventory.ts
+workflows: []
+vaults: []
+drivers: []
+datastores: []
+reports: []
+additionalFiles:
+  - README.md
+  - LICENSE.md
+platforms:
+  - linux-x86_64
+  - linux-aarch64
+  - darwin-x86_64
+  - darwin-aarch64
+labels:
+  - aws
+  - rds
+  - aurora
+  - inventory
+  - audit
+  - cloud
+dependencies: []
