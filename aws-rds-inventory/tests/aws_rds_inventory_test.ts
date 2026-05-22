@@ -220,6 +220,26 @@ Deno.test("isThrottlingError: matches by message substring", () => {
   assertEquals(isThrottlingError(new Error("RequestLimitExceeded")), true);
 });
 
+Deno.test("isThrottlingError: message fallback covers every name in the switch", () => {
+  // The `\bToken\b` regex is strict — `TooManyRequests` does not match inside
+  // `TooManyRequestsException` because there is no word boundary between `s`
+  // and `E`. The regex must spell out both bare and `*Exception`-suffixed
+  // forms so an SDK wrapper that puts the full token in `.message` while
+  // collapsing `.name` to "Error" still trips the retry path.
+  assertEquals(
+    isThrottlingError(new Error("ThrottlingException: ...")),
+    true,
+  );
+  assertEquals(
+    isThrottlingError(new Error("TooManyRequestsException: ...")),
+    true,
+  );
+  assertEquals(
+    isThrottlingError(new Error("RequestThrottledException: ...")),
+    true,
+  );
+});
+
 Deno.test("isThrottlingError: regular errors do not match", () => {
   assertEquals(isThrottlingError(new Error("connection refused")), false);
   assertEquals(isThrottlingError(undefined), false);

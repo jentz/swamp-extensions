@@ -12,7 +12,7 @@
  * is returned in `markdown` (so `swamp report get` shows the rows) and
  * mirrored under `json.csv` for machine consumers:
  *
- *   swamp data get <workflow> report-aws-rds-inventory-csv-json --json \
+ *   swamp data get --workflow <workflow> report-aws-rds-inventory-csv-json --json \
  *     | jq -r .csv > inventory.csv
  *
  * The report never throws — missing upstream step, malformed artifact,

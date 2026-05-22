@@ -421,7 +421,10 @@ async function collectClusters(
 
 /**
  * Iterate paginated `DescribeDBInstances`, retrying throttled calls, keeping
- * only instances whose identifier is in `wantedIds`.
+ * only instances whose identifier is in `wantedIds`. Stops paginating as soon
+ * as every wanted id has been found — important for accounts with many
+ * standalone (non-clustered) instances that this extension doesn't care
+ * about, where the unfiltered result set can run into thousands of rows.
  */
 async function collectInstances(
   api: RdsApi,
@@ -446,6 +449,7 @@ async function collectInstances(
         map.set(inst.DBInstanceIdentifier, inst);
       }
     }
+    if (map.size === wantedIds.size) return map;
     marker = resp.Marker;
   } while (marker);
   return map;
@@ -573,6 +577,7 @@ export async function runListClusters(
   );
 
   const handles: unknown[] = [];
+  let clusterCount = 0;
   let instanceCount = 0;
 
   for (let i = 0; i < matchedClusters.length; i++) {
@@ -580,12 +585,13 @@ export async function runListClusters(
     const ctx = matchedContexts[i];
     const clusterId = cluster.DBClusterIdentifier ?? "";
     if (clusterId === "") {
-      context.logger.warning(
+      context.logger.warn(
         "Skipping cluster with no DBClusterIdentifier (engine={engine})",
         { engine: cluster.Engine ?? "<unknown>" },
       );
       continue;
     }
+    clusterCount++;
 
     const clusterResource: ClusterResource = {
       DBClusterIdentifier: clusterId,
@@ -633,7 +639,7 @@ export async function runListClusters(
   context.logger.info(
     "Wrote {clusters} cluster resources and {instances} instance resources",
     {
-      clusters: matchedClusters.length,
+      clusters: clusterCount,
       instances: instanceCount,
     },
   );
