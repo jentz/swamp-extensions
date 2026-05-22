@@ -13,6 +13,8 @@ import {
 } from "https://deno.land/std@0.224.0/assert/mod.ts";
 
 import {
+  type AwsCluster,
+  type AwsInstance,
   type ClusterResource,
   type InstanceResource,
   type RdsApi,
@@ -41,12 +43,10 @@ async function loadFixture(filename: string): Promise<Fixture> {
  */
 function rdsApiFromFixture(fixture: Fixture): RdsApi {
   return {
-    // deno-lint-ignore no-explicit-any
     describeDBClusters: () =>
-      Promise.resolve({ DBClusters: fixture.clusters as any[] }),
-    // deno-lint-ignore no-explicit-any
+      Promise.resolve({ DBClusters: fixture.clusters as AwsCluster[] }),
     describeDBInstances: () =>
-      Promise.resolve({ DBInstances: fixture.instances as any[] }),
+      Promise.resolve({ DBInstances: fixture.instances as AwsInstance[] }),
   };
 }
 
