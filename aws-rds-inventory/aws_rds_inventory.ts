@@ -381,11 +381,12 @@ export interface AwsInstance {
   /** Instance status (note the AWS field name). */
   DBInstanceStatus?: string;
   /**
-   * Failover priority. AWS exposes this on both DBClusterMember (preferred,
-   * since we already pull DBClusterMembers) and DBInstance. We keep it here
-   * so the resource writer can fall back to the instance-side value when the
-   * member-side is unexpectedly missing — mirrors the Engine/EngineVersion
-   * fallback chain.
+   * Failover priority. AWS exposes this on both `DBClusterMember` and
+   * `DBInstance`. `buildSelectorContext` prefers this instance-side value
+   * and falls back to the member-side value when the instance omits it —
+   * mirrors the Engine / EngineVersion precedence used elsewhere in the
+   * writer. Either source is documented by AWS as authoritative, so the
+   * choice is style consistency rather than correctness.
    */
   PromotionTier?: number;
   /** Tag list from the API. */
