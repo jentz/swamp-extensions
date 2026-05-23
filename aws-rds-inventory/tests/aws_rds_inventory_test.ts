@@ -152,8 +152,15 @@ Deno.test("isRdsEngine: rejects shared-endpoint non-RDS engines and single-insta
   }
 });
 
-Deno.test("RDS_ENGINE_ALLOWLIST: is runtime-frozen", () => {
-  assertEquals(Object.isFrozen(RDS_ENGINE_ALLOWLIST), true);
+Deno.test("RDS_ENGINE_ALLOWLIST: rejects runtime mutation", () => {
+  // Real-mutation test rather than `Object.isFrozen`: a frozen Set still
+  // accepts `.add()`/`.delete()` because element storage lives in internal
+  // slots, so isFrozen would be misleading. A frozen array, by contrast,
+  // throws on push/splice in strict mode (which Deno test code runs under).
+  const mutable = RDS_ENGINE_ALLOWLIST as string[];
+  assertThrows(() => mutable.push("neptune"), TypeError);
+  assertThrows(() => mutable.splice(0, 1), TypeError);
+  assertEquals(RDS_ENGINE_ALLOWLIST.length, 4);
 });
 
 // ---------------------------------------------------------------------------

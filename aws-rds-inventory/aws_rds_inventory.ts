@@ -221,20 +221,23 @@ export interface SelectorContext {
  * engines AWS supports (`mysql`, `postgres`). Single-instance engines such as
  * Oracle, SQL Server, MariaDB, Db2, and RDS Custom surface through
  * `DescribeDBInstances` instead and are out of scope for this extension.
+ *
+ * Held as a `readonly string[]` rather than a `Set` so `Object.freeze` is
+ * load-bearing at runtime — frozen arrays reject `push`/`splice`, whereas
+ * `Object.freeze(new Set(...))` would still allow `.add()`/`.delete()` because
+ * `Set` element storage lives in internal slots that `freeze` doesn't cover.
  */
-export const RDS_ENGINE_ALLOWLIST: ReadonlySet<string> = Object.freeze(
-  new Set<string>([
-    "aurora-mysql",
-    "aurora-postgresql",
-    "mysql",
-    "postgres",
-  ]),
-);
+export const RDS_ENGINE_ALLOWLIST: readonly string[] = Object.freeze([
+  "aurora-mysql",
+  "aurora-postgresql",
+  "mysql",
+  "postgres",
+]);
 
 /** Return true when an AWS engine string belongs to an RDS engine family. */
 export function isRdsEngine(engine: unknown): boolean {
   if (typeof engine !== "string") return false;
-  return RDS_ENGINE_ALLOWLIST.has(engine.toLowerCase());
+  return RDS_ENGINE_ALLOWLIST.includes(engine.toLowerCase());
 }
 
 /**
