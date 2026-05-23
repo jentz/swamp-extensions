@@ -1,0 +1,21 @@
+{
+  "fmt": {
+    "exclude": [
+      ".swamp.yaml",
+      ".swamp/",
+      ".swamp-sources.yaml",
+      "LICENSE.md",
+      "*/LICENSE.md",
+      "README.md",
+      "*/README.md",
+      "AGENTS.md",
+      "CLAUDE.md"
+    ]
+  },
+  "lint": {
+    "exclude": [".swamp/", ".opencode/"],
+    "rules": {
+      "exclude": ["no-import-prefix"]
+    }
+  }
+}

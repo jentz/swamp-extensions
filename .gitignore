@@ -144,6 +144,17 @@ vite.config.ts.timestamp-*
 
 .playwright-cli/
 
+# Deno lockfile — swamp bundles npm: imports independently at bundle time
+# (CLAUDE.md rule #7), so a root-level lockfile isn't authoritative for
+# anything that ships. Keeping it ignored avoids drift noise on local runs.
+deno.lock
+
+# Swamp's auto-resolve cache, created when `swamp workflow validate` finds
+# a referenced @org/ext in the registry and pulls it. Not part of the source
+# tree; lives outside .swamp/ so it isn't covered by the swamp-managed section
+# below.
+extensions/
+
 # BEGIN swamp managed section - DO NOT EDIT
 
 # Runtime data (not needed in version control)
