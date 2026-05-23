@@ -105,29 +105,6 @@ swamp model create @jentz/aws-rds-inventory rds-inv \
   --global-arg region=eu-west-1
 ```
 
-## Parameterizing across runs
-
-If you want one workflow that varies the selector per run (e.g. "audit 2-node
-clusters today, 3-node clusters tomorrow"), prefer creating a separate model
-definition per shape rather than parameterizing through workflow inputs:
-
-```sh
-swamp model create @jentz/aws-rds-inventory rds-inv-2node \
-  --global-arg region=eu-west-1 \
-  --global-arg 'selector=Engine.startsWith("aurora") && members.size() == 2'
-
-swamp model create @jentz/aws-rds-inventory rds-inv-3node \
-  --global-arg region=eu-west-1 \
-  --global-arg 'selector=Engine.startsWith("aurora") && members.size() == 3'
-```
-
-Workflow direct-execution that piggybacks input values onto `inputs.selector`
-(`inputs.selector: ${{ ... members.size() == inputs.memberCount ... }}`) appears
-to work but in practice the first run's resolved value is persisted as a
-`globalArguments.selector` on `.swamp/auto-definitions/<modelType>/<id>.yaml`
-and subsequent runs ignore the workflow's current input. This is being tracked
-as a swamp runtime issue; the multi-model pattern above sidesteps it.
-
 ## Global arguments
 
 | Name       | Type             | Default  | Description                                                                                                                                                        |
