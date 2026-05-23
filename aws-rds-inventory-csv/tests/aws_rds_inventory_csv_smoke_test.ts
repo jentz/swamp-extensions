@@ -14,7 +14,7 @@ import {
   assertStringIncludes,
 } from "https://deno.land/std@0.224.0/assert/mod.ts";
 
-import { report } from "../aws_rds_inventory_csv.ts";
+import { DEFAULT_COLUMNS, report } from "../aws_rds_inventory_csv.ts";
 
 // Clear any inherited override from the developer's or CI shell so the
 // column-count assertions below don't flake on a non-default env value.
@@ -158,7 +158,7 @@ Deno.test("smoke: recorded workflow fixture renders complete CSV", async () => {
   assertEquals(lines.length, 11);
   assertEquals(
     lines[0],
-    "cluster_id,instance_id,instance_class,role,az,engine,engine_version,tags",
+    DEFAULT_COLUMNS.join(","),
   );
 
   // First data row is cluster-a's writer (writers come before readers).
@@ -209,7 +209,7 @@ Deno.test("smoke: recorded workflow fixture renders complete CSV", async () => {
   assertEquals(result.json.degraded, false);
   assertEquals(result.json.report, "@jentz/aws-rds-inventory-csv");
   assertEquals(result.json.workflow, "rds-inventory-smoke");
-  assertEquals(result.json.columns.length, 8);
+  assertEquals(result.json.columns.length, DEFAULT_COLUMNS.length);
   // The generatedAt timestamp is computed inside the never-throws envelope.
   assertEquals(typeof result.json.generatedAt, "string");
   assert(result.json.generatedAt.length > 0, "generatedAt should be populated");
@@ -236,7 +236,7 @@ Deno.test("smoke: workflow with no inventory step produces header-only CSV", asy
   const result = await report.execute(context);
   assertEquals(
     result.markdown.trim(),
-    "cluster_id,instance_id,instance_class,role,az,engine,engine_version,tags",
+    DEFAULT_COLUMNS.join(","),
   );
   assertEquals(result.json.rowCount, 0);
   assertEquals(result.json.clusterCount, 0);
