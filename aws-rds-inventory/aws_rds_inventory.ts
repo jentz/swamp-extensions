@@ -2,7 +2,8 @@
  * `@jentz/aws-rds-inventory` — list RDS DB clusters with per-member detail.
  *
  * Calls `DescribeDBClusters` and `DescribeDBInstances` against the configured
- * AWS region, applies a user-supplied CEL selector to each cluster, and emits:
+ * AWS region, drops shared-endpoint non-RDS engines, applies a user-supplied
+ * CEL selector to each remaining cluster, and emits:
  *
  *   - one `cluster` resource per matched cluster
  *   - one `instance` resource per cluster member, with a back-reference to its
@@ -40,8 +41,9 @@ const GlobalArgsSchema = z.object({
       "tool means listing the wrong account's resources.",
   ),
   selector: z.string().default("true").describe(
-    "CEL predicate evaluated per cluster. Default 'true' includes every " +
-      "cluster the API returns. See the README for the full context shape " +
+    "CEL predicate evaluated per RDS cluster after the built-in engine " +
+      "allowlist drops shared-endpoint non-RDS engines. Default 'true' " +
+      "includes every allowlisted RDS cluster. See the README for the full context shape " +
       "(cluster-level fields, the members[] array, and the tags map). " +
       "Examples: " +
       "'Engine.startsWith(\"aurora\") && members.size() == 3', " +
@@ -210,6 +212,30 @@ export interface SelectorContext {
 // ---------------------------------------------------------------------------
 // Pure helpers (exported for unit-test access)
 // ---------------------------------------------------------------------------
+
+/**
+ * Built-in RDS engine allowlist for `DescribeDBClusters`, which is a shared
+ * endpoint that also returns Neptune and DocumentDB clusters. Only the engines
+ * AWS actually surfaces through `DescribeDBClusters` are included: Aurora
+ * (`aurora-mysql`, `aurora-postgresql`) and the two Multi-AZ DB Cluster
+ * engines AWS supports (`mysql`, `postgres`). Single-instance engines such as
+ * Oracle, SQL Server, MariaDB, Db2, and RDS Custom surface through
+ * `DescribeDBInstances` instead and are out of scope for this extension.
+ */
+export const RDS_ENGINE_ALLOWLIST: ReadonlySet<string> = Object.freeze(
+  new Set<string>([
+    "aurora-mysql",
+    "aurora-postgresql",
+    "mysql",
+    "postgres",
+  ]),
+);
+
+/** Return true when an AWS engine string belongs to an RDS engine family. */
+export function isRdsEngine(engine: unknown): boolean {
+  if (typeof engine !== "string") return false;
+  return RDS_ENGINE_ALLOWLIST.has(engine.toLowerCase());
+}
 
 /**
  * Build the swamp storage key for a `cluster` resource. Prefixing with the
@@ -626,28 +652,38 @@ export async function runListClusters(
 
   const rawClusters = await collectClusters(api, context.logger);
   context.logger.info(
-    "Fetched {count} clusters from {region}",
+    "Fetched {count} DescribeDBClusters rows from {region}",
     { count: rawClusters.length, region },
   );
 
+  const clusters = rawClusters.filter((c) => isRdsEngine(c.Engine));
+  const droppedCount = rawClusters.length - clusters.length;
+  if (droppedCount > 0) {
+    context.logger.info(
+      "Dropped {droppedCount} non-RDS clusters; {kept} RDS clusters remain " +
+        "before selector evaluation",
+      { droppedCount, kept: clusters.length },
+    );
+  }
+
   const wantedIds = new Set<string>();
-  for (const c of rawClusters) {
+  for (const c of clusters) {
     for (const m of c.DBClusterMembers ?? []) {
       if (m.DBInstanceIdentifier) wantedIds.add(m.DBInstanceIdentifier);
     }
   }
   const instances = await collectInstances(api, context.logger, wantedIds);
 
-  const selectorContexts = rawClusters.map((c) =>
+  const selectorContexts = clusters.map((c) =>
     buildSelectorContext(c, instances)
   );
   const matches = evaluateSelector(predicate, selectorContexts);
 
   const matchedClusters: AwsCluster[] = [];
   const matchedContexts: SelectorContext[] = [];
-  for (let i = 0; i < rawClusters.length; i++) {
+  for (let i = 0; i < clusters.length; i++) {
     if (matches[i]) {
-      matchedClusters.push(rawClusters[i]);
+      matchedClusters.push(clusters[i]);
       matchedContexts.push(selectorContexts[i]);
     }
   }
@@ -739,13 +775,13 @@ export async function runListClusters(
 /**
  * The `@jentz/aws-rds-inventory` model.
  *
- * Single method `list_clusters` discovers RDS DB clusters via the SDK, filters
- * them with a CEL selector, and writes one `cluster` + N `instance` factory
- * resources.
+ * Single method `list_clusters` discovers RDS DB clusters via the SDK, drops
+ * shared-endpoint non-RDS engines, filters the remaining clusters with a CEL
+ * selector, and writes one `cluster` + N `instance` factory resources.
  */
 export const model = {
   type: "@jentz/aws-rds-inventory",
-  version: "2026.05.22.0",
+  version: "2026.05.23.1",
   globalArguments: GlobalArgsSchema,
   resources: {
     cluster: {

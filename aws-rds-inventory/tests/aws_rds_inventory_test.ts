@@ -19,6 +19,8 @@ import {
   clusterKey,
   evaluateSelector,
   instanceKey,
+  isRdsEngine,
+  RDS_ENGINE_ALLOWLIST,
   resolveRegion,
   type SelectorContext,
   tagsFromAws,
@@ -110,6 +112,48 @@ Deno.test("tagsFromAws: missing Value becomes empty string", () => {
 
 Deno.test("tagsFromAws: drops tags with no Key", () => {
   assertEquals(tagsFromAws([{ Value: "v" }, { Key: "", Value: "v2" }]), {});
+});
+
+// ---------------------------------------------------------------------------
+// RDS engine allowlist
+// ---------------------------------------------------------------------------
+
+Deno.test("isRdsEngine: admits the four engines DescribeDBClusters returns", () => {
+  for (
+    const engine of [
+      "aurora-mysql",
+      "aurora-postgresql",
+      "mysql",
+      "postgres",
+    ]
+  ) {
+    assertEquals(isRdsEngine(engine), true, engine);
+  }
+});
+
+Deno.test("isRdsEngine: rejects shared-endpoint non-RDS engines and single-instance-only engines", () => {
+  for (
+    const engine of [
+      "neptune",
+      "docdb",
+      "docdb-elastic",
+      "mariadb",
+      "oracle-ee",
+      "sqlserver-ee",
+      "db2-ae",
+      "custom-oracle-ee",
+      "",
+      undefined,
+      null,
+      42,
+    ]
+  ) {
+    assertEquals(isRdsEngine(engine), false, String(engine));
+  }
+});
+
+Deno.test("RDS_ENGINE_ALLOWLIST: is runtime-frozen", () => {
+  assertEquals(Object.isFrozen(RDS_ENGINE_ALLOWLIST), true);
 });
 
 // ---------------------------------------------------------------------------
@@ -455,6 +499,8 @@ Deno.test("smoke: every exported helper still has a real implementation", () => 
   assertExists(resolveRegion);
   assertExists(tagsFromAws);
   assertExists(evaluateSelector);
+  assertExists(isRdsEngine);
+  assertExists(RDS_ENGINE_ALLOWLIST);
   assertExists(withRetry);
   assertExists(isThrottlingError);
   assertNotEquals(typeof resolveRegion, "undefined");

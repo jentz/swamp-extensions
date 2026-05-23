@@ -1,0 +1,97 @@
+{
+  "description": "DescribeDBClusters shared endpoint: RDS plus Neptune and DocumentDB clusters.",
+  "clusters": [
+    {
+      "DBClusterIdentifier": "cluster-rds-mysql",
+      "Engine": "mysql",
+      "EngineVersion": "8.0.39",
+      "Status": "available",
+      "MultiAZ": true,
+      "DBClusterMembers": [
+        {
+          "DBInstanceIdentifier": "cluster-rds-mysql-1",
+          "IsClusterWriter": true,
+          "PromotionTier": 0,
+          "DBClusterParameterGroupStatus": "in-sync"
+        }
+      ],
+      "TagList": [{ "Key": "Environment", "Value": "prod" }]
+    },
+    {
+      "DBClusterIdentifier": "cluster-rds-postgres",
+      "Engine": "postgres",
+      "EngineVersion": "16.3",
+      "Status": "available",
+      "MultiAZ": true,
+      "DBClusterMembers": [
+        {
+          "DBInstanceIdentifier": "cluster-rds-postgres-1",
+          "IsClusterWriter": true,
+          "PromotionTier": 0,
+          "DBClusterParameterGroupStatus": "in-sync"
+        }
+      ],
+      "TagList": [{ "Key": "Environment", "Value": "staging" }]
+    },
+    {
+      "DBClusterIdentifier": "cluster-neptune",
+      "Engine": "neptune",
+      "EngineVersion": "1.3.2.0",
+      "Status": "available",
+      "DBClusterMembers": [
+        {
+          "DBInstanceIdentifier": "cluster-neptune-1",
+          "IsClusterWriter": true
+        }
+      ],
+      "TagList": [{ "Key": "Environment", "Value": "prod" }]
+    },
+    {
+      "DBClusterIdentifier": "cluster-docdb",
+      "Engine": "docdb",
+      "EngineVersion": "5.0.0",
+      "Status": "available",
+      "DBClusterMembers": [
+        {
+          "DBInstanceIdentifier": "cluster-docdb-1",
+          "IsClusterWriter": true
+        }
+      ],
+      "TagList": [{ "Key": "Environment", "Value": "prod" }]
+    }
+  ],
+  "instances": [
+    {
+      "DBInstanceIdentifier": "cluster-rds-mysql-1",
+      "DBInstanceClass": "db.m6gd.large",
+      "AvailabilityZone": "eu-west-1a",
+      "Engine": "mysql",
+      "EngineVersion": "8.0.39",
+      "DBInstanceStatus": "available"
+    },
+    {
+      "DBInstanceIdentifier": "cluster-rds-postgres-1",
+      "DBInstanceClass": "db.m6gd.large",
+      "AvailabilityZone": "eu-west-1b",
+      "Engine": "postgres",
+      "EngineVersion": "16.3",
+      "DBInstanceStatus": "available"
+    },
+    {
+      "DBInstanceIdentifier": "cluster-neptune-1",
+      "DBInstanceClass": "db.r6g.large",
+      "AvailabilityZone": "eu-west-1a",
+      "Engine": "neptune",
+      "EngineVersion": "1.3.2.0",
+      "DBInstanceStatus": "available"
+    },
+    {
+      "DBInstanceIdentifier": "cluster-docdb-1",
+      "DBInstanceClass": "db.r6g.large",
+      "AvailabilityZone": "eu-west-1b",
+      "Engine": "docdb",
+      "EngineVersion": "5.0.0",
+      "DBInstanceStatus": "available"
+    }
+  ]
+}
