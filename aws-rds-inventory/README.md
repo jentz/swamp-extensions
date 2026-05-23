@@ -146,14 +146,25 @@ For each cluster, the selector sees an object with these fields:
 
 Each `members[i]` carries:
 
-| Field                           | Type                     | Notes                                                                                                                  |
-| ------------------------------- | ------------------------ | ---------------------------------------------------------------------------------------------------------------------- |
-| `DBInstanceIdentifier`          | `string`                 | Member identifier. Empty if AWS omitted it.                                                                            |
-| `DBInstanceClass`               | `string`                 | e.g. `db.r7g.large`. `"unknown"` if the instance lookup returned nothing.                                              |
-| `Role`                          | `"writer"` \| `"reader"` | Derived from `IsClusterWriter` on the cluster member shape.                                                            |
-| `AvailabilityZone`              | `string`                 | Empty string if AWS omitted it. Never `undefined`.                                                                     |
-| `PromotionTier`                 | `number`                 | Failover priority, `0` (highest) – `15` (lowest). `-1` when AWS omitted the field — `0` is a real value, not "absent". |
-| `DBClusterParameterGroupStatus` | `string`                 | `in-sync`, `applying`, `pending-reboot`, `removing`, etc. Empty string when AWS omitted the field.                     |
+| Field                           | Type                     | Notes                                                                                                              |
+| ------------------------------- | ------------------------ | ------------------------------------------------------------------------------------------------------------------ |
+| `DBInstanceIdentifier`          | `string`                 | Member identifier. Empty string if AWS omitted it.                                                                 |
+| `DBInstanceClass`               | `string`                 | e.g. `db.r7g.large`. `"unknown"` if the instance lookup returned nothing.                                          |
+| `Role`                          | `"writer"` \| `"reader"` | Derived from `IsClusterWriter` on the cluster member shape.                                                        |
+| `AvailabilityZone`              | `string?` (optional)     | Present only when AWS returned it. Use `has(m.AvailabilityZone)` to test presence.                                 |
+| `PromotionTier`                 | `number?` (optional)     | Failover priority, `0` (highest) – `15` (lowest). Present only when AWS returned it. Use `has(m.PromotionTier)`.   |
+| `DBClusterParameterGroupStatus` | `string?` (optional)     | `in-sync`, `applying`, `pending-reboot`, `removing`, etc. Present only when AWS returned it. Use `has(m....)`.     |
+
+**AWS-optional fields use `has()`.** The three always-present member fields
+(`DBInstanceIdentifier`, `DBInstanceClass`, `Role`) are filled with
+default-when-missing values so simple equality predicates work without
+guards. The AWS-optional fields above are deliberately left absent on the
+object when AWS didn't return them, so `has(m.PromotionTier)` returns
+`false` and a CEL range predicate against a missing value throws — that's
+the explicit behavior, not a footgun. An earlier design used `-1` / `""`
+sentinels; both leaked through range and equality predicates in ways that
+were surprising for selector authors, so the fields are now genuinely
+absent when AWS omits them.
 
 ### Selector examples
 
@@ -174,10 +185,14 @@ has(tags.Environment) && tags["Environment"] == "prod"
 MultiAZ == true && Engine == "mysql"
 
 # 6. Failover topology audit — any reader at tier 0 races the writer.
-members.exists(m, m.Role == "reader" && m.PromotionTier == 0)
+#    has() is required because AWS may omit PromotionTier on legacy clusters.
+members.exists(m,
+  m.Role == "reader" && has(m.PromotionTier) && m.PromotionTier == 0)
 
 # 7. Parameter-group drift — at least one member still applying the new group.
-members.exists(m, m.DBClusterParameterGroupStatus == "pending-reboot")
+members.exists(m,
+  has(m.DBClusterParameterGroupStatus) &&
+  m.DBClusterParameterGroupStatus == "pending-reboot")
 ```
 
 **Tag access caveat.** The bundled CEL runtime throws when a selector accesses a
@@ -192,11 +207,15 @@ Bracket access is required for tag keys that contain hyphens, dots, or other
 characters that aren't valid CEL identifiers — `tags["cost-center"]` works,
 `tags.cost-center` does not.
 
-**No `undefined` in the selector context.** Every cluster-level field above is
-always populated — empty string for missing strings, `false` for missing
-`MultiAZ`. The same goes for member-level `AvailabilityZone`: it's `""` when AWS
-omits it, never `undefined`. Selectors can write `EngineVersion != ""` or
-`m.AvailabilityZone == ""` without a `has()` guard.
+**Two presence conventions in the selector context.** Cluster-level fields
+(`Engine`, `EngineVersion`, `Status`, `MultiAZ`) are always populated with
+default-when-missing values — empty string for strings, `false` for
+`MultiAZ`. Selectors can write `EngineVersion != ""` without a `has()`
+guard. Member-level AWS-optional fields (`AvailabilityZone`, `PromotionTier`,
+`DBClusterParameterGroupStatus`) are deliberately left absent when AWS
+omits them — use `has(m.<field>)` to test presence, matching the `has(tags.X)`
+pattern above. This avoids sentinel leak through range predicates and
+ambiguous "AWS returned empty" semantics.
 
 **Non-boolean results are rejected.** A selector like `members.size()` (without
 `== N`) evaluates to a number and is rejected with a clear error naming the
@@ -243,7 +262,7 @@ identifier without colliding). Lifetime `infinite`, retain last 10 versions.
 | `Engine`                        | `string`              | Falls back to the cluster's engine on missing.                                                                                                                               |
 | `EngineVersion`                 | `string?`             |                                                                                                                                                                              |
 | `Status`                        | `string?`             | `DBInstanceStatus`.                                                                                                                                                          |
-| `PromotionTier`                 | `number?`             | Failover priority, `0` (highest) – `15` (lowest). Omitted (not `-1`) when AWS didn't return the field — the selector-side `-1` sentinel does not leak to the resource shape. |
+| `PromotionTier`                 | `number?`             | Failover priority, `0` (highest) – `15` (lowest). Absent when AWS didn't return the field.                                                                                  |
 | `DBClusterParameterGroupStatus` | `string?`             | Parameter-group apply status. Omitted when AWS didn't return the field.                                                                                                      |
 | `tags`                          | `map<string,string>`  | Per-instance tags.                                                                                                                                                           |
 

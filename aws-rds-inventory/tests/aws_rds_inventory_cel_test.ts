@@ -238,10 +238,12 @@ Deno.test(
   () => {
     // PromotionTier 0 = highest failover priority. If every reader is at tier
     // 0, AWS picks one at random during failover. The selector below admits
-    // clusters that exhibit this anti-pattern.
+    // clusters that exhibit this anti-pattern. `has()` is required because
+    // AWS may legitimately omit PromotionTier on some legacy/edge clusters,
+    // and an unguarded range comparison against an absent field throws.
     const env = realCelEnv();
     const pred = env.parse(
-      'members.exists(m, m.Role == "reader" && m.PromotionTier == 0)',
+      'members.exists(m, m.Role == "reader" && has(m.PromotionTier) && m.PromotionTier == 0)',
     );
     assertEquals(
       evaluateSelector(pred, [
@@ -296,9 +298,12 @@ Deno.test(
 Deno.test(
   "cel-runtime: parameter-group-status drift filter",
   () => {
+    // Equality predicate works without has() because absent keys short-
+    // circuit to false under cel-js for `==` checks on map-style members
+    // — but we still recommend has() in the README for safety.
     const env = realCelEnv();
     const pred = env.parse(
-      'members.exists(m, m.DBClusterParameterGroupStatus == "pending-reboot")',
+      'members.exists(m, has(m.DBClusterParameterGroupStatus) && m.DBClusterParameterGroupStatus == "pending-reboot")',
     );
     assertEquals(
       evaluateSelector(pred, [
@@ -314,6 +319,46 @@ Deno.test(
               DBClusterParameterGroupStatus: "pending-reboot",
             },
           ],
+        }),
+      ]),
+      [false, true],
+    );
+  },
+);
+
+Deno.test(
+  "cel-runtime: has() returns false for AWS-omitted member fields (no -1/'' sentinel leak)",
+  () => {
+    // Members where AWS didn't return PromotionTier or
+    // DBClusterParameterGroupStatus should be filtered out by a has()
+    // guard. Without optional-key semantics this test would tautologically
+    // pass (sentinels would be present); with the optional design the
+    // missing key is genuinely absent and has() returns false.
+    const env = realCelEnv();
+    const pred = env.parse(
+      "members.exists(m, has(m.PromotionTier))",
+    );
+    assertEquals(
+      evaluateSelector(pred, [
+        // Member with no PromotionTier — built via buildSelectorContext to
+        // exercise the real production path (not a hand-rolled literal).
+        buildSelectorContext({
+          DBClusterIdentifier: "c1",
+          DBClusterMembers: [{
+            DBInstanceIdentifier: "i-1",
+            IsClusterWriter: true,
+          }],
+        }, new Map()),
+        // Member where AWS returned tier 0.
+        ctx({
+          members: [{
+            DBInstanceIdentifier: "i-1",
+            DBInstanceClass: "db.r7g.large",
+            Role: "writer",
+            AvailabilityZone: "eu-west-1a",
+            PromotionTier: 0,
+            DBClusterParameterGroupStatus: "in-sync",
+          }],
         }),
       ]),
       [false, true],

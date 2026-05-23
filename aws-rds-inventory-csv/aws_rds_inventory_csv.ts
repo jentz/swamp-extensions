@@ -49,6 +49,8 @@ export const DEFAULT_COLUMNS = [
   "az",
   "engine",
   "engine_version",
+  "promotion_tier",
+  "parameter_group_status",
   "tags",
 ] as const;
 
@@ -120,6 +122,8 @@ const InstanceSchema = z.object({
   Engine: z.string(),
   EngineVersion: z.string().optional(),
   Status: z.string().optional(),
+  PromotionTier: z.number().optional(),
+  DBClusterParameterGroupStatus: z.string().optional(),
   tags: TagsSchema,
 });
 
@@ -141,6 +145,10 @@ export interface Instance {
   EngineVersion?: string;
   /** Instance lifecycle status. */
   Status?: string;
+  /** Failover priority, 0-15. Absent when AWS omitted the field. */
+  PromotionTier?: number;
+  /** Parameter-group apply status (`in-sync`, `applying`, etc). Absent when AWS omitted the field. */
+  DBClusterParameterGroupStatus?: string;
   /** Per-instance tags (flattened). */
   tags: Record<string, string>;
 }
@@ -466,6 +474,12 @@ function valueForColumn(instance: Instance, column: ColumnName): string {
       return instance.Engine;
     case "engine_version":
       return instance.EngineVersion ?? "";
+    case "promotion_tier":
+      return instance.PromotionTier === undefined
+        ? ""
+        : String(instance.PromotionTier);
+    case "parameter_group_status":
+      return instance.DBClusterParameterGroupStatus ?? "";
     case "tags":
       return stableTagJson(instance.tags);
   }

@@ -101,6 +101,8 @@ function instance(
     Engine: overrides.Engine ?? "aurora-mysql",
     EngineVersion: overrides.EngineVersion ?? "8.0.mysql_aurora.3.08.2",
     Status: overrides.Status,
+    PromotionTier: overrides.PromotionTier,
+    DBClusterParameterGroupStatus: overrides.DBClusterParameterGroupStatus,
     tags: overrides.tags ?? {},
   };
 }
@@ -170,11 +172,38 @@ Deno.test("stableTagJson handles empty tags", () => {
 
 Deno.test("renderCsv: empty input produces header-only CSV", () => {
   const out = renderCsv([]);
-  assertEquals(
-    out,
-    "cluster_id,instance_id,instance_class,role,az,engine,engine_version,tags\n",
-  );
+  // Header is derived from DEFAULT_COLUMNS — keep this assertion aligned
+  // with the const rather than hard-coding the string, so column additions
+  // don't break the test mechanically.
+  assertEquals(out, DEFAULT_COLUMNS.join(",") + "\n");
 });
+
+Deno.test(
+  "renderCsv: promotion_tier and parameter_group_status columns render values when present, empty when absent",
+  () => {
+    const out = renderCsv([
+      instance("cluster-a", "inst-1", {
+        Role: "writer",
+        PromotionTier: 0,
+        DBClusterParameterGroupStatus: "in-sync",
+      }),
+      // Second instance omits the optional fields — exercises the
+      // absent-field passthrough so the column renderer's empty-string
+      // fallback is tested end-to-end.
+      instance("cluster-a", "inst-2", { Role: "reader" }),
+    ]);
+    const rows = out.trim().split("\n");
+    const header = rows[0].split(",");
+    const tierIdx = header.indexOf("promotion_tier");
+    const statusIdx = header.indexOf("parameter_group_status");
+    const writer = rows[1].split(",");
+    const reader = rows[2].split(",");
+    assertEquals(writer[tierIdx], "0");
+    assertEquals(writer[statusIdx], "in-sync");
+    assertEquals(reader[tierIdx], "");
+    assertEquals(reader[statusIdx], "");
+  },
+);
 
 Deno.test("renderCsv: single cluster writer-then-reader ordering", () => {
   const out = renderCsv([

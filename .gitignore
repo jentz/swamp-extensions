@@ -152,8 +152,10 @@ deno.lock
 # Swamp's auto-resolve cache, created when `swamp workflow validate` finds
 # a referenced @org/ext in the registry and pulls it. Not part of the source
 # tree; lives outside .swamp/ so it isn't covered by the swamp-managed section
-# below.
-extensions/
+# below. Anchored to the repo root so a nested `extensions/` directory
+# (e.g. one a contributor creates under an extension dir for organizing
+# models) is not silently ignored.
+/extensions/
 
 # BEGIN swamp managed section - DO NOT EDIT
 

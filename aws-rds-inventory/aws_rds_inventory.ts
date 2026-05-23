@@ -41,15 +41,13 @@ const GlobalArgsSchema = z.object({
   ),
   selector: z.string().default("true").describe(
     "CEL predicate evaluated per cluster. Default 'true' includes every " +
-      "cluster the API returns. The predicate sees the cluster's top-level " +
-      "fields (Engine, EngineVersion, Status, MultiAZ, ...), a members array " +
-      "of {DBInstanceIdentifier, DBInstanceClass, Role, AvailabilityZone, " +
-      "PromotionTier, DBClusterParameterGroupStatus}, and a tags map. " +
+      "cluster the API returns. See the README for the full context shape " +
+      "(cluster-level fields, the members[] array, and the tags map). " +
       "Examples: " +
       "'Engine.startsWith(\"aurora\") && members.size() == 3', " +
       "'tags.Environment == \"prod\"', " +
       "'members.exists(m, m.DBInstanceClass.startsWith(\"db.r7g\"))', " +
-      "'members.exists(m, m.PromotionTier == 0 && m.Role == \"reader\")'.",
+      "'members.exists(m, has(m.PromotionTier) && m.PromotionTier == 0)'.",
   ),
 });
 
@@ -126,14 +124,17 @@ export interface InstanceResource {
   /** Instance lifecycle status (`available`, ...). */
   Status?: string;
   /**
-   * Failover priority, 0 (highest) – 15 (lowest). Sourced from the cluster
-   * member shape, not the instance shape. Undefined when AWS omits the field.
+   * Failover priority, 0 (highest) – 15 (lowest). AWS returns this on both
+   * the cluster-member and the DB-instance shape; we prefer the instance
+   * value when present (matching the Engine/EngineVersion/Status pattern).
+   * Undefined when AWS omits the field on both sides.
    */
   PromotionTier?: number;
   /**
    * Whether the cluster's parameter group has been applied to this member.
    * Typical values: `in-sync`, `applying`, `pending-reboot`, `removing`.
-   * Sourced from the cluster member shape. Undefined when AWS omits the field.
+   * Sourced from the cluster member shape (not available on the instance
+   * shape). Undefined when AWS omits the field.
    */
   DBClusterParameterGroupStatus?: string;
   /** Per-instance tags, flattened from AWS's `[{Key,Value},...]` array. */
@@ -141,10 +142,19 @@ export interface InstanceResource {
 }
 
 /**
- * One member's selector-context view. Every field is always populated — empty
- * strings stand in for absent optional values so CEL selectors don't have to
- * grapple with JS `undefined`. Numeric fields use `-1` as the "AWS omitted it"
- * sentinel since `0` is a real value (highest failover priority).
+ * One member's selector-context view. The three "always-present" fields
+ * (`DBInstanceIdentifier`, `DBInstanceClass`, `Role`) are always populated —
+ * the resolver fills `"unknown"` / `""` so basic selectors don't need `has()`
+ * guards. Fields that AWS can legitimately omit (`AvailabilityZone`,
+ * `PromotionTier`, `DBClusterParameterGroupStatus`) are left absent on the
+ * object when AWS didn't return them; selectors should use `has(m.<field>)`
+ * to test presence, matching the documented `has(tags.X)` pattern.
+ *
+ * The absent-rather-than-sentinel choice is deliberate for the AWS-optional
+ * fields: a `-1` sentinel for `PromotionTier` silently passes range
+ * predicates (e.g. `m.PromotionTier <= 1` matches absent members), and a
+ * `""` sentinel for the status string can't distinguish "AWS omitted" from
+ * "AWS returned empty".
  */
 export interface SelectorMember {
   /** AWS instance identifier of this member; empty if the API omitted it. */
@@ -153,18 +163,24 @@ export interface SelectorMember {
   DBInstanceClass: string;
   /** Writer or reader role, derived from `IsClusterWriter`. */
   Role: "writer" | "reader";
-  /** Availability zone of the instance, or `""` if absent. */
-  AvailabilityZone: string;
   /**
-   * Failover priority, 0 (highest) – 15 (lowest). `-1` when AWS omitted the
-   * field. Selectors can write `m.PromotionTier == 0` without a `has()` guard.
+   * Availability zone of the instance. Absent (not `""`) when AWS omitted
+   * the field. Use `has(m.AvailabilityZone)` in CEL to test presence.
    */
-  PromotionTier: number;
+  AvailabilityZone?: string;
+  /**
+   * Failover priority, 0 (highest) – 15 (lowest). Absent when AWS omitted
+   * the field. Use `has(m.PromotionTier)` in CEL before any comparison —
+   * an unguarded range predicate (`m.PromotionTier <= 1`) throws when the
+   * field is absent.
+   */
+  PromotionTier?: number;
   /**
    * Parameter-group apply status: `in-sync`, `applying`, `pending-reboot`,
-   * `removing`, etc. Empty string when AWS omitted the field.
+   * `removing`, etc. Absent when AWS omitted the field; use
+   * `has(m.DBClusterParameterGroupStatus)` to test presence.
    */
-  DBClusterParameterGroupStatus: string;
+  DBClusterParameterGroupStatus?: string;
 }
 
 /**
@@ -364,6 +380,14 @@ export interface AwsInstance {
   EngineVersion?: string;
   /** Instance status (note the AWS field name). */
   DBInstanceStatus?: string;
+  /**
+   * Failover priority. AWS exposes this on both DBClusterMember (preferred,
+   * since we already pull DBClusterMembers) and DBInstance. We keep it here
+   * so the resource writer can fall back to the instance-side value when the
+   * member-side is unexpectedly missing — mirrors the Engine/EngineVersion
+   * fallback chain.
+   */
+  PromotionTier?: number;
   /** Tag list from the API. */
   TagList?: AwsTag[];
 }
@@ -486,26 +510,49 @@ async function collectInstances(
 }
 
 /**
- * Roll an AWS cluster + its members into a selector-context object. Every
- * field is populated with a concrete value so CEL selectors don't have to
- * defend against `undefined`.
+ * Roll an AWS cluster + its members into a selector-context object.
+ *
+ * Cluster-level fields and the three always-present member fields
+ * (`DBInstanceIdentifier`, `DBInstanceClass`, `Role`) are filled with empty
+ * defaults (`""` / `false` / `"unknown"`) so simple equality predicates
+ * don't need `has()` guards. The AWS-optional member fields
+ * (`AvailabilityZone`, `PromotionTier`, `DBClusterParameterGroupStatus`)
+ * are left absent on the object when AWS didn't return them — selectors
+ * use `has(m.<field>)` to test presence. See {@link SelectorMember} for
+ * the rationale.
  */
 export function buildSelectorContext(
   cluster: AwsCluster,
   instances: Map<string, AwsInstance>,
 ): SelectorContext {
-  const members = (cluster.DBClusterMembers ?? []).map((m) => {
-    const id = m.DBInstanceIdentifier ?? "";
-    const inst = instances.get(id);
-    return {
-      DBInstanceIdentifier: id,
-      DBInstanceClass: inst?.DBInstanceClass ?? "unknown",
-      Role: (m.IsClusterWriter ? "writer" : "reader") as "writer" | "reader",
-      AvailabilityZone: inst?.AvailabilityZone ?? "",
-      PromotionTier: m.PromotionTier ?? -1,
-      DBClusterParameterGroupStatus: m.DBClusterParameterGroupStatus ?? "",
-    };
-  });
+  const members: SelectorMember[] = (cluster.DBClusterMembers ?? []).map(
+    (m) => {
+      const id = m.DBInstanceIdentifier ?? "";
+      const inst = instances.get(id);
+      const member: SelectorMember = {
+        DBInstanceIdentifier: id,
+        DBInstanceClass: inst?.DBInstanceClass ?? "unknown",
+        Role: (m.IsClusterWriter ? "writer" : "reader") as "writer" | "reader",
+      };
+      // AvailabilityZone: prefer the instance shape (canonical) but fall
+      // through to undefined when neither side returned it.
+      if (inst?.AvailabilityZone !== undefined) {
+        member.AvailabilityZone = inst.AvailabilityZone;
+      }
+      // PromotionTier: prefer the instance-side value, then the
+      // cluster-member-side value — both AWS shapes carry it; the writer
+      // pattern for Engine/EngineVersion is the same.
+      const promotionTier = inst?.PromotionTier ?? m.PromotionTier;
+      if (promotionTier !== undefined) {
+        member.PromotionTier = promotionTier;
+      }
+      // DBClusterParameterGroupStatus: cluster-member-side only.
+      if (m.DBClusterParameterGroupStatus !== undefined) {
+        member.DBClusterParameterGroupStatus = m.DBClusterParameterGroupStatus;
+      }
+      return member;
+    },
+  );
   return {
     DBClusterIdentifier: cluster.DBClusterIdentifier ?? "",
     Engine: cluster.Engine ?? "",
@@ -651,17 +698,15 @@ export async function runListClusters(
         DBClusterIdentifier: clusterId,
         DBInstanceClass: m.DBInstanceClass,
         Role: m.Role,
+        // SelectorMember already left these absent when AWS omitted, so the
+        // straight passthrough preserves the no-undefined-keys property of
+        // the JSON-serialized resource.
         AvailabilityZone: m.AvailabilityZone,
         Engine: awsInst?.Engine ?? cluster.Engine ?? "unknown",
         EngineVersion: awsInst?.EngineVersion ?? cluster.EngineVersion,
         Status: awsInst?.DBInstanceStatus,
-        // -1 is the SelectorMember "AWS omitted it" sentinel; collapse it back
-        // to undefined on the resource so consumers don't have to know about
-        // the selector-side convention.
-        PromotionTier: m.PromotionTier === -1 ? undefined : m.PromotionTier,
-        DBClusterParameterGroupStatus: m.DBClusterParameterGroupStatus === ""
-          ? undefined
-          : m.DBClusterParameterGroupStatus,
+        PromotionTier: m.PromotionTier,
+        DBClusterParameterGroupStatus: m.DBClusterParameterGroupStatus,
         tags: tagsFromAws(awsInst?.TagList),
       };
       instanceCount++;

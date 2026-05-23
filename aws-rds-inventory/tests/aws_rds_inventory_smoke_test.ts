@@ -188,6 +188,16 @@ Deno.test("smoke: aurora-postgres 2-node fixture identifies writer + reader", as
   for (const i of out.instances) {
     assertEquals(i.data.Engine, "aurora-postgresql");
   }
+
+  // Fixture omits PromotionTier and DBClusterParameterGroupStatus on members
+  // — exercises the absent-field path end-to-end. The InstanceResource
+  // writer follows the existing Status/EngineVersion pattern (set the key
+  // with `undefined` so JSON.stringify drops it), so consumers see absent
+  // after the JSON round-trip.
+  for (const i of out.instances) {
+    assertEquals(i.data.PromotionTier, undefined);
+    assertEquals(i.data.DBClusterParameterGroupStatus, undefined);
+  }
 });
 
 Deno.test("smoke: non-Aurora Multi-AZ DB cluster (engine=mysql) flows through", async () => {

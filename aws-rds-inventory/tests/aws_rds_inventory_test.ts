@@ -168,14 +168,25 @@ Deno.test("buildSelectorContext: defaults optional fields to deterministic value
   assertEquals(ctx.tags, {});
 });
 
-Deno.test("buildSelectorContext: member AZ defaults to empty string when AWS omits it", () => {
-  const ctx = buildSelectorContext({
-    DBClusterIdentifier: "cluster-x",
-    DBClusterMembers: [{ DBInstanceIdentifier: "i-1", IsClusterWriter: true }],
-  }, new Map());
-  // Instance not in the map (we never looked it up), so AZ stays empty.
-  assertEquals(ctx.members[0].AvailabilityZone, "");
-});
+Deno.test(
+  "buildSelectorContext: AWS-optional member fields are left absent when AWS omits them",
+  () => {
+    const ctx = buildSelectorContext({
+      DBClusterIdentifier: "cluster-x",
+      DBClusterMembers: [{
+        DBInstanceIdentifier: "i-1",
+        IsClusterWriter: true,
+      }],
+    }, new Map());
+    // Instance not in the map and member shape lacks the optional fields:
+    // the keys must be absent on the object, not present-and-undefined, so
+    // CEL `has(m.<field>)` returns false. `key in obj` is the discriminator.
+    const m = ctx.members[0];
+    assertEquals("AvailabilityZone" in m, false);
+    assertEquals("PromotionTier" in m, false);
+    assertEquals("DBClusterParameterGroupStatus" in m, false);
+  },
+);
 
 Deno.test(
   "buildSelectorContext: PromotionTier and DBClusterParameterGroupStatus surface on members when AWS returns them",
@@ -198,19 +209,25 @@ Deno.test(
 );
 
 Deno.test(
-  "buildSelectorContext: PromotionTier defaults to -1 sentinel, ParameterGroupStatus to '' when AWS omits them",
+  "buildSelectorContext: PromotionTier falls through from the DBInstance shape when the cluster member shape omits it",
   () => {
-    const ctx = buildSelectorContext({
-      DBClusterIdentifier: "cluster-x",
-      DBClusterMembers: [{
+    const ctx = buildSelectorContext(
+      {
+        DBClusterIdentifier: "cluster-x",
+        DBClusterMembers: [{
+          DBInstanceIdentifier: "i-1",
+          IsClusterWriter: true,
+          // No PromotionTier on the member.
+        }],
+      },
+      new Map([["i-1", {
         DBInstanceIdentifier: "i-1",
-        IsClusterWriter: true,
-      }],
-    }, new Map());
-    // -1 not 0 — 0 is the highest priority, a real value, so it can't be the
-    // "missing" sentinel.
-    assertEquals(ctx.members[0].PromotionTier, -1);
-    assertEquals(ctx.members[0].DBClusterParameterGroupStatus, "");
+        DBInstanceClass: "db.r7g.large",
+        PromotionTier: 3,
+      }]]),
+    );
+    // Instance-side value is used as the fallback.
+    assertEquals(ctx.members[0].PromotionTier, 3);
   },
 );
 

@@ -75,8 +75,13 @@ The `report-aws-rds-inventory-csv-json` artifact carries:
 Default columns, in order:
 
 ```
-cluster_id,instance_id,instance_class,role,az,engine,engine_version,tags
+cluster_id,instance_id,instance_class,role,az,engine,engine_version,promotion_tier,parameter_group_status,tags
 ```
+
+`promotion_tier` and `parameter_group_status` are passthroughs from the
+upstream inventory's enriched member shape. They render the AWS value when
+present and an empty CSV cell when AWS didn't return the field — same
+convention as `az` and `engine_version`.
 
 Override with `AWS_RDS_INVENTORY_CSV_COLUMNS` — a comma-separated subset of the
 defaults in any order. Unknown column names log a warning and are skipped; the
