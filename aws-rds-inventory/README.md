@@ -11,8 +11,11 @@ For a CSV summary of the inventory, see the companion report extension
 ## What it does
 
 A single method, `list_clusters`, calls `DescribeDBClusters` and
-`DescribeDBInstances` against the configured region. For every cluster that
-matches a user-supplied CEL selector it writes:
+`DescribeDBInstances` against the configured region. Because
+`DescribeDBClusters` is a shared AWS endpoint, the extension first drops
+non-RDS engines such as Neptune and DocumentDB with a built-in RDS engine
+allowlist. For every remaining RDS cluster that matches a user-supplied CEL
+selector it writes:
 
 - one **`cluster`** factory resource per matched cluster
 - one **`instance`** factory resource per cluster member, with a
@@ -28,24 +31,21 @@ misconfigured profile or account can never reach RDS APIs.
 
 ## What is and is NOT in scope
 
-| Surface                                                                             | In scope                                                                   |
-| ----------------------------------------------------------------------------------- | -------------------------------------------------------------------------- |
-| Aurora clusters (`aurora-mysql`, `aurora-postgresql`)                               | Yes                                                                        |
-| Non-Aurora Multi-AZ DB clusters (`mysql`, `postgres`, `mariadb` in MAZ mode)        | Yes — flow through `DescribeDBClusters` the same way as Aurora             |
-| Single-instance standalone RDS (no cluster, returned only by `DescribeDBInstances`) | **Out of scope** — a different API surface; not surfaced by this extension |
-| RDS Proxy, Aurora Limitless, RDS Custom                                             | **Out of scope** — separate API surfaces                                   |
+| Surface                                                                                       | In scope                                                                   |
+| --------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------- |
+| Aurora clusters (`aurora-mysql`, `aurora-postgresql`)                                         | Yes                                                                        |
+| Non-Aurora Multi-AZ DB clusters (`mysql`, `postgres`)                                         | Yes — flow through `DescribeDBClusters` the same way as Aurora             |
+| Single-instance standalone RDS (no cluster, returned only by `DescribeDBInstances`)           | **Out of scope** — a different API surface; not surfaced by this extension |
+| Single-instance engines: RDS for Oracle / SQL Server / MariaDB / Db2 / RDS Custom             | **Out of scope** — these engines surface through `DescribeDBInstances`, not `DescribeDBClusters` |
+| RDS Proxy                                                                                     | **Out of scope** — separate API surface                                    |
 
 If you need standalone-RDS inventory, file an issue and we'll consider a sibling
 extension.
 
-**Caveat — Neptune / DocumentDB.** Amazon Neptune and DocumentDB also surface
-through the same `DescribeDBClusters` endpoint as RDS, so they will appear in
-the unfiltered output (default selector `"true"`). Filter them out with a
-selector if you want pure RDS results:
-
-```cel
-Engine != "neptune" && !Engine.startsWith("docdb")
-```
+The built-in allowlist admits exactly the four engines `DescribeDBClusters`
+actually returns: `aurora-mysql`, `aurora-postgresql`, `mysql`, and `postgres`.
+Shared-endpoint non-RDS engines such as `neptune`, `docdb`, and
+`docdb-elastic` are dropped by default and never reach the user selector.
 
 ## Installation
 
@@ -115,7 +115,7 @@ swamp model create @jentz/aws-rds-inventory rds-inv \
 | Name       | Type             | Default  | Description                                                                                                                                                        |
 | ---------- | ---------------- | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `region`   | string, optional | (unset)  | AWS region to query. Resolution order: this global arg, then `AWS_REGION` env, then `AWS_DEFAULT_REGION` env. If none are set the method throws.                   |
-| `selector` | string           | `"true"` | CEL predicate evaluated per cluster. Returns a boolean; non-boolean results throw before any AWS-side work. Default `"true"` admits every cluster the API returns. |
+| `selector` | string           | `"true"` | CEL predicate evaluated per allowlisted RDS cluster. Returns a boolean; non-boolean results throw before any resource is written. Default `"true"` admits every RDS cluster after the built-in engine allowlist drops shared-endpoint non-RDS engines. |
 
 ### Region resolution
 
@@ -132,12 +132,13 @@ The resolved region is logged at `info` level on every run.
 
 ### Selector context
 
-For each cluster, the selector sees an object with these fields:
+For each allowlisted RDS cluster, the selector sees an object with these fields.
+Non-RDS engines are filtered out before this selector context is built:
 
 | Field                 | Type                 | Notes                                                                                       |
 | --------------------- | -------------------- | ------------------------------------------------------------------------------------------- |
 | `DBClusterIdentifier` | `string`             | Cluster name from AWS.                                                                      |
-| `Engine`              | `string`             | e.g. `aurora-mysql`, `aurora-postgresql`, `mysql`, `postgres`, `mariadb`. Empty if missing. |
+| `Engine`              | `string`             | One of `aurora-mysql`, `aurora-postgresql`, `mysql`, `postgres` (the four engines the allowlist admits). Empty if missing. |
 | `EngineVersion`       | `string`             | Empty string if AWS omitted it; never `undefined`.                                          |
 | `Status`              | `string`             | e.g. `available`, `creating`. Empty string if missing.                                      |
 | `MultiAZ`             | `boolean`            | `true` for Multi-AZ DB clusters; defaults to `false` when AWS omits the field.              |
@@ -169,7 +170,7 @@ absent when AWS omits them.
 ### Selector examples
 
 ```cel
-# 1. Include everything (default).
+# 1. Include every allowlisted RDS cluster (default).
 true
 
 # 2. Aurora clusters with exactly three members.

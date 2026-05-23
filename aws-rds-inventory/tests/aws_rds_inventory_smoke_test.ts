@@ -210,6 +210,55 @@ Deno.test("smoke: non-Aurora Multi-AZ DB cluster (engine=mysql) flows through", 
   assertEquals(out.instances.length, 3);
 });
 
+Deno.test("smoke: shared-endpoint Neptune and DocumentDB clusters are dropped by default", async () => {
+  const fixture = await loadFixture("shared_endpoint_mixed_engines.json");
+  const out = await runWithFixture(fixture);
+
+  assertEquals(
+    new Set(out.clusters.map((c) => c.data.Engine)),
+    new Set(["mysql", "postgres"]),
+  );
+  assertEquals(
+    out.instances.some((i) => ["neptune", "docdb"].includes(i.data.Engine)),
+    false,
+  );
+});
+
+Deno.test("smoke: non-RDS clusters are dropped before selector evaluation", async () => {
+  const fixture = await loadFixture("shared_endpoint_mixed_engines.json");
+  const out = await runWithFixture(fixture, {
+    region: "eu-west-1",
+    selector: "ctx.Engine === 'neptune' || ctx.Engine === 'docdb'",
+  });
+
+  // Selector matches neptune/docdb only. If the allowlist runs BEFORE the
+  // selector (correct ordering), no clusters match and nothing is written.
+  // If it ran AFTER, both non-RDS clusters would match and be written.
+  assertEquals(out.clusters.length, 0);
+  assertEquals(out.instances.length, 0);
+
+  // Belt-and-braces: the dropped-count log proves the filter ran.
+  const droppedLog = out.logs.find((l) =>
+    l.message.includes("non-RDS clusters") &&
+    l.message.includes("before selector evaluation")
+  );
+  assertExists(droppedLog);
+});
+
+Deno.test("smoke: selector composes on top of allowlisted RDS clusters", async () => {
+  const fixture = await loadFixture("shared_endpoint_mixed_engines.json");
+  const out = await runWithFixture(fixture, {
+    region: "eu-west-1",
+    selector: "ctx.Engine === 'mysql'",
+  });
+
+  assertEquals(out.clusters.length, 1);
+  assertEquals(out.clusters[0].data.DBClusterIdentifier, "cluster-rds-mysql");
+  assertEquals(out.clusters[0].data.Engine, "mysql");
+  assertEquals(out.instances.length, 1);
+  assertEquals(out.instances[0].data.DBClusterIdentifier, "cluster-rds-mysql");
+});
+
 Deno.test("smoke: empty region produces zero resources", async () => {
   const fixture = await loadFixture("empty_region.json");
   const out = await runWithFixture(fixture);
