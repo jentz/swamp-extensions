@@ -153,7 +153,7 @@ Each `members[i]` carries:
 | `Role`                          | `"writer"` \| `"reader"` | Derived from `IsClusterWriter` on the cluster member shape.                                                        |
 | `AvailabilityZone`              | `string?` (optional)     | Present only when AWS returned it. Use `has(m.AvailabilityZone)` to test presence.                                 |
 | `PromotionTier`                 | `number?` (optional)     | Failover priority, `0` (highest) – `15` (lowest). Present only when AWS returned it. Use `has(m.PromotionTier)`.   |
-| `DBClusterParameterGroupStatus` | `string?` (optional)     | `in-sync`, `applying`, `pending-reboot`, `removing`, etc. Present only when AWS returned it. Use `has(m....)`.     |
+| `DBClusterParameterGroupStatus` | `string?` (optional)     | `in-sync`, `applying`, `pending-reboot`, `removing`, etc. Present only when AWS returned it. Use `has(m.DBClusterParameterGroupStatus)`. |
 
 **AWS-optional fields use `has()`.** The three always-present member fields
 (`DBInstanceIdentifier`, `DBInstanceClass`, `Role`) are filled with
