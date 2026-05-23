@@ -129,6 +129,8 @@ function ctx(over: Partial<SelectorContext> = {}): SelectorContext {
         DBInstanceClass: "db.r7g.large",
         Role: "writer",
         AvailabilityZone: "eu-west-1a",
+        PromotionTier: 1,
+        DBClusterParameterGroupStatus: "in-sync",
       },
     ],
     tags: { Environment: "prod" },
@@ -174,6 +176,43 @@ Deno.test("buildSelectorContext: member AZ defaults to empty string when AWS omi
   // Instance not in the map (we never looked it up), so AZ stays empty.
   assertEquals(ctx.members[0].AvailabilityZone, "");
 });
+
+Deno.test(
+  "buildSelectorContext: PromotionTier and DBClusterParameterGroupStatus surface on members when AWS returns them",
+  () => {
+    const ctx = buildSelectorContext({
+      DBClusterIdentifier: "cluster-x",
+      DBClusterMembers: [{
+        DBInstanceIdentifier: "i-1",
+        IsClusterWriter: true,
+        PromotionTier: 0,
+        DBClusterParameterGroupStatus: "pending-reboot",
+      }],
+    }, new Map());
+    assertEquals(ctx.members[0].PromotionTier, 0);
+    assertEquals(
+      ctx.members[0].DBClusterParameterGroupStatus,
+      "pending-reboot",
+    );
+  },
+);
+
+Deno.test(
+  "buildSelectorContext: PromotionTier defaults to -1 sentinel, ParameterGroupStatus to '' when AWS omits them",
+  () => {
+    const ctx = buildSelectorContext({
+      DBClusterIdentifier: "cluster-x",
+      DBClusterMembers: [{
+        DBInstanceIdentifier: "i-1",
+        IsClusterWriter: true,
+      }],
+    }, new Map());
+    // -1 not 0 — 0 is the highest priority, a real value, so it can't be the
+    // "missing" sentinel.
+    assertEquals(ctx.members[0].PromotionTier, -1);
+    assertEquals(ctx.members[0].DBClusterParameterGroupStatus, "");
+  },
+);
 
 Deno.test("evaluateSelector: predicate that returns true admits the cluster", () => {
   const matches = evaluateSelector(() => true, [ctx(), ctx()]);

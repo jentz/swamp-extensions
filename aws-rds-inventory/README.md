@@ -82,6 +82,8 @@ jobs:
           modelType: "@jentz/aws-context-guard"
           modelName: rds-inventory-guard
           methodName: verify
+          inputs:
+            expectedAccountId: ${{ inputs.expectedAccountId }}
         allowFailure: false
   - name: inventory
     steps:
@@ -95,7 +97,10 @@ jobs:
       - { job: guard, condition: { type: succeeded } }
 ```
 
-Create the model instances once, baking in the AWS context:
+`expectedAccountId` is threaded through `inputs.*` so the auto-created model
+definition refreshes on each run (`swamp workflow run rds-3-node-inventory
+--input expectedAccountId=111122223333`). Alternatively, pre-create the model
+instances once with the AWS context baked in:
 
 ```sh
 swamp model create @jentz/aws-context-guard rds-inventory-guard \
@@ -139,8 +144,16 @@ For each cluster, the selector sees an object with these fields:
 | `members`             | array of objects     | One element per cluster member; see fields below.                                           |
 | `tags`                | `map<string,string>` | Cluster-level tags, converted from AWS's `[{Key,Value},...]` array to a flat map.           |
 
-Each `members[i]` carries `DBInstanceIdentifier`, `DBInstanceClass`, `Role`
-(`"writer"` or `"reader"`), and an optional `AvailabilityZone`.
+Each `members[i]` carries:
+
+| Field                           | Type                     | Notes                                                                                                                  |
+| ------------------------------- | ------------------------ | ---------------------------------------------------------------------------------------------------------------------- |
+| `DBInstanceIdentifier`          | `string`                 | Member identifier. Empty if AWS omitted it.                                                                            |
+| `DBInstanceClass`               | `string`                 | e.g. `db.r7g.large`. `"unknown"` if the instance lookup returned nothing.                                              |
+| `Role`                          | `"writer"` \| `"reader"` | Derived from `IsClusterWriter` on the cluster member shape.                                                            |
+| `AvailabilityZone`              | `string`                 | Empty string if AWS omitted it. Never `undefined`.                                                                     |
+| `PromotionTier`                 | `number`                 | Failover priority, `0` (highest) – `15` (lowest). `-1` when AWS omitted the field — `0` is a real value, not "absent". |
+| `DBClusterParameterGroupStatus` | `string`                 | `in-sync`, `applying`, `pending-reboot`, `removing`, etc. Empty string when AWS omitted the field.                     |
 
 ### Selector examples
 
@@ -159,6 +172,12 @@ has(tags.Environment) && tags["Environment"] == "prod"
 
 # 5. Non-Aurora Multi-AZ DB clusters with a mysql engine.
 MultiAZ == true && Engine == "mysql"
+
+# 6. Failover topology audit — any reader at tier 0 races the writer.
+members.exists(m, m.Role == "reader" && m.PromotionTier == 0)
+
+# 7. Parameter-group drift — at least one member still applying the new group.
+members.exists(m, m.DBClusterParameterGroupStatus == "pending-reboot")
 ```
 
 **Tag access caveat.** The bundled CEL runtime throws when a selector accesses a
@@ -214,17 +233,19 @@ Storage key: `instance-<DBClusterIdentifier>--<DBInstanceIdentifier>` (combined
 so two different clusters can have member instances with the same short
 identifier without colliding). Lifetime `infinite`, retain last 10 versions.
 
-| Field                  | Type                  | Notes                                          |
-| ---------------------- | --------------------- | ---------------------------------------------- |
-| `DBInstanceIdentifier` | `string`              | Identifier (also the instance name).           |
-| `DBClusterIdentifier`  | `string`              | Back-reference to the owning cluster.          |
-| `DBInstanceClass`      | `string`              | e.g. `db.r7g.large`.                           |
-| `Role`                 | `"writer"`/`"reader"` | Derived from `IsClusterWriter` in the API.     |
-| `AvailabilityZone`     | `string?`             |                                                |
-| `Engine`               | `string`              | Falls back to the cluster's engine on missing. |
-| `EngineVersion`        | `string?`             |                                                |
-| `Status`               | `string?`             | `DBInstanceStatus`.                            |
-| `tags`                 | `map<string,string>`  | Per-instance tags.                             |
+| Field                           | Type                  | Notes                                                                                                                                                                        |
+| ------------------------------- | --------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `DBInstanceIdentifier`          | `string`              | Identifier (also the instance name).                                                                                                                                         |
+| `DBClusterIdentifier`           | `string`              | Back-reference to the owning cluster.                                                                                                                                        |
+| `DBInstanceClass`               | `string`              | e.g. `db.r7g.large`.                                                                                                                                                         |
+| `Role`                          | `"writer"`/`"reader"` | Derived from `IsClusterWriter` in the API.                                                                                                                                   |
+| `AvailabilityZone`              | `string?`             |                                                                                                                                                                              |
+| `Engine`                        | `string`              | Falls back to the cluster's engine on missing.                                                                                                                               |
+| `EngineVersion`                 | `string?`             |                                                                                                                                                                              |
+| `Status`                        | `string?`             | `DBInstanceStatus`.                                                                                                                                                          |
+| `PromotionTier`                 | `number?`             | Failover priority, `0` (highest) – `15` (lowest). Omitted (not `-1`) when AWS didn't return the field — the selector-side `-1` sentinel does not leak to the resource shape. |
+| `DBClusterParameterGroupStatus` | `string?`             | Parameter-group apply status. Omitted when AWS didn't return the field.                                                                                                      |
+| `tags`                          | `map<string,string>`  | Per-instance tags.                                                                                                                                                           |
 
 CEL reference shape:
 

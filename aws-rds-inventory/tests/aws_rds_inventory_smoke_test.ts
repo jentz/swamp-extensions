@@ -152,8 +152,19 @@ Deno.test("smoke: aurora-mysql 3-node fixture emits 1 cluster + 3 instances", as
   assertEquals(writer.data.DBInstanceIdentifier, "cluster-a-1");
   assertEquals(writer.data.DBClusterIdentifier, "cluster-a");
   assertEquals(writer.data.DBInstanceClass, "db.r7g.large");
+  // Member-side fields from DescribeDBClusters surface on the instance resource.
+  assertEquals(writer.data.PromotionTier, 0);
+  assertEquals(writer.data.DBClusterParameterGroupStatus, "in-sync");
   // Instance storage key carries both spec prefix and cluster identifier.
   assertEquals(writer.key, "instance-cluster-a--cluster-a-1");
+
+  // Pending-reboot reader propagated from fixture to the resource.
+  const pending = out.instances.find(
+    (i) => i.data.DBClusterParameterGroupStatus === "pending-reboot",
+  );
+  assertExists(pending);
+  assertEquals(pending.data.DBInstanceIdentifier, "cluster-a-3");
+  assertEquals(pending.data.PromotionTier, 2);
 
   const readers = out.instances.filter((i) => i.data.Role === "reader");
   assertEquals(readers.length, 2);

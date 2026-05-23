@@ -10,9 +10,24 @@
       "ReaderEndpoint": "cluster-a.cluster-ro-abc.eu-west-1.rds.amazonaws.com",
       "MultiAZ": true,
       "DBClusterMembers": [
-        { "DBInstanceIdentifier": "cluster-a-1", "IsClusterWriter": true },
-        { "DBInstanceIdentifier": "cluster-a-2", "IsClusterWriter": false },
-        { "DBInstanceIdentifier": "cluster-a-3", "IsClusterWriter": false }
+        {
+          "DBInstanceIdentifier": "cluster-a-1",
+          "IsClusterWriter": true,
+          "PromotionTier": 0,
+          "DBClusterParameterGroupStatus": "in-sync"
+        },
+        {
+          "DBInstanceIdentifier": "cluster-a-2",
+          "IsClusterWriter": false,
+          "PromotionTier": 1,
+          "DBClusterParameterGroupStatus": "in-sync"
+        },
+        {
+          "DBInstanceIdentifier": "cluster-a-3",
+          "IsClusterWriter": false,
+          "PromotionTier": 2,
+          "DBClusterParameterGroupStatus": "pending-reboot"
+        }
       ],
       "TagList": [
         { "Key": "Environment", "Value": "prod" },

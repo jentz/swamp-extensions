@@ -136,6 +136,8 @@ jobs:
           modelType: "@jentz/aws-context-guard"
           modelName: rds-inventory-guard
           methodName: verify
+          inputs:
+            expectedAccountId: ${{ inputs.expectedAccountId }}
         allowFailure: false
   - name: inventory
     steps:
@@ -152,7 +154,9 @@ reports:
     - "@jentz/aws-rds-inventory-csv"
 ```
 
-Create the model instances once, baking in the AWS context:
+`expectedAccountId` is threaded through `inputs.*` so the auto-created model
+definition refreshes on each run. Alternatively, pre-create the model instances
+once with the AWS context baked in:
 
 ```sh
 swamp model create @jentz/aws-context-guard rds-inventory-guard \
