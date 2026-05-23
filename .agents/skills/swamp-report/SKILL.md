@@ -24,16 +24,18 @@ aggregate, or analyze model output. If the analysis will be run more than once
 or should be stored alongside model data, a report is the right choice.
 
 **Verify CLI syntax:** If unsure about exact flags or subcommands, run
-`swamp help model report` or `swamp help model method run` for the complete,
+`swamp report --help` or `swamp model method run --help` for the complete,
 up-to-date CLI schema.
 
 ## Quick Reference
 
 | Task                     | Command                                                           |
 | ------------------------ | ----------------------------------------------------------------- |
-| Run reports for a model  | `swamp model report <model>`                                      |
-| Filter by label          | `swamp model report <model> --label cost`                         |
-| Simulate method context  | `swamp model report <model> --method create`                      |
+| Get a stored report      | `swamp report get <report-name> --model <model>`                  |
+| Get report as markdown   | `swamp report get <report-name> --model <model> --markdown`       |
+| Get report as JSON       | `swamp report get <report-name> --model <model> --json`           |
+| Cap total output width   | `swamp report get <report-name> --model <model> --max-width 120`  |
+| Cap column width         | `swamp report get <report-name> --max-col-width 60`               |
 | Run method with reports  | `swamp model method run <model> <method>`                         |
 | Skip all reports         | `swamp model method run <model> <method> --skip-reports`          |
 | Skip report by name      | `swamp model method run <model> <method> --skip-report <n>`       |
@@ -42,10 +44,6 @@ up-to-date CLI schema.
 | Run only labeled reports | `swamp model method run <model> <method> --report-label <l>`      |
 | Workflow with reports    | `swamp workflow run <workflow>`                                   |
 | Workflow skip reports    | `swamp workflow run <workflow> --skip-reports`                    |
-| Get stored report        | `swamp report get <report-name> --model <model> --json`           |
-| Get report as markdown   | `swamp report get <report-name> --model <model> --markdown`       |
-| Cap total output width   | `swamp report get <report-name> --model <model> --max-width 120`  |
-| Cap column width         | `swamp report get <report-name> --max-col-width 60`               |
 
 ## End-to-End Workflow
 
@@ -57,8 +55,9 @@ up-to-date CLI schema.
 3. **Configure in definition YAML** — add the report name to `reports.require:`
    in the model or workflow definition if it should run beyond the model-type
    defaults. Use `reports.skip:` to exclude reports you don't need.
-4. **Run and verify** — execute `swamp model report <model>` to confirm the
-   report produces valid markdown and JSON output without errors.
+4. **Run and verify** — execute a model method, then use
+   `swamp report get <report-name> --model <model>` to confirm the report
+   produces valid markdown and JSON output without errors.
 5. **Check stored output** — run `swamp data query 'tags.type == "report"'` to
    verify the report artifact was persisted correctly.
 
@@ -168,16 +167,17 @@ allowing a push.
 | `--report <name>`             | Only run this report (repeatable, inclusion)  |
 | `--report-label <label>`      | Only run reports with this label (repeatable) |
 
-### model report (standalone)
+### report get
 
-| Flag                | Description                         |
-| ------------------- | ----------------------------------- |
-| `--label <label>`   | Only run reports with this label    |
-| `--method <method>` | Simulate method context for reports |
-
-The standalone `swamp model report` command runs reports without executing a
-method. It builds a `MethodReportContext` with `executionStatus: "succeeded"`
-and empty `dataHandles`.
+| Flag                      | Description                                            |
+| ------------------------- | ------------------------------------------------------ |
+| `--model <name>`          | Scope to a specific model                              |
+| `--workflow <name>`       | Scope to a specific workflow                           |
+| `--version <version>`     | Get specific version (default: latest)                 |
+| `--variant <variant>`     | Select a specific forEach variant                      |
+| `--markdown`              | Output as plain markdown instead of terminal-formatted |
+| `--max-width <width>`     | Cap total output width in columns                      |
+| `--max-col-width <width>` | Cap individual table column width in characters        |
 
 ## Report Data Storage
 

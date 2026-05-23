@@ -34,12 +34,17 @@ via `swamp-extension-publish`.
 
 ## Before Creating an Extension
 
-1. `swamp model type search <query>` / `swamp extension search <query>` — does a
-   built-in or community extension already cover it? Use it. Stop.
-2. Trusted collectives (`@swamp/*`, `@si/*`, membership collectives)
-   auto-resolve on first use — `swamp extension trust list` shows which.
-3. For local or private extensions, use `swamp extension source add <path>`.
-4. Only create a new extension if nothing fits.
+1. `swamp extension search <query>` — does a community extension already cover
+   it? Prefer `@swamp/*` official extensions first. Install with
+   `swamp extension pull <package>` and use it. Stop.
+2. `swamp model type search <query>` — check built-in/installed local types.
+3. Extend an existing type (including `@swamp` extensions) if it covers the
+   domain but lacks the method you need.
+4. For local or private extensions, use `swamp extension source add <path>`.
+5. Only create a new extension if nothing fits.
+
+Trusted collectives (`@swamp/*`, `@si/*`, membership collectives) auto-resolve
+on first use — `swamp extension trust list` shows which.
 
 **Never** use `command/shell` to wrap service integrations — build a dedicated
 model.
@@ -72,6 +77,11 @@ the start — placeholder prefixes like `@local/` are rejected during push.
 ### Model
 
 ```typescript
+/**
+ * Processes input messages and stores the result.
+ *
+ * @module
+ */
 // extensions/models/my_model.ts
 import { z } from "npm:zod@4";
 
@@ -85,6 +95,7 @@ const OutputSchema = z.object({
   timestamp: z.iso.datetime(),
 });
 
+/** Model definition for processing input messages. */
 export const model = {
   type: "@myorg/my-model",
   version: "2026.02.09.1",
@@ -117,6 +128,11 @@ export const model = {
 ### Vault
 
 ```typescript
+/**
+ * Custom vault provider for retrieving secrets from a backend.
+ *
+ * @module
+ */
 // extensions/vaults/my-vault/mod.ts
 import { z } from "npm:zod@4";
 
@@ -125,6 +141,7 @@ const ConfigSchema = z.object({
   token: z.string(),
 });
 
+/** Vault provider definition. */
 export const vault = {
   type: "@myorg/my-vault",
   name: "My Custom Vault",
@@ -149,6 +166,11 @@ export const vault = {
 ### Driver
 
 ```typescript
+/**
+ * Custom execution driver for running methods on a remote host.
+ *
+ * @module
+ */
 // extensions/drivers/my-driver/mod.ts
 import { z } from "npm:zod@4";
 
@@ -157,6 +179,7 @@ const ConfigSchema = z.object({
   port: z.number().default(22),
 });
 
+/** Execution driver definition. */
 export const driver = {
   type: "@myorg/my-driver",
   name: "My Custom Driver",
@@ -192,6 +215,11 @@ export const driver = {
 ### Datastore
 
 ```typescript
+/**
+ * Custom datastore provider for storing runtime data in a backend.
+ *
+ * @module
+ */
 // extensions/datastores/my-store/mod.ts
 import { z } from "npm:zod@4";
 
@@ -200,6 +228,7 @@ const ConfigSchema = z.object({
   bucket: z.string(),
 });
 
+/** Datastore provider definition. */
 export const datastore = {
   type: "@myorg/my-store",
   name: "My Custom Store",
@@ -287,8 +316,8 @@ If an extension doesn't appear after creation, delete stale bundles
 
 ## Quality Scorecard
 
-Swamp Club scores published extensions against an 11-factor rubric. Maximum
-third-party score: **12/13 = 92% (Grade A)**.
+Swamp Club scores published extensions against a 12-factor rubric. Maximum
+third-party score: **14/15 = 93% (Grade A)**.
 
 Key factors: README in `additionalFiles:`, LICENSE file, JSDoc coverage ≥80%,
 explicit return types, manifest `description:`, `repository:` URL on allowlisted
