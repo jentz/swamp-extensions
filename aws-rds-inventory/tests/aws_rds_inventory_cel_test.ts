@@ -43,12 +43,16 @@ function ctx(over: Partial<SelectorContext> = {}): SelectorContext {
         DBInstanceClass: "db.r7g.large",
         Role: "writer",
         AvailabilityZone: "eu-west-1a",
+        PromotionTier: 0,
+        DBClusterParameterGroupStatus: "in-sync",
       },
       {
         DBInstanceIdentifier: "i-2",
         DBInstanceClass: "db.r8g.large",
         Role: "reader",
         AvailabilityZone: "eu-west-1b",
+        PromotionTier: 1,
+        DBClusterParameterGroupStatus: "in-sync",
       },
     ],
     tags: { Environment: "prod", Team: "platform" },
@@ -116,6 +120,8 @@ Deno.test(
             DBInstanceClass: "db.r8g.large",
             Role: "writer",
             AvailabilityZone: "eu-west-1a",
+            PromotionTier: 0,
+            DBClusterParameterGroupStatus: "in-sync",
           }],
         }),
       ]),
@@ -223,6 +229,94 @@ Deno.test(
     const env = realCelEnv();
     assertThrows(
       () => env.parse("this is not valid CEL @@"),
+    );
+  },
+);
+
+Deno.test(
+  "cel-runtime: failover-topology audit — readers all at tier 0 is the unpredictable case",
+  () => {
+    // PromotionTier 0 = highest failover priority. If every reader is at tier
+    // 0, AWS picks one at random during failover. The selector below admits
+    // clusters that exhibit this anti-pattern.
+    const env = realCelEnv();
+    const pred = env.parse(
+      'members.exists(m, m.Role == "reader" && m.PromotionTier == 0)',
+    );
+    assertEquals(
+      evaluateSelector(pred, [
+        // Healthy: readers at tier 1+
+        ctx({
+          members: [
+            {
+              DBInstanceIdentifier: "w",
+              DBInstanceClass: "db.r7g.large",
+              Role: "writer",
+              AvailabilityZone: "eu-west-1a",
+              PromotionTier: 0,
+              DBClusterParameterGroupStatus: "in-sync",
+            },
+            {
+              DBInstanceIdentifier: "r1",
+              DBInstanceClass: "db.r7g.large",
+              Role: "reader",
+              AvailabilityZone: "eu-west-1b",
+              PromotionTier: 1,
+              DBClusterParameterGroupStatus: "in-sync",
+            },
+          ],
+        }),
+        // Unhealthy: a reader is also at tier 0 — race condition during failover.
+        ctx({
+          members: [
+            {
+              DBInstanceIdentifier: "w",
+              DBInstanceClass: "db.r7g.large",
+              Role: "writer",
+              AvailabilityZone: "eu-west-1a",
+              PromotionTier: 0,
+              DBClusterParameterGroupStatus: "in-sync",
+            },
+            {
+              DBInstanceIdentifier: "r1",
+              DBInstanceClass: "db.r7g.large",
+              Role: "reader",
+              AvailabilityZone: "eu-west-1b",
+              PromotionTier: 0,
+              DBClusterParameterGroupStatus: "in-sync",
+            },
+          ],
+        }),
+      ]),
+      [false, true],
+    );
+  },
+);
+
+Deno.test(
+  "cel-runtime: parameter-group-status drift filter",
+  () => {
+    const env = realCelEnv();
+    const pred = env.parse(
+      'members.exists(m, m.DBClusterParameterGroupStatus == "pending-reboot")',
+    );
+    assertEquals(
+      evaluateSelector(pred, [
+        ctx(), // all in-sync
+        ctx({
+          members: [
+            {
+              DBInstanceIdentifier: "w",
+              DBInstanceClass: "db.r7g.large",
+              Role: "writer",
+              AvailabilityZone: "eu-west-1a",
+              PromotionTier: 0,
+              DBClusterParameterGroupStatus: "pending-reboot",
+            },
+          ],
+        }),
+      ]),
+      [false, true],
     );
   },
 );
