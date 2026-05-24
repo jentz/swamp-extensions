@@ -1,6 +1,6 @@
 manifestVersion: 1
 name: "@jentz/aws-rds-inventory-csv"
-version: "2026.05.22.0"
+version: "2026.05.24.1"
 description: |
   Workflow-scope report that emits a CSV summary of RDS DB clusters and
   their members, consuming the `instance` resources produced earlier in
