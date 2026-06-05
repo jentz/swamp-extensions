@@ -1,6 +1,6 @@
 manifestVersion: 1
 name: "@jentz/aws-rds-inventory"
-version: "2026.05.24.1"
+version: "2026.06.05.1"
 description: |
   Lists RDS DB clusters in the configured AWS region and emits two
   factory-style resources — one per cluster, one per cluster-member
