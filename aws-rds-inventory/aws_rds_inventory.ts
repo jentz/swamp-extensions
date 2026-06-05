@@ -825,6 +825,18 @@ export const model = {
   type: "@jentz/aws-rds-inventory",
   version: "2026.06.05.1",
   globalArguments: GlobalArgsSchema,
+  // The 2026.06.05.1 release changed only internals (server-side
+  // DescribeDBInstances filtering) and docs — the globalArguments schema
+  // (region, selector) is unchanged from 2026.05.24.1. A no-op upgrade still
+  // advances the stored typeVersion on existing instances so any future
+  // schema-changing upgrade chains cleanly from here instead of skipping them.
+  upgrades: [
+    {
+      toVersion: "2026.06.05.1",
+      description: "Version bump, no globalArguments schema changes",
+      upgradeAttributes: (old: Record<string, unknown>) => old,
+    },
+  ],
   resources: {
     cluster: {
       description:
