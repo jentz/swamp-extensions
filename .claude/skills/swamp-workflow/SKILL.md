@@ -1,6 +1,6 @@
 ---
 name: swamp-workflow
-description: Work with swamp workflows for AI-native automation — define jobs and steps in YAML, wire models together with dependencies, validate DAGs, and inspect run history. Use when searching for workflows, creating new workflows, validating workflow definitions, running workflows, or viewing run history. Triggers on "swamp workflow", "run workflow", "create workflow", "automate", "automation", "orchestrate", "run history", "execute workflow", "workflow logs", "workflow failure", "debug workflow".
+description: Work with swamp workflows for AI-native automation — define jobs and steps in YAML, wire models together with dependencies, validate DAGs, and inspect run history. Use when searching for workflows, creating new workflows, validating workflow definitions, running workflows, or viewing run history. Triggers on "swamp workflow", "swamp workflow create", "swamp workflow run", "swamp workflow validate", "workflow YAML", "workflow DAG", "wire models together", "model_method step", "workflows/*.yaml", "swamp run history", "swamp workflow logs", "debug swamp workflow". Use ONLY for swamp's declarative YAML workflow artifacts created via swamp workflow create — NOT for the Claude Code Workflow tool, multi-step agent task lists, worktrees, or cron/scheduled agent runs.
 ---
 
 # Swamp Workflow Skill
@@ -22,6 +22,15 @@ machine-readable output.
 Correct flow: `swamp workflow create <name> --json` → edit the YAML → validate →
 run.
 
+## Skill boundary
+
+This skill produces a durable swamp workflow YAML under `workflows/` via
+`swamp workflow create`. It is unrelated to the Claude Code Workflow tool /
+dynamic workflows, to agent task lists (`TaskCreate`), to worktrees
+(`EnterWorktree`), or to cron/remote-agent scheduling
+(`CronCreate`/`RemoteTrigger`). If the user wants any of those, do not use this
+skill.
+
 ## Quick Reference
 
 | Task               | Command                                                       |
@@ -37,6 +46,10 @@ run.
 | Run a workflow     | `swamp workflow run <id_or_name>`                             |
 | Run with inputs    | `swamp workflow run <id_or_name> --input key=value`           |
 | Run from stdin     | `echo '{"k":"v"}' \| swamp workflow run <id_or_name> --stdin` |
+| Approve step       | `swamp workflow approve <workflow> <step>`                    |
+| Reject step        | `swamp workflow reject <workflow> <step>`                     |
+| Resume workflow    | `swamp workflow resume <workflow> [--input k=v]`              |
+| List approvals     | `swamp workflow approvals`                                    |
 | View run history   | `swamp workflow history search --json`                        |
 | Get latest run     | `swamp workflow history get <workflow> --json`                |
 | View run logs      | `swamp workflow history logs <run_or_workflow> --json`        |
@@ -494,7 +507,7 @@ steps:
 
 ## Step Task Types
 
-Steps support two task types:
+Steps support three task types:
 
 **`model_method`** — prefer `modelType` + `modelName` (direct type execution)
 for dynamic inputs. Use `modelIdOrName` only for persistent definitions with CEL
@@ -532,6 +545,33 @@ task:
 ```
 
 Nested workflows have a max depth of 10 and cycle detection is enforced.
+
+**`manual_approval`** - Suspend workflow and wait for operator approval:
+
+```yaml
+task:
+  type: manual_approval
+  prompt: "Verify SSH access before proceeding"
+  timeout: 3600 # Optional: seconds before approve is rejected
+```
+
+The workflow suspends to disk. Approve, reject, or resume from CLI:
+
+```
+swamp workflow approve <workflow-name> <step-name>
+swamp workflow reject  <workflow-name> <step-name> --reason "Not ready"
+swamp workflow resume  <workflow-name>
+swamp workflow resume  <workflow-name> --input authKey=tskey-abc123
+swamp workflow approvals  # list all pending approvals
+```
+
+Resume accepts `--input`/`--input-file`/`--stdin` (same parsing as
+`workflow run`). Resume inputs merge over the inputs the run had when it
+suspended, with a resume `--input` winning on a key collision. Evaluation stays
+strict, so a workflow must declare the inputs it references at run time: declare
+the input at run (e.g. a placeholder) and supply or override its value at
+resume. The run record records the resume input key names (not values) for
+audit.
 
 ## Working with Vaults
 

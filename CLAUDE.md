@@ -1,7 +1,7 @@
 <!-- BEGIN swamp managed section - DO NOT EDIT -->
 # Project
 
-This repository is managed with [swamp](https://github.com/systeminit/swamp).
+This repository is managed with [swamp](https://github.com/swamp-club/swamp).
 
 ## Rules
 
@@ -13,6 +13,7 @@ This repository is managed with [swamp](https://github.com/systeminit/swamp).
 6. **Prefer fan-out methods over loops.** When operating on multiple targets, use a single method that handles all targets internally (factory pattern) rather than looping N separate `swamp model method run` calls against the same model. Multiple parallel calls against the same model contend on the per-model lock, causing timeouts. A single fan-out method acquires the lock once and produces all outputs in one execution. Check `swamp model type describe` for methods that accept filters or produce multiple outputs.
 7. **Extension npm deps are bundled, not lockfile-tracked.** Swamp's bundler inlines all npm packages (except zod) into extension bundles at bundle time. `deno.lock` and `package.json` do NOT cover extension model dependencies — this is by design. Always pin explicit versions in `npm:` import specifiers (e.g., `npm:lodash-es@4.17.21`).
 8. **Reports for reusable data pipelines.** When the task involves building a repeatable pipeline to transform, aggregate, or analyze model output (security reports, cost analysis, compliance checks, summaries), create a report extension. Use the `swamp-report` skill for guidance.
+9. **"Workflow" means a swamp workflow.** In this repository the word "workflow" (and "create/run/execute/validate/debug workflow", "automate", "orchestrate", "automated/nightly job") refers to a swamp workflow — a declarative YAML DAG of model-method steps authored via `swamp workflow create`. Load and follow the `swamp-workflow` skill for these requests. Do NOT interpret these as a request to build an agent task list, spin up worktrees, or schedule a cron/remote agent. Only use those orchestration mechanisms when the user explicitly names one (e.g. "task list", "subagent", "worktree", "cron", "remote agent") or explicitly asks you to do the work yourself step by step rather than author a swamp workflow.
 
 ## Skills
 
@@ -21,7 +22,7 @@ essential context for working with this repository.
 
 - `swamp-getting-started` - Interactive onboarding for new swamp users
 - `swamp-model` - Work with swamp models (creating, editing, validating)
-- `swamp-workflow` - Work with workflows (creating, editing, running)
+- `swamp-workflow` - Work with swamp workflows — the default meaning of "workflow" here (see Rule 9)
 - `swamp-vault` - Manage secrets and credentials
 - `swamp-data` - Manage model data lifecycle and query with CEL
 - `swamp-report` - Run and configure reports for models and workflows

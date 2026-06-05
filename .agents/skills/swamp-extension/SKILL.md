@@ -43,8 +43,9 @@ via `swamp-extension-publish`.
 4. For local or private extensions, use `swamp extension source add <path>`.
 5. Only create a new extension if nothing fits.
 
-Trusted collectives (`@swamp/*`, `@si/*`, membership collectives) auto-resolve
-on first use — `swamp extension trust list` shows which.
+Trusted collectives auto-resolve on first use. Only `@swamp/*` is trusted by
+default; trust others explicitly with `swamp extension trust add <collective>`
+(`swamp extension trust list` shows which).
 
 **Never** use `command/shell` to wrap service integrations — build a dedicated
 model.
@@ -278,15 +279,31 @@ All extension types follow the same lifecycle:
 
 ### Adversarial Review Gate
 
-> **STOP — do not skip.**
+> **`swamp extension push` checks for this.**
+>
+> `swamp extension push` warns and prompts for confirmation unless a complete,
+> content-hash-bound review report exists for the exact code being pushed. The
+> prompt is the gate — do not answer it blindly or pass `--yes` to dodge the
+> review. Editing any source (or bumping the version) changes the content hash
+> and asks for a fresh report.
 >
 > After authoring or **significantly modifying** extension code, and BEFORE
 > running smoke tests or unit tests:
 >
-> 1. Read [references/adversarial-review.md](references/adversarial-review.md)
->    and self-review against every applicable dimension.
-> 2. Produce the structured findings report described in that file.
-> 3. Present the report to the user and wait for acknowledgement.
+> 1. Read [references/adversarial-review.md](references/adversarial-review.md).
+>    Execute the **Mandatory Mechanical Verification** checks first — these
+>    catch schema/write mismatches that dimensional review misses. Fix any
+>    failures before proceeding.
+> 2. Review against every applicable dimension.
+> 3. Run `swamp extension push manifest.yaml --dry-run`. When no report exists,
+>    it prints the exact report path (a content-hash-bound file under the temp
+>    directory) and a JSON skeleton listing every applicable dimension.
+> 4. Write that skeleton to the printed path, setting each dimension's `verdict`
+>    to `pass`, `issue`, or `na` (with a `note` for anything not `pass`). Set
+>    `reviewedAt` to the current ISO-8601 timestamp.
+> 5. Present the findings to the user, then re-run the push. A missing, stale,
+>    or incomplete report (or any `issue` verdict) surfaces as a warning to
+>    confirm.
 
 ## Key Rules (All Types)
 

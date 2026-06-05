@@ -1,6 +1,6 @@
 ---
 name: swamp-issue
-description: Fetch issue details and submit issues to the swamp Lab or route them to the publisher's repository — fetch issue details, file bug reports, feature requests, and security vulnerability reports against swamp itself or against a specific extension, and post follow-up ripples (comments) on existing Lab issues with optional close/reopen. Use when the user wants to view an issue, report a bug, request a feature, disclose a vulnerability, comment on an existing issue, close or reopen an issue, or provide feedback about swamp. Triggers on "bug report", "feature request", "security report", "vulnerability", "report bug", "request feature", "file bug", "submit bug", "swamp bug", "swamp feature", "feedback", "report issue", "file issue", "report against extension", "extension bug", "ripple", "comment on issue", "reply to issue", "follow up on issue", "add comment to issue", "close issue", "reopen issue", "get issue", "view issue", "fetch issue", "issue details", "show issue".
+description: Fetch, edit, search, and submit issues to swamp Lab — view details, edit title/body, search/list issues, file bugs/features/security reports, post ripples (comments) with close/reopen, route to extension publishers. Triggers on "bug report", "feature request", "security report", "report bug", "file bug", "submit bug", "swamp bug", "swamp feature", "feedback", "report issue", "file issue", "extension bug", "ripple", "comment on issue", "close issue", "reopen issue", "get issue", "view issue", "fetch issue", "show issue", "edit issue", "update issue", "change issue title", "search issues", "list issues", "find issue", "issue search".
 ---
 
 # Swamp Issue Skill
@@ -14,6 +14,10 @@ flag skips straight to a pre-filled email.
 To view an existing issue, use `swamp issue get <number>` — this fetches and
 displays the issue's title, type, status, author, body, assignees, and comment
 count.
+
+To edit an existing issue's title or body, use `swamp issue edit <number>`. This
+opens `$EDITOR` pre-filled with the current title and body. Use `--title` and/or
+`--body` flags to skip the editor. Only the issue author (or admins) can edit.
 
 With `--extension <name>`, reports are routed to the extension's publisher
 instead — either as a tagged swamp.club Lab issue (for `@swamp/*` extensions) or
@@ -37,7 +41,9 @@ directly.
 
 | Command                       | Purpose                                                                                       |
 | ----------------------------- | --------------------------------------------------------------------------------------------- |
+| `swamp issue search [query]`  | Search or list issues by keyword, with optional `--type`, `--status`, `--source`, `--limit`   |
 | `swamp issue get <number>`    | Fetch and display issue details (title, type, status, author, body, assignees, comment count) |
+| `swamp issue edit <number>`   | Edit title and/or body of an existing issue (author or admin only)                            |
 | `swamp issue bug`             | Title, description, steps to reproduce, environment                                           |
 | `swamp issue feature`         | Title, problem statement, proposed solution, alternatives                                     |
 | `swamp issue security`        | Title, description, reproduction, affected components, impact                                 |
@@ -46,8 +52,14 @@ directly.
 **Basic non-interactive examples:**
 
 ```bash
+swamp issue search vault
+swamp issue search --type bug --status open
+swamp issue search --source swamp --limit 10 --json
 swamp issue get 42
 swamp issue get 42 --json
+swamp issue edit 42
+swamp issue edit 42 --title "Updated title"
+swamp issue edit 42 --title "Updated title" --body "Updated body" --json
 swamp issue bug --title "CLI crashes on empty input" --body "When running..." --json
 swamp issue feature --title "Add dark mode" --body "I'd like..." --json
 swamp issue security --title "..." --body "..." --json
@@ -69,6 +81,10 @@ Ripples (described in the intro) have these submission rules:
 - `--close` and `--reopen` are mutually exclusive. The ripple is posted first;
   the status change is a separate operation. If the status change fails, the
   ripple is still posted (partial success).
+- Before posting, sanitize the body for secrets, identifiers, and paths per
+  [references/sanitization.md](references/sanitization.md). Ripple bodies often
+  contain quoted error output from working sessions — redact identifying parts
+  while preserving diagnostic structure.
 
 **Output shape** (with `--json`):
 
@@ -89,7 +105,7 @@ With `--close`: adds `"statusChanged": "closed"`. With `--reopen`: adds
 1. **Logged in** → submits to Lab API → returns issue number and URL
 2. **Not logged in** → prompts: log in now, or send via email
 3. **`--email` flag** → opens email client with pre-filled subject/body to
-   `support@systeminit.com`
+   `support@swamp-club.com`
 
 **Output shape** (Lab submission with `--json`):
 
@@ -127,7 +143,7 @@ A state machine. Each state gates the next — do not advance until the current
 state's **Verify** passes. If Verify fails, run **On Failure** and re-verify.
 
 ```
-gather_details → version_check → submit → verify
+gather_details → sanitize → version_check → submit → verify
 ```
 
 ### State 1: gather_details
@@ -145,9 +161,26 @@ are relevant to the bug (for the version check in the next state).
 
 **On Failure:** Ask the user for more details.
 
-### State 2: version_check
+### State 2: sanitize
 
-**Gate:** State 1 passed (title, body, and diagnosed file paths are known).
+**Gate:** State 1 passed (title and body are drafted).
+
+**Action:** Scan the drafted title and body for secrets, org-specific
+identifiers, and local paths. See
+[references/sanitization.md](references/sanitization.md) for the full pattern
+list, placeholders, and judgment calls.
+
+**Verify:** One of two outcomes:
+
+- **No findings** — content is clean. Advance silently.
+- **Findings exist** — present the redactions to the user and get confirmation
+  before advancing.
+
+**On Failure:** If the user rejects a redaction, adjust and re-verify.
+
+### State 3: version_check
+
+**Gate:** State 2 passed (title, body, and diagnosed file paths are known).
 
 **Action:** Check if the bug was already fixed in a newer version. Read
 [references/version_check.md](references/version_check.md) for the full
@@ -165,9 +198,9 @@ procedure.
 **On Failure:** If `swamp update --check` or `swamp source fetch` fails, treat
 as inconclusive and advance.
 
-### State 3: submit
+### State 4: submit
 
-**Gate:** State 2 passed with `bug_present` or `inconclusive`.
+**Gate:** State 3 passed with `bug_present` or `inconclusive`.
 
 **Action:** Verify syntax with `swamp help issue bug`. Run the command.
 
@@ -175,9 +208,9 @@ as inconclusive and advance.
 
 **On Failure:** See Error Recovery table below.
 
-### State 4: verify
+### State 5: verify
 
-**Gate:** State 3 passed.
+**Gate:** State 4 passed.
 
 **Action:** Confirm the returned issue number / URL with the user (or relay
 refusal guidance).
@@ -189,10 +222,13 @@ refusal guidance).
 Feature requests and security reports use a linear flow (no version check):
 
 1. Gather details from the user.
-2. For extension-scoped reports, confirm the extension is pulled locally.
-3. Verify syntax with `swamp help issue`.
-4. Run the appropriate command.
-5. Verify with the returned issue number / URL.
+2. Sanitize the drafted title and body — scan for secrets, identifiers, and
+   paths per [references/sanitization.md](references/sanitization.md). Present
+   any findings to the user for confirmation before proceeding.
+3. For extension-scoped reports, confirm the extension is pulled locally.
+4. Verify syntax with `swamp help issue`.
+5. Run the appropriate command.
+6. Verify with the returned issue number / URL.
 
 ## Error Recovery
 
