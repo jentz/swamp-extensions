@@ -17,6 +17,12 @@ description: |
   such as Neptune and DocumentDB before the CEL selector runs. Predicates
   can then filter on engine, member count, instance classes, AWS tags, etc.
 
+  Audit/inventory counterpart to the official `@swamp/aws/rds` dbcluster
+  `list` method: this model enriches members, applies an engine allowlist
+  and CEL selector, and paginates unbounded for a complete fleet picture,
+  rather than feeding the create/update/sync lifecycle. See the README for
+  when to use which.
+
   For a CSV summary of the inventory, see the companion report extension
   `@jentz/aws-rds-inventory-csv`.
 repository: "https://github.com/jentz/swamp-extensions"
