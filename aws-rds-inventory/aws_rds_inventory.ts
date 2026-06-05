@@ -823,7 +823,7 @@ export async function runListClusters(
  */
 export const model = {
   type: "@jentz/aws-rds-inventory",
-  version: "2026.05.24.1",
+  version: "2026.06.05.1",
   globalArguments: GlobalArgsSchema,
   resources: {
     cluster: {
