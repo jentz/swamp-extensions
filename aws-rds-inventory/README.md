@@ -29,6 +29,28 @@ Designed to run downstream of
 [`@jentz/aws-context-guard`](../aws-context-guard/) in a workflow, so a
 misconfigured profile or account can never reach RDS APIs.
 
+## Relationship to `@swamp/aws/rds`
+
+The official [`@swamp/aws/rds`](https://github.com/systeminit/swamp-extensions)
+`dbcluster` model ships a native `list` method (as of `@swamp/aws/rds`
+`2026.06.05.1`). It looks similar to `list_clusters` here, but the two are built
+for different jobs — reach for whichever matches yours:
+
+| Aspect | `@swamp/aws/rds` `dbcluster.list` | `@jentz/aws-rds-inventory` `list_clusters` |
+| ------ | --------------------------------- | ------------------------------------------ |
+| **Purpose** | Lifecycle — feeds the cluster `create` / `get` / `update` / `sync` flow | Audit / inventory |
+| **Output** | One `state` blob per cluster, written into the *same* resource space as the other lifecycle methods; members embedded straight from the `DescribeDBClusters` shape | Relational `cluster` + per-member `instance` factory resources |
+| **Member detail** | As returned by `DescribeDBClusters` | Enriched with `DescribeDBInstances` — instance class, AZ, per-member engine |
+| **Engine filtering** | None — returns whatever the shared endpoint lists, including Neptune and DocumentDB | Built-in allowlist drops shared-endpoint non-RDS engines |
+| **Selection** | Raw server-side AWS `Filters` | A CEL selector over a rich computed context (cluster fields, `members[]`, tags), on top of server-side filtering |
+| **Pagination** | `maxPages` cap (default 10), which can silently truncate large fleets | Unbounded — a complete inventory |
+| **Region** | Standard AWS resolution | Strict resolution chain, no silent `us-east-1` fallback |
+
+Use the native `dbcluster.list` when you are managing cluster lifecycle and want
+raw state in the shared RDS resource space. Use this extension when you want a
+complete, enriched, CEL-filterable audit of your cluster fleet — for example to
+feed the [`@jentz/aws-rds-inventory-csv`](../aws-rds-inventory-csv/) report.
+
 ## What is and is NOT in scope
 
 | Surface                                                                                       | In scope                                                                   |
