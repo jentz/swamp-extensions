@@ -445,8 +445,18 @@ export interface DescribeInstancesPage {
 export interface RdsApi {
   /** List clusters; one page per call. */
   describeDBClusters(marker?: string): Promise<DescribeClustersPage>;
-  /** List instances; one page per call. */
-  describeDBInstances(marker?: string): Promise<DescribeInstancesPage>;
+  /**
+   * List instances belonging to the given clusters; one page per call. AWS
+   * narrows the result server-side via the `db-cluster-id` filter, so only
+   * members of `clusterIds` are returned — never the account's standalone
+   * (non-clustered) instances. An empty `clusterIds` is the caller's
+   * responsibility to avoid (it would be an unfiltered scan); {@link
+   * collectInstances} short-circuits before ever calling with one.
+   */
+  describeDBInstances(
+    clusterIds: string[],
+    marker?: string,
+  ): Promise<DescribeInstancesPage>;
 }
 
 function rdsApiFromSdk(client: RDSClient): RdsApi {
@@ -457,9 +467,13 @@ function rdsApiFromSdk(client: RDSClient): RdsApi {
       );
       return { DBClusters: resp.DBClusters, Marker: resp.Marker };
     },
-    describeDBInstances: async (marker) => {
+    describeDBInstances: async (clusterIds, marker) => {
       const resp = await client.send(
-        new DescribeDBInstancesCommand({ Marker: marker, MaxRecords: 100 }),
+        new DescribeDBInstancesCommand({
+          Filters: [{ Name: "db-cluster-id", Values: clusterIds }],
+          Marker: marker,
+          MaxRecords: 100,
+        }),
       );
       return { DBInstances: resp.DBInstances, Marker: resp.Marker };
     },
@@ -504,38 +518,62 @@ async function collectClusters(
 }
 
 /**
- * Iterate paginated `DescribeDBInstances`, retrying throttled calls, keeping
- * only instances whose identifier is in `wantedIds`. Stops paginating as soon
- * as every wanted id has been found — important for accounts with many
- * standalone (non-clustered) instances that this extension doesn't care
- * about, where the unfiltered result set can run into thousands of rows.
+ * Maximum number of cluster identifiers sent in a single `db-cluster-id`
+ * filter. AWS accepts a list of values on each filter, but an unbounded list
+ * risks an oversized request, so {@link collectInstances} chunks the cluster
+ * set into batches no larger than this. 200 is comfortably under AWS request
+ * limits while keeping the round-trip count low for typical accounts (which
+ * have far fewer than 200 clusters in a region).
  */
-async function collectInstances(
+export const MAX_CLUSTER_IDS_PER_FILTER = 200;
+
+/**
+ * Fetch the DB instances belonging to `clusterIds`, narrowed server-side by
+ * the `db-cluster-id` filter so AWS returns only cluster members — never the
+ * account's standalone (non-clustered) instances. This replaces the old
+ * full-region scan + client-side identifier match: in accounts with thousands
+ * of standalone instances the unfiltered scan paginated through rows the
+ * extension never cared about.
+ *
+ * The cluster set is chunked into batches of at most
+ * {@link MAX_CLUSTER_IDS_PER_FILTER}; each batch is paginated to exhaustion by
+ * `Marker` (no early exit — every member of every requested cluster matters,
+ * since a member may live on any page). Throttled calls are retried. Results
+ * merge into a single `Map` keyed by `DBInstanceIdentifier`; only returned
+ * instances carrying an identifier are keyed.
+ *
+ * An empty `clusterIds` returns an empty map without issuing any API call.
+ */
+export async function collectInstances(
   api: RdsApi,
   // deno-lint-ignore no-explicit-any
   logger: any,
-  wantedIds: Set<string>,
+  clusterIds: string[],
 ): Promise<Map<string, AwsInstance>> {
   const map = new Map<string, AwsInstance>();
-  if (wantedIds.size === 0) return map;
-  let marker: string | undefined;
-  do {
-    const resp = await withRetry(
-      () => api.describeDBInstances(marker),
-      "DescribeDBInstances",
-      undefined,
-      retryDeps(logger),
-    );
-    for (const inst of resp.DBInstances ?? []) {
-      if (
-        inst.DBInstanceIdentifier && wantedIds.has(inst.DBInstanceIdentifier)
-      ) {
-        map.set(inst.DBInstanceIdentifier, inst);
+  if (clusterIds.length === 0) return map;
+  for (
+    let start = 0;
+    start < clusterIds.length;
+    start += MAX_CLUSTER_IDS_PER_FILTER
+  ) {
+    const batch = clusterIds.slice(start, start + MAX_CLUSTER_IDS_PER_FILTER);
+    let marker: string | undefined;
+    do {
+      const resp = await withRetry(
+        () => api.describeDBInstances(batch, marker),
+        "DescribeDBInstances",
+        undefined,
+        retryDeps(logger),
+      );
+      for (const inst of resp.DBInstances ?? []) {
+        if (inst.DBInstanceIdentifier) {
+          map.set(inst.DBInstanceIdentifier, inst);
+        }
       }
-    }
-    if (map.size === wantedIds.size) return map;
-    marker = resp.Marker;
-  } while (marker);
+      marker = resp.Marker;
+    } while (marker);
+  }
   return map;
 }
 
@@ -669,13 +707,14 @@ export async function runListClusters(
     );
   }
 
-  const wantedIds = new Set<string>();
+  // Fetch instances for every allowlisted cluster (not just selector-matched
+  // ones): the selector may inspect member-level fields, so its context must
+  // be built from the real instance data for every candidate it evaluates.
+  const clusterIds: string[] = [];
   for (const c of clusters) {
-    for (const m of c.DBClusterMembers ?? []) {
-      if (m.DBInstanceIdentifier) wantedIds.add(m.DBInstanceIdentifier);
-    }
+    if (c.DBClusterIdentifier) clusterIds.push(c.DBClusterIdentifier);
   }
-  const instances = await collectInstances(api, context.logger, wantedIds);
+  const instances = await collectInstances(api, context.logger, clusterIds);
 
   const selectorContexts = clusters.map((c) =>
     buildSelectorContext(c, instances)

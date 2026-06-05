@@ -15,17 +15,30 @@ import {
 } from "https://deno.land/std@0.224.0/assert/mod.ts";
 
 import {
+  type AwsInstance,
   buildSelectorContext,
   clusterKey,
+  collectInstances,
+  type DescribeInstancesPage,
   evaluateSelector,
   instanceKey,
   isRdsEngine,
+  MAX_CLUSTER_IDS_PER_FILTER,
   RDS_ENGINE_ALLOWLIST,
+  type RdsApi,
   resolveRegion,
   type SelectorContext,
   tagsFromAws,
 } from "../aws_rds_inventory.ts";
 import { isThrottlingError, withRetry } from "../_lib/retry.ts";
+
+// A logger that swallows everything — collectInstances only logs on retry.
+const silentLogger = {
+  info: () => {},
+  debug: () => {},
+  warn: () => {},
+  error: () => {},
+};
 
 // ---------------------------------------------------------------------------
 // resolveRegion
@@ -309,6 +322,110 @@ Deno.test("evaluateSelector: non-boolean result throws with cluster name", () =>
   );
   assertEquals(err.message.includes("weird-one"), true);
   assertEquals(err.message.includes("boolean"), true);
+});
+
+// ---------------------------------------------------------------------------
+// collectInstances — server-side db-cluster-id filtering
+// ---------------------------------------------------------------------------
+
+/** Build a minimal AwsInstance with just the fields these tests assert on. */
+function inst(id: string): AwsInstance {
+  return { DBInstanceIdentifier: id, DBInstanceClass: "db.r7g.large" };
+}
+
+Deno.test("collectInstances: empty clusterIds issues zero API calls", async () => {
+  let calls = 0;
+  const api: RdsApi = {
+    describeDBClusters: () => Promise.resolve({ DBClusters: [] }),
+    describeDBInstances: () => {
+      calls++;
+      return Promise.resolve({ DBInstances: [] });
+    },
+  };
+  const map = await collectInstances(api, silentLogger, []);
+  assertEquals(map.size, 0);
+  assertEquals(calls, 0);
+});
+
+Deno.test("collectInstances: forwards cluster ids as the filter and keys by instance id", async () => {
+  const seen: string[][] = [];
+  const api: RdsApi = {
+    describeDBClusters: () => Promise.resolve({ DBClusters: [] }),
+    describeDBInstances: (clusterIds) => {
+      seen.push(clusterIds);
+      return Promise.resolve({
+        DBInstances: [inst("c1-a"), inst("c2-a")],
+      });
+    },
+  };
+  const map = await collectInstances(api, silentLogger, ["c1", "c2"]);
+  assertEquals(seen, [["c1", "c2"]]);
+  assertEquals([...map.keys()].sort(), ["c1-a", "c2-a"]);
+});
+
+Deno.test("collectInstances: paginates a batch to exhaustion via Marker (no early exit)", async () => {
+  // Keyed by the marker the caller presents (undefined for the first page),
+  // each page pointing at the next via its returned Marker.
+  const pageByMarker = new Map<string | undefined, DescribeInstancesPage>([
+    [undefined, { DBInstances: [inst("a")], Marker: "m1" }],
+    ["m1", { DBInstances: [inst("b")], Marker: "m2" }],
+    ["m2", { DBInstances: [inst("c")] }],
+  ]);
+  const markers: Array<string | undefined> = [];
+  const api: RdsApi = {
+    describeDBClusters: () => Promise.resolve({ DBClusters: [] }),
+    describeDBInstances: (_clusterIds, marker) => {
+      markers.push(marker);
+      return Promise.resolve(pageByMarker.get(marker)!);
+    },
+  };
+  const map = await collectInstances(api, silentLogger, ["c1"]);
+  // All three pages were walked, in order, following the returned markers.
+  assertEquals(markers, [undefined, "m1", "m2"]);
+  assertEquals([...map.keys()].sort(), ["a", "b", "c"]);
+});
+
+Deno.test("collectInstances: chunks cluster ids into batches no larger than the cap", async () => {
+  // One more than two full batches, to prove the tail batch is sent too.
+  const total = MAX_CLUSTER_IDS_PER_FILTER * 2 + 1;
+  const clusterIds = Array.from({ length: total }, (_v, i) => `c${i}`);
+
+  const batchSizes: number[] = [];
+  const api: RdsApi = {
+    describeDBClusters: () => Promise.resolve({ DBClusters: [] }),
+    describeDBInstances: (ids) => {
+      batchSizes.push(ids.length);
+      // Return one instance per cluster in the batch so the merge is observable.
+      return Promise.resolve({
+        DBInstances: ids.map((id) => inst(`${id}-i`)),
+      });
+    },
+  };
+
+  const map = await collectInstances(api, silentLogger, clusterIds);
+
+  // Three batches: cap, cap, 1 — the tail chunk is sent and none exceeds the cap.
+  assertEquals(batchSizes, [
+    MAX_CLUSTER_IDS_PER_FILTER,
+    MAX_CLUSTER_IDS_PER_FILTER,
+    1,
+  ]);
+  // Every cluster's instance landed in the merged map.
+  assertEquals(map.size, total);
+  assertExists(map.get("c0-i"));
+  assertExists(map.get(`c${total - 1}-i`));
+});
+
+Deno.test("collectInstances: skips returned instances that carry no identifier", async () => {
+  const api: RdsApi = {
+    describeDBClusters: () => Promise.resolve({ DBClusters: [] }),
+    describeDBInstances: () =>
+      Promise.resolve({
+        DBInstances: [inst("real"), { DBInstanceClass: "db.r7g.large" }],
+      }),
+  };
+  const map = await collectInstances(api, silentLogger, ["c1"]);
+  assertEquals([...map.keys()], ["real"]);
 });
 
 // ---------------------------------------------------------------------------

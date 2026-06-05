@@ -40,13 +40,39 @@ async function loadFixture(filename: string): Promise<Fixture> {
 /**
  * Build an `RdsApi` that replays a single page from each fixture.
  * Marker is left undefined — fixtures are small enough to fit one page.
+ *
+ * `describeDBInstances` honors the `db-cluster-id` filter the way AWS does
+ * server-side: it derives each cluster's member instance ids from the
+ * fixture's `DBClusterMembers` and returns only the instances belonging to the
+ * requested clusters. This mirrors production (where AWS never returns
+ * non-member instances) and proves the caller passes cluster identifiers, not
+ * instance identifiers, as the filter values.
  */
 function rdsApiFromFixture(fixture: Fixture): RdsApi {
+  const membersByCluster = new Map<string, Set<string>>();
+  for (const c of fixture.clusters as AwsCluster[]) {
+    if (!c.DBClusterIdentifier) continue;
+    const ids = new Set<string>();
+    for (const m of c.DBClusterMembers ?? []) {
+      if (m.DBInstanceIdentifier) ids.add(m.DBInstanceIdentifier);
+    }
+    membersByCluster.set(c.DBClusterIdentifier, ids);
+  }
   return {
     describeDBClusters: () =>
       Promise.resolve({ DBClusters: fixture.clusters as AwsCluster[] }),
-    describeDBInstances: () =>
-      Promise.resolve({ DBInstances: fixture.instances as AwsInstance[] }),
+    describeDBInstances: (clusterIds: string[]) => {
+      const wanted = new Set<string>();
+      for (const cid of clusterIds) {
+        for (const iid of membersByCluster.get(cid) ?? []) wanted.add(iid);
+      }
+      const matched = (fixture.instances as AwsInstance[]).filter(
+        (i) =>
+          i.DBInstanceIdentifier !== undefined &&
+          wanted.has(i.DBInstanceIdentifier),
+      );
+      return Promise.resolve({ DBInstances: matched });
+    },
   };
 }
 
@@ -79,6 +105,14 @@ function makeCelEnvironment() {
     },
   };
 }
+
+/** No-op logger for tests that don't assert on log output. */
+const silentLogger = {
+  info: () => {},
+  debug: () => {},
+  warn: () => {},
+  error: () => {},
+};
 
 interface MockedRunOutcome {
   result: { dataHandles: unknown[] };
@@ -322,12 +356,7 @@ Deno.test("smoke: a selector that throws on parse fails before any AWS call", as
   // The fake CEL env throws when given a syntactically invalid JS expression.
   const context = {
     globalArgs: { region: "eu-west-1", selector: "this is not a selector @@" },
-    logger: {
-      info: () => {},
-      debug: () => {},
-      warn: () => {},
-      error: () => {},
-    },
+    logger: silentLogger,
     createCelEnvironment: makeCelEnvironment,
     writeResource: () => Promise.resolve({}),
   };
@@ -357,103 +386,102 @@ Deno.test("smoke: every test finishes in under 5 seconds", () => {
   assert(true);
 });
 
-Deno.test("smoke: collectInstances stops paginating once every wanted id is found", async () => {
-  // DescribeDBInstances pagination is unbounded for accounts with many
-  // standalone instances. The inventory only ever wants the cluster
-  // members' identifiers, so once those are all collected we should stop
-  // hitting the API. Build a fixture cluster whose two members live on
-  // page one and let pages two and three carry unrelated standalone
-  // instances — the second/third pages must never be requested.
-  const clusterMembers = [
-    { DBInstanceIdentifier: "wanted-1", IsClusterWriter: true },
-    { DBInstanceIdentifier: "wanted-2", IsClusterWriter: false },
-  ];
+Deno.test("smoke: DescribeDBInstances is filtered by cluster identifiers, not instance identifiers", async () => {
+  // The server-side filter narrows by db-cluster-id. The Values array must
+  // carry the matched *cluster* identifiers, never the member *instance*
+  // identifiers — passing instance ids would return nothing.
   const fixture: Fixture = {
-    description: "multi-page-shortcircuit",
+    description: "filter-by-cluster-id",
     clusters: [{
-      DBClusterIdentifier: "cluster-shortcircuit",
+      DBClusterIdentifier: "cluster-a",
       Engine: "aurora-mysql",
       Status: "available",
-      DBClusterMembers: clusterMembers,
+      DBClusterMembers: [
+        { DBInstanceIdentifier: "cluster-a-1", IsClusterWriter: true },
+        { DBInstanceIdentifier: "cluster-a-2", IsClusterWriter: false },
+      ],
     }],
-    instances: [],
+    instances: [
+      { DBInstanceIdentifier: "cluster-a-1", DBInstanceClass: "db.r7g.large" },
+      { DBInstanceIdentifier: "cluster-a-2", DBInstanceClass: "db.r8g.large" },
+    ],
   };
 
-  const instancePages: Array<{ DBInstances: unknown[]; Marker?: string }> = [
-    {
-      DBInstances: [
-        { DBInstanceIdentifier: "wanted-1", DBInstanceClass: "db.r7g.large" },
-        { DBInstanceIdentifier: "wanted-2", DBInstanceClass: "db.r8g.large" },
-      ],
-      Marker: "page-2",
-    },
-    {
-      DBInstances: [
-        {
-          DBInstanceIdentifier: "unrelated-a",
-          DBInstanceClass: "db.t4g.medium",
-        },
-      ],
-      Marker: "page-3",
-    },
-    {
-      DBInstances: [
-        {
-          DBInstanceIdentifier: "unrelated-b",
-          DBInstanceClass: "db.t4g.medium",
-        },
-      ],
-    },
-  ];
-
-  let clustersCalls = 0;
-  let instancesCalls = 0;
+  const filterCalls: string[][] = [];
   const api: RdsApi = {
-    describeDBClusters: () => {
-      clustersCalls++;
+    describeDBClusters: () =>
+      Promise.resolve({ DBClusters: fixture.clusters as AwsCluster[] }),
+    describeDBInstances: (clusterIds: string[]) => {
+      filterCalls.push(clusterIds);
+      // Echo back the cluster members regardless, so output is still produced.
       return Promise.resolve({
-        DBClusters: fixture.clusters as AwsCluster[],
-      });
-    },
-    describeDBInstances: (marker?: string) => {
-      instancesCalls++;
-      // marker semantics: first call has marker=undefined → page 0; subsequent
-      // calls pass back whatever Marker the previous page returned.
-      const idx = marker === undefined
-        ? 0
-        : instancePages.findIndex((_p, i) =>
-          i > 0 && instancePages[i - 1].Marker === marker
-        );
-      const page = instancePages[idx];
-      return Promise.resolve({
-        DBInstances: page.DBInstances as AwsInstance[],
-        Marker: page.Marker,
+        DBInstances: fixture.instances as AwsInstance[],
       });
     },
   };
 
-  const result = await runListClusters({
+  await runListClusters({
     api,
     context: {
       globalArgs: { region: "eu-west-1" },
-      logger: {
-        info: () => {},
-        debug: () => {},
-        warn: () => {},
-        error: () => {},
-      },
+      logger: silentLogger,
       createCelEnvironment: makeCelEnvironment,
       writeResource: (spec: string, key: string, data: unknown) =>
         Promise.resolve({ id: `${spec}:${key}`, data }),
     },
   });
 
-  assertEquals(result.dataHandles.length, 3); // 1 cluster + 2 instances
-  assertEquals(clustersCalls, 1);
-  assertEquals(
-    instancesCalls,
-    1,
-    "DescribeDBInstances must short-circuit after page 1 — both wanted ids " +
-      "are present, so pages 2 and 3 are unnecessary work",
-  );
+  assertEquals(filterCalls.length, 1);
+  assertEquals(filterCalls[0], ["cluster-a"]);
+});
+
+Deno.test("smoke: a region with only non-RDS clusters issues zero DescribeDBInstances calls", async () => {
+  // Neptune/DocumentDB are dropped by the engine allowlist before instance
+  // collection. With no allowlisted clusters there is nothing to filter on,
+  // so DescribeDBInstances must never be called.
+  const fixture: Fixture = {
+    description: "only-non-rds",
+    clusters: [
+      {
+        DBClusterIdentifier: "cluster-neptune",
+        Engine: "neptune",
+        Status: "available",
+        DBClusterMembers: [
+          { DBInstanceIdentifier: "cluster-neptune-1", IsClusterWriter: true },
+        ],
+      },
+      {
+        DBClusterIdentifier: "cluster-docdb",
+        Engine: "docdb",
+        Status: "available",
+        DBClusterMembers: [
+          { DBInstanceIdentifier: "cluster-docdb-1", IsClusterWriter: true },
+        ],
+      },
+    ],
+    instances: [],
+  };
+  let instancesCalls = 0;
+  const api: RdsApi = {
+    describeDBClusters: () =>
+      Promise.resolve({ DBClusters: fixture.clusters as AwsCluster[] }),
+    describeDBInstances: (_clusterIds: string[]) => {
+      instancesCalls++;
+      return Promise.resolve({ DBInstances: [] });
+    },
+  };
+
+  const out = await runListClusters({
+    api,
+    context: {
+      globalArgs: { region: "eu-west-1" },
+      logger: silentLogger,
+      createCelEnvironment: makeCelEnvironment,
+      writeResource: (spec: string, key: string, data: unknown) =>
+        Promise.resolve({ id: `${spec}:${key}`, data }),
+    },
+  });
+
+  assertEquals(instancesCalls, 0);
+  assertEquals(out.dataHandles.length, 0);
 });
