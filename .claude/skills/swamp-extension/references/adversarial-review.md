@@ -18,6 +18,120 @@ and 6 (unit tests).
   dimensions)
 - Before publishing with `swamp extension push`
 
+## Recording the Review (checked at push)
+
+`swamp extension push` checks for this review. A missing, stale, or incomplete
+report surfaces as a warning the user must confirm before the push proceeds (it
+is not a hard block — a benign version bump should not brick a push). The report
+is bound to a content hash: any source change (or version bump) moves the report
+path, so a prior review no longer matches and a fresh one is requested.
+
+Workflow:
+
+1. Review the code against every applicable dimension below.
+2. Run `swamp extension push manifest.yaml --dry-run`. When no report exists,
+   the push prints the exact report path (a content-hash-bound JSON file under
+   the system temp directory) and a fill-in skeleton listing every applicable
+   dimension with `"verdict": "pending"`.
+3. Write the skeleton to the printed path, setting each dimension's `verdict`:
+   - `pass` — the dimension is satisfied.
+   - `issue` — a problem was found; add a `note`. (Surfaces as a push warning,
+     does not block.)
+   - `na` — the dimension does not apply (e.g. `api-contracts` for an extension
+     making no HTTP calls).
+   - Leave none as `pending` — a `pending` or missing verdict surfaces as a push
+     warning to confirm.
+   - Set `reviewedAt` to the current ISO-8601 timestamp.
+4. Present the findings to the user, then run `swamp extension push`.
+
+Report schema (the skeleton already has the right shape):
+
+```json
+{
+  "extension": "@collective/name",
+  "version": "2026.05.31.1",
+  "reviewedAt": "2026-05-31T21:00:00Z",
+  "dimensions": [
+    { "id": "credentials-secrets", "verdict": "pass" },
+    {
+      "id": "error-handling",
+      "verdict": "issue",
+      "note": "delete swallows 404"
+    }
+  ]
+}
+```
+
+The applicable dimension `id`s are the universal set plus the type-specific set
+for the content kinds present (the skeleton lists exactly these). The push gate
+checks that the report matches the extension name/version, covers every
+applicable dimension, and has no `pending` verdicts.
+
+## Mandatory Mechanical Verification
+
+Execute these checks **before** the dimensional review. They catch structural
+mismatches between schemas and writes that judgment-based review consistently
+misses. Each check is binary — fix any failure before proceeding.
+
+### 1. Schema-Write Conformance
+
+For every `writeResource` call in every method:
+
+1. Identify which spec the call targets (the spec name argument).
+2. Read that spec's Zod schema — list every field.
+3. Read the data object passed to `writeResource` — list every field.
+4. Verify:
+   - Every schema field appears in the data object.
+   - No data field is absent from the schema.
+   - No field is hardcoded to a placeholder (`[]`, `""`, `0`, `false`, `null`,
+     `"TODO"`) when the schema implies real data.
+   - The spec name matches the intent — a method writing seat data should target
+     the seats spec, not a differently-shaped spec.
+
+### 2. Truncation Honesty
+
+For every method that paginates or caps results:
+
+1. Find the pagination loop or result cap.
+2. Verify the output spec schema includes a `truncated` (or equivalent) boolean
+   field.
+3. Verify the `writeResource` call sets that field — `true` when results were
+   capped, `false` otherwise.
+
+### 3. Instance Name Consistency
+
+For every spec that multiple methods can write to:
+
+1. List all methods that call `writeResource` for that spec.
+2. Verify each method writes data conforming to the same schema shape.
+3. Verify instance names don't collide across methods writing incompatible data.
+
+This reinforces the "Instance names" dimension under Models — the mechanical
+check here is to explicitly enumerate and compare, not rely on a judgment call.
+
+### 4. Schema Field Coverage
+
+For every spec in the extension:
+
+1. Count the schema fields.
+2. Count the fields actually written across all methods that target that spec.
+3. Confirm 1:1 coverage — no schema field is never written, no written field is
+   absent from the schema.
+4. For optional or conditional fields, verify the code path that populates them
+   exists (not just that the field is declared).
+
+### Reporting Mechanical Failures
+
+Any mechanical check failure is a blocker — fix the code before starting the
+dimensional review. In the findings report, prefix mechanical failures with
+`MECHANICAL:` so they are visually distinct:
+
+```markdown
+- Schema-Write Conformance: MECHANICAL: `sync` writes `byUser: []` but
+  ByUserSchema expects `{ login, role, lastActive }` — placeholder never
+  populated.
+```
+
 ## Output Format
 
 Produce a structured findings report with one line per applicable dimension.
@@ -142,6 +256,24 @@ These apply to **all** extension types (models, drivers, vaults, datastores).
   paths, including error paths.
 - Methods that create cloud resources should track resource IDs so they can be
   referenced for later cleanup or deletion.
+
+### 8. Published-Surface Hygiene
+
+- **README examples, `additionalFiles`, and test fixtures** must use placeholder
+  values, not real infrastructure identifiers. Check for:
+  - Real IP addresses — use RFC 5737 documentation ranges (`192.0.2.x`,
+    `198.51.100.x`, `203.0.113.x`) instead
+  - Internal hostnames, bastion/jump addresses, `.internal`/`.local`/`.corp`
+    domains — use `example.com`, `host.example.net` instead
+  - Internal subnet topology (real CIDR blocks, VLAN IDs, real cloud VPC/subnet
+    identifiers)
+  - Cloud account IDs, project numbers, or tenant identifiers
+- The push-time safety analyzer automatically warns on IPv4 address literals in
+  `.md` and `.txt` files. This dimension covers what the automated check cannot
+  reliably detect: hostnames, topology descriptions, and identifiers in code
+  blocks and test fixtures.
+- Common safe replacements: RFC 5737 IPs, `example.com`/`example.net`/
+  `example.org` (RFC 2606), `ACME-ACCOUNT-ID`, `vpc-example`, `subnet-example`.
 
 ## Type-Specific Dimensions
 

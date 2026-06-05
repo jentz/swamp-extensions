@@ -48,26 +48,26 @@ dependencies:
 
 ### Field Reference
 
-| Field             | Required | Description                                                                                                                                       |
-| ----------------- | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `manifestVersion` | Yes      | Must be `1`                                                                                                                                       |
-| `name`            | Yes      | Scoped name: `@collective/name` or `@collective/name/sub/path` (lowercase, hyphens, underscores)                                                  |
-| `version`         | Yes      | CalVer format: `YYYY.MM.DD.MICRO`                                                                                                                 |
-| `description`     | No       | Human-readable description                                                                                                                        |
-| `repository`      | No       | HTTPS URL of the upstream repository. Required for users to file issues via `swamp issue --extension` — `swamp extension push` warns when absent. |
-| `paths.base`      | No       | Path resolution mode for typed keys + `additionalFiles`. `typedDir` (default) or `manifest`. See "Path resolution".                               |
-| `models`          | No*      | Model file paths. Resolved via `paths.base`.                                                                                                      |
-| `workflows`       | No*      | Workflow file paths. Workflows use a multi-base lookup and ignore `paths.base`.                                                                   |
-| `vaults`          | No*      | Vault file paths. Resolved via `paths.base`.                                                                                                      |
-| `drivers`         | No*      | Driver file paths. Resolved via `paths.base`.                                                                                                     |
-| `datastores`      | No*      | Datastore file paths. Resolved via `paths.base`.                                                                                                  |
-| `reports`         | No*      | Report file paths. Resolved via `paths.base`.                                                                                                     |
-| `skills`          | No*      | Skill directory names resolved from the tool's skill directory (e.g., `.claude/skills/`). Skills ignore `paths.base`.                             |
-| `include`         | No       | Helper TypeScript files copied alongside models without bundling. Resolved via `paths.base`.                                                      |
-| `additionalFiles` | No       | Extra files (README, LICENSE, etc.) relative to the manifest's own directory.                                                                     |
-| `platforms`       | No       | OS/architecture hints (e.g. `darwin-aarch64`, `linux-x86_64`)                                                                                     |
-| `labels`          | No       | Categorization labels (e.g. `aws`, `kubernetes`, `security`)                                                                                      |
-| `dependencies`    | No       | Other extensions this one depends on                                                                                                              |
+| Field             | Required | Description                                                                                                                                                   |
+| ----------------- | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `manifestVersion` | Yes      | Must be `1`                                                                                                                                                   |
+| `name`            | Yes      | Scoped name: `@collective/name` or `@collective/name/sub/path` (lowercase, hyphens, underscores)                                                              |
+| `version`         | Yes      | CalVer format: `YYYY.MM.DD.MICRO`                                                                                                                             |
+| `description`     | No       | Human-readable description                                                                                                                                    |
+| `repository`      | No       | HTTPS URL of the upstream repository. Required for users to file issues via `swamp issue --extension` — `swamp extension push` warns when absent.             |
+| `paths.base`      | No       | Path resolution mode for typed keys + `additionalFiles`. `typedDir` (default) or `manifest`. See "Path resolution".                                           |
+| `models`          | No*      | Model file paths. Resolved via `paths.base`.                                                                                                                  |
+| `workflows`       | No*      | Workflow file paths. Resolved via `paths.base`. Under `manifest`, resolves from manifest dir first, then repo-root fallbacks.                                 |
+| `vaults`          | No*      | Vault file paths. Resolved via `paths.base`.                                                                                                                  |
+| `drivers`         | No*      | Driver file paths. Resolved via `paths.base`.                                                                                                                 |
+| `datastores`      | No*      | Datastore file paths. Resolved via `paths.base`.                                                                                                              |
+| `reports`         | No*      | Report file paths. Resolved via `paths.base`.                                                                                                                 |
+| `skills`          | No*      | Skill directory names. Honours `paths.base: manifest` (manifest-relative first, then project-local, then global). Multi-tool repos search all enrolled tools. |
+| `include`         | No       | Helper TypeScript files copied alongside models without bundling. Resolved via `paths.base`.                                                                  |
+| `additionalFiles` | No       | Extra files (README, LICENSE, etc.) relative to the manifest's own directory.                                                                                 |
+| `platforms`       | No       | OS/architecture hints (e.g. `darwin-aarch64`, `linux-x86_64`)                                                                                                 |
+| `labels`          | No       | Categorization labels (e.g. `aws`, `kubernetes`, `security`)                                                                                                  |
+| `dependencies`    | No       | Other extensions this one depends on                                                                                                                          |
 
 *At least one of `models`, `workflows`, `vaults`, `drivers`, `datastores`,
 `reports`, or `skills` must be present with entries.
@@ -198,8 +198,12 @@ additionalFiles:
 - The archive layout under each typed dir mirrors your manifest entries
   verbatim: `models: [echo.ts]` lands at `extension/models/echo.ts` in the
   archive (not at `extension/models/my-ext/echo.ts`).
-- Workflows and skills keep their own multi-base lookup. `paths.base` does not
-  apply to those keys.
+- Workflows honour `paths.base: manifest` — the manifest's own directory is
+  searched first, falling back to repo-root `workflows/` and
+  `extensions/workflows/`.
+- Skills honour `paths.base: manifest` — manifest-relative directories are
+  searched first, then project-local, then global. All enrolled tools are
+  searched at each level.
 
 ### Name Rules
 
@@ -505,31 +509,34 @@ swamp extension version --manifest manifest.yaml --json
 
 ## Common Errors and Fixes
 
-| Error                           | Fix                                                                               |
-| ------------------------------- | --------------------------------------------------------------------------------- |
-| "Not a swamp repository"        | Run `swamp repo init --json` in the extension directory                           |
-| "Not authenticated"             | Run `swamp auth login` first                                                      |
-| "collective does not match"     | Manifest `name` must use `@your-username/...`                                     |
-| "CalVer format" error           | Use `YYYY.MM.DD.MICRO` (e.g., `2026.02.26.1`)                                     |
-| "at least one model, workflow…" | Add a `models`, `workflows`, `vaults`, `drivers`, `datastores`, or `skills` array |
-| "Model file not found"          | Check path is relative to `extensions/models/`                                    |
-| "Workflow file not found"       | Check path is relative to `workflows/`                                            |
-| "eval() or new Function()"      | Remove dynamic code execution from your models                                    |
-| "Version already exists"        | Bump the MICRO component or let CLI auto-bump                                     |
-| "Missing manifestVersion"       | Add `manifestVersion: 1` to your manifest                                         |
-| "Bundle compilation failed"     | Fix TypeScript errors in your model files                                         |
+| Error                             | Fix                                                                               |
+| --------------------------------- | --------------------------------------------------------------------------------- |
+| "Not a swamp repository"          | Run `swamp repo init --json` in the extension directory                           |
+| "Not authenticated"               | Run `swamp auth login` first                                                      |
+| "collective does not match"       | Manifest `name` must use `@your-username/...`                                     |
+| "CalVer format" error             | Use `YYYY.MM.DD.MICRO` (e.g., `2026.02.26.1`)                                     |
+| "at least one model, workflow…"   | Add a `models`, `workflows`, `vaults`, `drivers`, `datastores`, or `skills` array |
+| "Model file not found"            | Check path is relative to `extensions/models/`                                    |
+| "Workflow file not found"         | Check path is relative to `workflows/`                                            |
+| "eval() or new Function()"        | Remove dynamic code execution from your models                                    |
+| "Version already exists"          | Bump the MICRO component or let CLI auto-bump                                     |
+| "Missing manifestVersion"         | Add `manifestVersion: 1` to your manifest                                         |
+| "Bundle compilation failed"       | Fix TypeScript errors in your model files                                         |
+| "Extension is already deprecated" | Already deprecated — use `undeprecate` first if re-deprecating with new reason    |
+| "Extension is not deprecated"     | Nothing to undeprecate — extension is not currently deprecated                    |
 
 ## Related Skills
 
-| Need                               | Use Skill         |
-| ---------------------------------- | ----------------- |
-| Create custom models               | `swamp-extension` |
-| Create custom vaults               | `swamp-extension` |
-| Create custom datastores           | `swamp-extension` |
-| Create custom execution drivers    | `swamp-extension` |
-| Repository setup and management    | `swamp-repo`      |
-| Create reports                     | `swamp-report`    |
-| Quality scorecard & best practices | `swamp-extension` |
+| Need                               | Use Skill                 |
+| ---------------------------------- | ------------------------- |
+| Create custom models               | `swamp-extension`         |
+| Create custom vaults               | `swamp-extension`         |
+| Create custom datastores           | `swamp-extension`         |
+| Create custom execution drivers    | `swamp-extension`         |
+| Repository setup and management    | `swamp-repo`              |
+| Create reports                     | `swamp-report`            |
+| Quality scorecard & best practices | `swamp-extension`         |
+| Deprecate/undeprecate extensions   | `swamp-extension-publish` |
 
 ## Quality Self-Check
 
