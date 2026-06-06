@@ -1954,7 +1954,10 @@ export function renderMarkdown(
   for (const i of collected.instances) accounts.add(i.accountId);
   for (const r of collected.reserved) accounts.add(r.accountId);
   for (const e of errors) if (e.accountId) accounts.add(e.accountId);
-  const regions = new Set(collected.instances.map((i) => i.region));
+  const regions = new Set<string>();
+  for (const i of collected.instances) regions.add(i.region);
+  for (const r of collected.reserved) regions.add(r.region);
+  for (const e of errors) if (e.region) regions.add(e.region);
 
   const totalRunning = round2(
     agg.buckets.reduce((s, b) => s + b.runningLargeEq, 0),
@@ -2501,7 +2504,13 @@ export const report = {
     const accounts = new Set<string>();
     for (const i of collected.instances) accounts.add(i.accountId);
     for (const r of collected.reserved) accounts.add(r.accountId);
-    const regions = new Set(collected.instances.map((i) => i.region));
+    for (const e of collected.errors) {
+      if (e.accountId) accounts.add(e.accountId);
+    }
+    const regions = new Set<string>();
+    for (const i of collected.instances) regions.add(i.region);
+    for (const r of collected.reserved) regions.add(r.region);
+    for (const e of collected.errors) if (e.region) regions.add(e.region);
     const totalRunning = round2(
       agg.buckets.reduce((s, b) => s + b.runningLargeEq, 0),
     );
