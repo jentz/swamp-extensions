@@ -43,8 +43,30 @@ import {
 import { fromIni } from "npm:@aws-sdk/credential-providers@3.1021.0";
 import { type RetryDeps, withRetry } from "./_lib/retry.ts";
 
-/** Credential provider as returned by `fromIni`; `undefined` means the ambient chain. */
-export type CredentialProvider = ReturnType<typeof fromIni>;
+// Re-exported so the public `paginate` signature does not leak private types
+// (`RetryDeps.onRetry` carries a `RetryEvent`).
+export type { RetryDeps, RetryEvent } from "./_lib/retry.ts";
+
+/** Minimal AWS credential shape a {@link CredentialProvider} resolves. */
+export interface AwsCredentials {
+  /** Access key id. */
+  accessKeyId: string;
+  /** Secret access key. */
+  secretAccessKey: string;
+  /** Session token for temporary (SSO/STS) credentials. */
+  sessionToken?: string;
+  /** Expiry of temporary credentials. */
+  expiration?: Date;
+}
+
+/**
+ * AWS credential provider — a function resolving credentials on demand, the
+ * shape `fromIni` returns and the RDS/STS clients accept. A self-contained
+ * structural type (rather than `ReturnType<typeof fromIni>`) so this public
+ * export does not leak the SDK's private credential types. `undefined` (not a
+ * value of this type) means the ambient credential chain.
+ */
+export type CredentialProvider = () => Promise<AwsCredentials>;
 
 /** Factory for constructing an AWS API facade bound to one credential source. */
 export type ApiFactory = (
@@ -515,6 +537,35 @@ export async function paginate<T>(
   return out;
 }
 
+/** Minimal shape returned by `sts:GetCallerIdentity` for account-id lookup. */
+export interface CallerIdentity {
+  /** 12-digit AWS account id, or undefined if the service response omits it. */
+  Account?: string;
+}
+
+/**
+ * Fetch the current caller's AWS account id, retrying throttled STS bootstrap
+ * calls with the same full-jitter retry policy used by the RDS describe paths.
+ * A post-exhaustion throttle is deliberately allowed to propagate so
+ * `runSweep` records the existing credentials-phase `scan_error`.
+ *
+ * @param send Issues one `sts:GetCallerIdentity` request.
+ * @param deps Retry dependencies — injectable for deterministic tests.
+ * @returns The reported account id, or `""` if AWS omitted it.
+ */
+export async function getCallerAccountId(
+  send: () => Promise<CallerIdentity>,
+  deps: RetryDeps,
+): Promise<string> {
+  const resp = await withRetry(
+    send,
+    "GetCallerIdentity",
+    undefined,
+    deps,
+  );
+  return resp.Account ?? "";
+}
+
 function sdkApi(
   credentials: CredentialProvider | undefined,
   bootstrapRegion: string,
@@ -532,8 +583,10 @@ function sdkApi(
         credentials,
         ...CLIENT_RETRY,
       });
-      const resp = await sts.send(new GetCallerIdentityCommand({}));
-      return resp.Account ?? "";
+      return getCallerAccountId(
+        () => sts.send(new GetCallerIdentityCommand({})),
+        deps,
+      );
     },
     describeDBInstances: (region) => {
       const rds = rdsFor(region);
