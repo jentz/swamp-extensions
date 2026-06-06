@@ -14,14 +14,20 @@
  * @module
  */
 
-import { assertEquals, assertRejects } from "jsr:@std/assert@1";
+import {
+  assertEquals,
+  assertRejects,
+  assertStrictEquals,
+} from "jsr:@std/assert@1";
 import { createModelTestContext } from "jsr:@systeminit/swamp-testing@0.20260525.18";
 import {
   accountNameFromProfile,
   type AwsApi,
   type AwsDBInstance,
   type AwsReservedDBInstance,
+  buildTargets,
   classifyError,
+  type CredentialProvider,
   type Page,
   paginate,
   resolveBootstrapRegion,
@@ -117,6 +123,134 @@ function fakeApi(spec: FakeSpec): AwsApi {
 function target(profile: string, spec: FakeSpec): SweepTarget {
   return { profile, api: fakeApi(spec) };
 }
+
+Deno.test("buildTargets: empty profiles produce one ambient target", () => {
+  const logger = {};
+  const api = fakeApi({ accountId: "111122223333" });
+  const calls: Array<{
+    credentials: CredentialProvider | undefined;
+    bootstrapRegion: string;
+    logger: unknown;
+  }> = [];
+
+  const targets = buildTargets({
+    profiles: [],
+    bootstrapRegion: "eu-north-1",
+    logger,
+    apiFactory: (credentials, bootstrapRegion, gotLogger) => {
+      calls.push({ credentials, bootstrapRegion, logger: gotLogger });
+      return api;
+    },
+    credentialFactory: () => {
+      throw new Error("ambient target must not construct profile credentials");
+    },
+  });
+
+  assertEquals(targets.length, 1);
+  assertEquals(targets[0].profile, "");
+  assertStrictEquals(targets[0].api, api);
+  assertEquals(calls.length, 1);
+  assertStrictEquals(calls[0].credentials, undefined);
+  assertEquals(calls[0].bootstrapRegion, "eu-north-1");
+  assertStrictEquals(calls[0].logger, logger);
+});
+
+Deno.test("buildTargets: named profiles use credentialFactory and preserve order", () => {
+  const logger = {};
+  const prodCredential = (() =>
+    Promise.resolve({
+      accessKeyId: "prod-access-key",
+      secretAccessKey: "prod-secret-key",
+    })) as CredentialProvider;
+  const devCredential = (() =>
+    Promise.resolve({
+      accessKeyId: "dev-access-key",
+      secretAccessKey: "dev-secret-key",
+    })) as CredentialProvider;
+  const credentialsByProfile: Record<string, CredentialProvider> = {
+    "prod-readonly": prodCredential,
+    "dev-readonly": devCredential,
+  };
+  const credentialCalls: string[] = [];
+  const apiCalls: Array<{
+    credentials: CredentialProvider | undefined;
+    bootstrapRegion: string;
+    logger: unknown;
+  }> = [];
+  const apis = [
+    fakeApi({ accountId: "111122223333" }),
+    fakeApi({ accountId: "444455556666" }),
+  ];
+
+  const targets = buildTargets({
+    profiles: ["prod-readonly", "dev-readonly"],
+    bootstrapRegion: "us-west-2",
+    logger,
+    credentialFactory: ({ profile }) => {
+      credentialCalls.push(profile);
+      return credentialsByProfile[profile];
+    },
+    apiFactory: (credentials, bootstrapRegion, gotLogger) => {
+      apiCalls.push({ credentials, bootstrapRegion, logger: gotLogger });
+      return apis[apiCalls.length - 1];
+    },
+  });
+
+  assertEquals(credentialCalls, ["prod-readonly", "dev-readonly"]);
+  assertEquals(targets.map((t) => t.profile), [
+    "prod-readonly",
+    "dev-readonly",
+  ]);
+  assertStrictEquals(targets[0].api, apis[0]);
+  assertStrictEquals(targets[1].api, apis[1]);
+  assertEquals(apiCalls.length, 2);
+  assertStrictEquals(apiCalls[0].credentials, prodCredential);
+  assertStrictEquals(apiCalls[1].credentials, devCredential);
+  assertEquals(apiCalls.map((c) => c.bootstrapRegion), [
+    "us-west-2",
+    "us-west-2",
+  ]);
+  assertStrictEquals(apiCalls[0].logger, logger);
+  assertStrictEquals(apiCalls[1].logger, logger);
+});
+
+Deno.test("runSweep: injected clock propagates to instance, reserved, and scan_error rows", async () => {
+  const { context, getWrittenResources } = createModelTestContext({});
+  const fixedNow = new Date("2026-01-02T03:04:05.006Z");
+  await runSweep({
+    targets: [
+      target("prod-readonly", {
+        accountId: "111122223333",
+        perRegion: {
+          "us-east-1": {
+            instances: [{
+              DBInstanceIdentifier: "orders-db",
+              DBInstanceClass: "db.r7g.large",
+            }],
+            reserved: [{
+              ReservedDBInstanceId: "ri-1",
+              DBInstanceClass: "db.r7g.large",
+            }],
+          },
+        },
+      }),
+      target("admin", { accountId: "444455556666" }),
+    ],
+    regions: ["us-east-1"],
+    requiredProfileSuffix: "-readonly",
+    context,
+    now: () => fixedNow,
+  });
+
+  const scannedAtValues = getWrittenResources().map((w) =>
+    (w.data as Record<string, unknown>).scannedAt
+  );
+  assertEquals(scannedAtValues, [
+    "2026-01-02T03:04:05.006Z",
+    "2026-01-02T03:04:05.006Z",
+    "2026-01-02T03:04:05.006Z",
+  ]);
+});
 
 Deno.test("runSweep: writes one instance + one reserved row, derives account name", async () => {
   const { context, getWrittenResources } = createModelTestContext({});

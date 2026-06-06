@@ -44,7 +44,19 @@ import { fromIni } from "npm:@aws-sdk/credential-providers@3.1021.0";
 import { type RetryDeps, withRetry } from "./_lib/retry.ts";
 
 /** Credential provider as returned by `fromIni`; `undefined` means the ambient chain. */
-type CredentialProvider = ReturnType<typeof fromIni>;
+export type CredentialProvider = ReturnType<typeof fromIni>;
+
+/** Factory for constructing an AWS API facade bound to one credential source. */
+export type ApiFactory = (
+  credentials: CredentialProvider | undefined,
+  bootstrapRegion: string,
+  logger: unknown,
+) => AwsApi;
+
+/** Factory for constructing a credential provider for a named AWS profile. */
+export type CredentialFactory = (
+  args: { profile: string },
+) => CredentialProvider;
 
 // ---------------------------------------------------------------------------
 // Schemas
@@ -559,6 +571,53 @@ function sdkApi(
 // Core sweep logic — parameterized on its AWS facade and runtime context
 // ---------------------------------------------------------------------------
 
+/** Arguments for {@link buildTargets}. */
+export interface BuildTargetsArgs {
+  /** Named AWS profiles to sweep. Empty means one ambient-credential target. */
+  profiles: string[];
+  /** Region used for bootstrap/account-identity API calls. */
+  bootstrapRegion: string;
+  /** Runtime logger passed through to the API facade. */
+  logger: unknown;
+  /** Factory for constructing the AWS API facade. Defaults to the real SDK facade. */
+  apiFactory?: ApiFactory;
+  /** Factory for constructing named-profile credentials. Defaults to `fromIni`. */
+  credentialFactory?: CredentialFactory;
+}
+
+/**
+ * Build one sweep target per configured profile, or one ambient target when no
+ * profiles are configured. This is the production `execute` credential-mapping
+ * seam, exported so tests can pin ambient-vs-profile behavior without touching
+ * real AWS SDK clients.
+ *
+ * @param args Profiles, bootstrap region, logger, and optional factories.
+ * @returns Ordered sweep targets matching the configured profile order.
+ */
+export function buildTargets(args: BuildTargetsArgs): SweepTarget[] {
+  const {
+    profiles,
+    bootstrapRegion,
+    logger,
+    apiFactory = sdkApi,
+    credentialFactory = fromIni,
+  } = args;
+
+  return profiles.length === 0
+    ? [{
+      profile: "",
+      api: apiFactory(undefined, bootstrapRegion, logger),
+    }]
+    : profiles.map((profile) => ({
+      profile,
+      api: apiFactory(
+        credentialFactory({ profile }),
+        bootstrapRegion,
+        logger,
+      ),
+    }));
+}
+
 /** One account's sweep target: a label and the API facade. */
 export interface SweepTarget {
   /** Profile name, or `""` for the ambient credential chain. */
@@ -581,6 +640,8 @@ export interface SweepDeps {
    */
   // deno-lint-ignore no-explicit-any
   context: any;
+  /** Clock used to stamp all rows from a single sweep. Defaults to `new Date()`. */
+  now?: () => Date;
 }
 
 /** Result of {@link runSweep}. */
@@ -606,12 +667,18 @@ export interface SweepResult {
  * @returns Data handles plus instance / reserved / error counts.
  */
 export async function runSweep(deps: SweepDeps): Promise<SweepResult> {
-  const { targets, regions, requiredProfileSuffix, context } = deps;
+  const {
+    targets,
+    regions,
+    requiredProfileSuffix,
+    context,
+    now = () => new Date(),
+  } = deps;
   const handles: unknown[] = [];
   let instanceCount = 0;
   let reservedCount = 0;
   let errorCount = 0;
-  const scannedAt = new Date().toISOString();
+  const scannedAt = now().toISOString();
 
   const writeError = async (e: ScanError): Promise<void> => {
     errorCount++;
@@ -903,15 +970,11 @@ export const model = {
         const g = GlobalArgsSchema.parse(context.globalArgs);
         const bootstrapRegion = resolveBootstrapRegion(g.regions);
 
-        const targets: SweepTarget[] = g.profiles.length === 0
-          ? [{
-            profile: "",
-            api: sdkApi(undefined, bootstrapRegion, context.logger),
-          }]
-          : g.profiles.map((profile) => ({
-            profile,
-            api: sdkApi(fromIni({ profile }), bootstrapRegion, context.logger),
-          }));
+        const targets = buildTargets({
+          profiles: g.profiles,
+          bootstrapRegion,
+          logger: context.logger,
+        });
 
         return runSweep({
           targets,
