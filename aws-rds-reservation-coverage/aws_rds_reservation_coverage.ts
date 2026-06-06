@@ -11,14 +11,17 @@
  *
  * Each instance class is parsed into `family` (e.g. `r7g`), `generation`
  * (`7g`), and `size` (`2xlarge`). Size is converted to a **large-equivalent**
- * factor that doubles per size step, anchored at `large = 1`:
+ * factor that doubles per size step, anchored at Single-AZ `large = 1`:
  *
  *   nano .0625 · micro .125 · small .25 · medium .5 · large 1 · xlarge 2 ·
  *   2xlarge 4 · 4xlarge 8 · 8xlarge 16 · 12xlarge 24 · 16xlarge 32 · 24xlarge 48
  *
- * (an `Nxlarge` is `2 × N`). This is AWS's normalized-unit scheme rescaled so a
- * `large` is one unit — exactly the granularity RDS size-flexible reservations
- * apply within a family.
+ * (an `Nxlarge` is `2 × N`). A **Multi-AZ instance deployment then counts 2×**
+ * the same-size Single-AZ deployment — this is AWS's normalized-unit table,
+ * rescaled so a Single-AZ `large` is one unit. RI size-flexibility applies by
+ * these units within a family and crosses the Multi-AZ/Single-AZ boundary, so
+ * the units are commensurable: a Multi-AZ and a Single-AZ large-eq can be
+ * summed. **Aurora is the exception** — see Bucketing.
  *
  * ## Bucketing
  *
@@ -28,8 +31,32 @@
  * line item. For each bucket: `running_large_eq − reserved_large_eq = gap`. A
  * positive gap is under-covered capacity to buy; negative is over-coverage.
  *
+ * **Aurora has no Multi-AZ DB instance reservation option** (the purchase
+ * console pins the Single-AZ radio for Aurora; its availability comes from
+ * cluster replicas, not a Multi-AZ instance deployment). So any Aurora engine
+ * is forced to the `Single-AZ` deployment and never picks up the 2× weight —
+ * an Aurora row never produces a Multi-AZ bucket, even if its upstream
+ * `multiAZ` flag is set.
+ *
+ * Netting is **bucket-local**: a Single-AZ RI nets only Single-AZ running, a
+ * Multi-AZ RI only Multi-AZ running. AWS in fact lets a Single-AZ RI spill
+ * onto Multi-AZ usage (one family-wide normalized-unit pool); the per-bucket
+ * gaps do not model that spill, so when a Single-AZ RI exceeds Single-AZ demand
+ * one bucket can read over-reserved while another reads under — the **rollup
+ * total is unaffected** (spill changes attribution, never the family total).
+ *
  * A region × family **generation rollup** collapses engine and deployment for
- * the headline "large equivalents per generation" view.
+ * the headline "large equivalents per generation" view. Because the units are
+ * now commensurable (Multi-AZ folded in at 2×), this sum is meaningful and is
+ * the authoritative cross-deployment gap.
+ *
+ * **Known limitation — Multi-AZ DB cluster (3-node):** the newer Multi-AZ DB
+ * *cluster* deployment (1 primary + 2 readable standbys) consumes 3× normalized
+ * units, but is not modeled here: upstream carries only a `multiAZ` boolean and
+ * a `clusterId`, no reliable cluster-type signal. AWS reports each cluster
+ * member through `DescribeDBInstances` (typically `MultiAZ=false`), so the
+ * three members fall through as three individual Single-AZ instances —
+ * approximately the 3× footprint by headcount, at 1× each.
  *
  * ## Carve-outs (never silently dropped)
  *
@@ -44,8 +71,11 @@
  *
  * Engine is canonicalized (e.g. running `postgres` and reserved `postgresql`
  * collapse to `postgres`); Oracle/SQL-Server license models (LI vs BYOL) are
- * NOT distinguished, so those buckets are advisory. Only `active` reservations
- * count toward coverage.
+ * NOT distinguished, so those buckets are advisory. Note that SQL Server and
+ * Oracle License-Included are not size-flexible at all, so normalizing them
+ * into large-equivalents is itself advisory for those engines (a separate
+ * concern from the Multi-AZ 2× weighting, which does apply to them). Only
+ * `active` reservations count toward coverage.
  *
  * The report never throws — a missing upstream step, malformed artifact, or
  * schema drift degrades to a logged warning and a still-useful (possibly
@@ -338,6 +368,30 @@ export function sizeFactor(size: string): number | null {
 }
 
 /**
+ * AWS normalized units for a size at a given deployment, anchored so a
+ * Single-AZ `large` is 1. A **Multi-AZ instance deployment consumes exactly
+ * 2x** the units of the same-size Single-AZ deployment — AWS's normalized-unit
+ * table — and RI size-flexibility crosses the Multi-AZ/Single-AZ boundary by
+ * these units. Single-AZ factors equal {@link sizeFactor}; Multi-AZ doubles.
+ *
+ * Aurora is never Multi-AZ here (see {@link deploymentFor}), so it never
+ * doubles — the x2 keys purely off the resolved `deployment` label, keeping
+ * engine-awareness confined to deployment resolution.
+ *
+ * @param size A size token such as `large`, `2xlarge`, `medium`.
+ * @param deployment The resolved deployment dimension (`Multi-AZ` doubles).
+ * @returns The normalized units, or `null` if the size is not normalizable.
+ */
+export function normalizedUnits(
+  size: string,
+  deployment: string,
+): number | null {
+  const base = sizeFactor(size);
+  if (base === null) return null;
+  return deployment === "Multi-AZ" ? base * 2 : base;
+}
+
+/**
  * Collapse a running `Engine` or a reserved `ProductDescription` onto a single
  * canonical token so the two sides bucket together (e.g. running `postgres`
  * and reserved `postgresql` both become `postgres`). Aurora variants are kept
@@ -365,6 +419,28 @@ export function canonicalEngine(raw: string): string {
 /** Deployment dimension label from the Multi-AZ flag. */
 export function deploymentLabel(multiAZ: boolean): "Multi-AZ" | "Single-AZ" {
   return multiAZ ? "Multi-AZ" : "Single-AZ";
+}
+
+/**
+ * Resolve the deployment dimension a bucket is scoped to, accounting for the
+ * fact that **Aurora has no Multi-AZ DB instance reservation option**: the AWS
+ * Reserved DB Instance purchase console pins the Single-AZ radio for Aurora
+ * engines (Aurora's availability comes from cluster replicas, not a Multi-AZ
+ * instance deployment). So any Aurora engine (canonical engine starting
+ * `aurora`) is forced to `Single-AZ` regardless of the upstream `multiAZ`
+ * flag — it must never create a Multi-AZ bucket nor pick up the Multi-AZ x2
+ * weight. Every other engine maps straight through {@link deploymentLabel}.
+ *
+ * @param engine The canonical engine (see {@link canonicalEngine}).
+ * @param multiAZ The upstream Multi-AZ flag.
+ * @returns The deployment dimension; `Single-AZ` for any Aurora engine.
+ */
+export function deploymentFor(
+  engine: string,
+  multiAZ: boolean,
+): "Multi-AZ" | "Single-AZ" {
+  if (engine.startsWith("aurora")) return "Single-AZ";
+  return deploymentLabel(multiAZ);
 }
 
 /** Bucket key for a large-equivalent row: region × family × engine × deployment. */
@@ -568,8 +644,11 @@ export function aggregate(
       bumpBurstable(i.region, parsed.family, parsed.size, 1, "running");
       continue;
     }
-    const factor = parsed.unparseable ? null : sizeFactor(parsed.size);
-    if (factor === null) {
+    const deployment = deploymentFor(engine, i.multiAZ);
+    const units = parsed.unparseable
+      ? null
+      : normalizedUnits(parsed.size, deployment);
+    if (units === null) {
       bumpUnparseable(i.region, i.dbInstanceClass, "instance", 1);
       continue;
     }
@@ -577,8 +656,8 @@ export function aggregate(
       i.region,
       parsed,
       engine,
-      deploymentLabel(i.multiAZ),
-      factor,
+      deployment,
+      units,
       1,
       "running",
     );
@@ -603,8 +682,11 @@ export function aggregate(
       bumpBurstable(r.region, parsed.family, parsed.size, count, "reserved");
       continue;
     }
-    const factor = parsed.unparseable ? null : sizeFactor(parsed.size);
-    if (factor === null) {
+    const deployment = deploymentFor(engine, r.multiAZ);
+    const units = parsed.unparseable
+      ? null
+      : normalizedUnits(parsed.size, deployment);
+    if (units === null) {
       bumpUnparseable(r.region, r.dbInstanceClass, "reserved", count);
       continue;
     }
@@ -612,8 +694,8 @@ export function aggregate(
       r.region,
       parsed,
       engine,
-      deploymentLabel(r.multiAZ),
-      factor * count,
+      deployment,
+      units * count,
       count,
       "reserved",
     );
@@ -781,8 +863,8 @@ export function aggregateByAccount(
     side: "running" | "reserved",
   ) => {
     if (parsed.isServerless || parsed.isBurstable || parsed.unparseable) return;
-    const factor = sizeFactor(parsed.size);
-    if (factor === null) return;
+    const units = normalizedUnits(parsed.size, deployment);
+    if (units === null) return;
     const key =
       `${accountId} ${region} ${parsed.family} ${engine} ${deployment}`;
     let b = map.get(key);
@@ -803,35 +885,37 @@ export function aggregateByAccount(
       map.set(key, b);
     }
     if (side === "running") {
-      b.runningLargeEq += factor * count;
+      b.runningLargeEq += units * count;
       b.runningInstances += count;
     } else {
-      b.reservedLargeEq += factor * count;
+      b.reservedLargeEq += units * count;
       b.reservedInstances += count;
     }
   };
 
   for (const i of instances) {
+    const engine = canonicalEngine(i.engine);
     bump(
       i.accountId,
       i.accountName,
       i.region,
       parseInstanceClass(i.dbInstanceClass),
-      canonicalEngine(i.engine),
-      deploymentLabel(i.multiAZ),
+      engine,
+      deploymentFor(engine, i.multiAZ),
       1,
       "running",
     );
   }
   for (const r of reserved) {
     if (r.state !== "active") continue;
+    const engine = canonicalEngine(r.productDescription);
     bump(
       r.accountId,
       r.accountName,
       r.region,
       parseInstanceClass(r.dbInstanceClass),
-      canonicalEngine(r.productDescription),
-      deploymentLabel(r.multiAZ),
+      engine,
+      deploymentFor(engine, r.multiAZ),
       r.dbInstanceCount,
       "reserved",
     );

@@ -9,11 +9,14 @@ description: |
   workflow by `@jentz/aws-rds-reservations`. Pure data shaping — no AWS API
   access.
 
-  A "large-equivalent" rescales AWS's normalized-unit scheme so a `large` is 1
-  unit, doubling per size step (xlarge 2, 2xlarge 4, …). Within a family this is
-  exactly the granularity RDS size-flexible reservations apply at, so each
-  bucket maps to a purchasable line item: running_large_eq − reserved_large_eq =
-  the coverage gap (positive = buy more, negative = over-reserved).
+  A "large-equivalent" rescales AWS's normalized-unit table so a Single-AZ
+  `large` is 1 unit, doubling per size step (xlarge 2, 2xlarge 4, …); a Multi-AZ
+  instance deployment counts 2× the same-size Single-AZ. Aurora has no Multi-AZ
+  DB instance reservation, so Aurora is forced to Single-AZ and never doubled.
+  Each bucket maps to a purchasable line item: running_large_eq −
+  reserved_large_eq = the coverage gap (positive = buy more, negative =
+  over-reserved). Netting is bucket-local; the generation rollup sums the
+  now-commensurable units for the headline cross-deployment gap.
 
   Burstable (t-class) and serverless capacity are carved out (reported
   separately, never folded into large-equivalents); only active reservations
