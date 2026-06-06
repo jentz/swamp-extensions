@@ -28,6 +28,7 @@ import {
   buildTargets,
   classifyError,
   type CredentialProvider,
+  getCallerAccountId,
   type Page,
   paginate,
   resolveBootstrapRegion,
@@ -35,7 +36,7 @@ import {
   type SweepTarget,
   tagsFromAws,
 } from "../aws_rds_reservations.ts";
-import { isThrottlingError, withRetry } from "../_lib/retry.ts";
+import { isThrottlingError, type RetryDeps, withRetry } from "../_lib/retry.ts";
 
 // ---------------------------------------------------------------------------
 // Pure helpers
@@ -412,6 +413,40 @@ Deno.test("isThrottlingError: regular errors do not match", () => {
   assertEquals(isThrottlingError(new Error("connection refused")), false);
   assertEquals(isThrottlingError(undefined), false);
   assertEquals(isThrottlingError(null), false);
+});
+
+Deno.test("getCallerAccountId: retries throttled STS call then returns account id", async () => {
+  const throttled = new Error("rate exceeded");
+  throttled.name = "ThrottlingException";
+  let calls = 0;
+  const retryEvents: Array<
+    { operationName: string; attempt: number; delayMs: number }
+  > = [];
+  const deps: RetryDeps = {
+    random: () => 0.25,
+    delay: () => Promise.resolve(),
+    onRetry: (event) => {
+      retryEvents.push({
+        operationName: event.operationName,
+        attempt: event.attempt,
+        delayMs: event.delayMs,
+      });
+    },
+  };
+
+  const accountId = await getCallerAccountId(() => {
+    calls++;
+    if (calls === 1) return Promise.reject(throttled);
+    return Promise.resolve({ Account: "111122223333" });
+  }, deps);
+
+  assertEquals(accountId, "111122223333");
+  assertEquals(calls, 2);
+  assertEquals(retryEvents, [{
+    operationName: "GetCallerIdentity",
+    attempt: 1,
+    delayMs: 250,
+  }]);
 });
 
 Deno.test("withRetry: succeeds on first try, no waiting", async () => {

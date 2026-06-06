@@ -577,7 +577,7 @@ function sdkApi(
   const deps = retryDeps(logger);
 
   return {
-    getAccountId: async () => {
+    getAccountId: () => {
       const sts = new STSClient({
         region: bootstrapRegion,
         credentials,
