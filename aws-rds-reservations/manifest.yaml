@@ -1,0 +1,51 @@
+manifestVersion: 1
+name: "@jentz/aws-rds-reservations"
+version: "2026.06.06.1"
+description: |
+  Lists every running RDS DB instance (Aurora cluster members AND standalone
+  single-instance RDS, via DescribeDBInstances) and every reserved DB instance
+  (via DescribeReservedDBInstances), per profile × region — the read-only data
+  behind reserved-instance coverage planning. Read-only (Describe* +
+  sts:GetCallerIdentity).
+
+  A single `sweep` method fans out over every configured profile and region in
+  one execution (one model lock, all output in one pass). It emits one
+  `instance` resource per provisioned DB instance, one `reserved` resource per
+  reservation, and one `scan_error` per (profile, region) phase that fails — an
+  expired SSO token or an SCP-denied region is surfaced as a row, never
+  aborting the sweep.
+
+  Pairs with the companion report `@jentz/aws-rds-reservation-coverage`, which
+  normalizes these rows into size-flexible large-equivalent units and reports
+  the running-minus-reserved coverage gap.
+
+  Instance-level + reservations scope. For cluster-level inventory (one
+  resource per Aurora / Multi-AZ DB cluster and per cluster member) see the
+  sibling `@jentz/aws-rds-inventory`.
+repository: "https://github.com/jentz/swamp-extensions"
+homepage: "https://github.com/jentz/swamp-extensions/tree/main/aws-rds-reservations"
+paths:
+  base: manifest
+models:
+  - aws_rds_reservations.ts
+workflows: []
+vaults: []
+drivers: []
+datastores: []
+reports: []
+additionalFiles:
+  - README.md
+  - LICENSE.md
+platforms:
+  - linux-x86_64
+  - linux-aarch64
+  - darwin-x86_64
+  - darwin-aarch64
+labels:
+  - aws
+  - rds
+  - reserved-instances
+  - finops
+  - inventory
+  - cloud
+dependencies: []
