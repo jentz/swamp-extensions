@@ -6,6 +6,14 @@ shape with CEL — engine, member count, instance class, tags — without script
 around the SDK.
 
 
+> **See also — instance-level + reservation coverage.** This pair is
+> **cluster-level** (one resource per Aurora / Multi-AZ DB cluster and per
+> cluster member, in one region). For every running DB **instance** (Aurora
+> members *and* standalone) plus every **reservation**, swept across many
+> accounts and regions for reserved-instance coverage planning, use
+> [`@jentz/aws-rds-reservations`](../aws-rds-reservations/) and its report
+> [`@jentz/aws-rds-reservation-coverage`](../aws-rds-reservation-coverage/).
+
 ## What it does
 
 A single method, `list_clusters`, calls `DescribeDBClusters` and
