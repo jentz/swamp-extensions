@@ -22,17 +22,26 @@ CSV report [`@jentz/aws-rds-inventory-csv`](../aws-rds-inventory-csv/).
 
 Each instance class is parsed into `family` (e.g. `r7g`), `generation` (`7g`),
 and `size` (`2xlarge`). Size is converted to a **large-equivalent** factor that
-doubles per size step, anchored at `large = 1`:
+doubles per size step, anchored at a Single-AZ `large = 1`:
 
 | size | nano | micro | small | medium | large | xlarge | 2xlarge | 4xlarge | 8xlarge | 16xlarge |
 | ---- | ---- | ----- | ----- | ------ | ----- | ------ | ------- | ------- | ------- | -------- |
 | factor | .0625 | .125 | .25 | .5 | **1** | 2 | 4 | 8 | 16 | 32 |
 
-(an `Nxlarge` is `2 × N`). This is AWS's normalized-unit scheme rescaled so a
-`large` is one unit — exactly the granularity at which RDS **size-flexible**
-reservations apply within a family. So a reservation for one `db.r7g.2xlarge`
-(4 large-eq) covers, e.g., four `db.r7g.large` instances in the same family,
-engine, and deployment.
+(an `Nxlarge` is `2 × N`.) A **Multi-AZ instance deployment counts 2×** the
+same-size Single-AZ deployment. This is AWS's normalized-unit table rescaled so
+a Single-AZ `large` is one unit — the granularity at which RDS **size-flexible**
+reservations apply within a family, with Multi-AZ folded in at 2× exactly as AWS
+bills it. So a reservation for one `db.r7g.2xlarge` (4 large-eq) covers, e.g.,
+four Single-AZ `db.r7g.large` instances — or two same-size Multi-AZ ones — in
+the same family and engine.
+
+**Aurora is the exception.** Aurora has no Multi-AZ DB *instance* reservation
+option — the AWS purchase console pins the Single-AZ radio for Aurora, because
+Aurora's availability comes from cluster replicas rather than a Multi-AZ
+instance deployment. So any Aurora engine is forced to the `Single-AZ`
+deployment and **never** picks up the 2× weight, regardless of its upstream
+`multiAZ` flag.
 
 ## Bucketing and the coverage gap
 
@@ -50,8 +59,25 @@ over-coverage. Engine is canonicalized so running `postgres` nets against
 reserved `postgresql` (Aurora variants are kept distinct). Only `active`
 reservations count toward coverage.
 
+Netting is **bucket-local**: a Single-AZ RI nets only Single-AZ running, a
+Multi-AZ RI only Multi-AZ running. AWS actually lets a Single-AZ RI spill onto
+Multi-AZ usage (one family-wide normalized-unit pool); the per-bucket gaps do
+not model that spill, so when a Single-AZ RI exceeds Single-AZ demand one bucket
+can read over-reserved while another reads under. The **rollup total is
+unaffected** — spill only moves the gap between buckets, never the family total.
+
 A `region × family` **generation rollup** collapses engine and deployment for
-the headline "large equivalents per generation" view.
+the headline "large equivalents per generation" view. Because Multi-AZ is folded
+in at 2×, Multi-AZ and Single-AZ large-equivalents are commensurable, so this
+sum is the authoritative cross-deployment coverage gap.
+
+> **Known limitation — Multi-AZ DB cluster (3-node).** The newer Multi-AZ DB
+> *cluster* (1 primary + 2 readable standbys) consumes 3× normalized units, but
+> is not modeled: the upstream data carries only a `multiAZ` boolean and a
+> `clusterId`, no reliable cluster-type signal. AWS reports each cluster member
+> through `DescribeDBInstances` (typically `MultiAZ=false`), so the three
+> members fall through as three individual Single-AZ instances — roughly the 3×
+> footprint by headcount, at 1× each.
 
 ### Per-account breakdown (RI discount sharing OFF)
 
@@ -77,9 +103,12 @@ each account's gap in that account.
 ## Caveats
 
 Oracle / SQL-Server license models (LI vs BYOL) are **not** distinguished, so
-those buckets are advisory. The report **never throws** — a missing upstream
-step, malformed artifact, or schema drift degrades to a logged warning and a
-still-useful (possibly empty) report with `degraded: true` in the JSON.
+those buckets are advisory. SQL Server and Oracle License-Included are also not
+size-flexible at all, so normalizing them into large-equivalents is advisory for
+those engines (a separate concern from the Multi-AZ 2× weighting, which *does*
+apply to them). The report **never throws** — a missing upstream step, malformed
+artifact, or schema drift degrades to a logged warning and a still-useful
+(possibly empty) report with `degraded: true` in the JSON.
 
 ## How it fits with @jentz/aws-rds-reservations upstream
 

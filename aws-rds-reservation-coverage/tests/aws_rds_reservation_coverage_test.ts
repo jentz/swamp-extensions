@@ -16,7 +16,9 @@ import {
   aggregate,
   aggregateByAccount,
   canonicalEngine,
+  deploymentFor,
   type InstanceRecord,
+  normalizedUnits,
   parseInstanceClass,
   type ReservedRecord,
   rollupByGeneration,
@@ -85,6 +87,39 @@ Deno.test("sizeFactor: xlarge ladder doubles per step", () => {
 Deno.test("sizeFactor: unknown / metal returns null", () => {
   assertEquals(sizeFactor("metal"), null);
   assertEquals(sizeFactor("gigantic"), null);
+});
+
+// ---------------------------------------------------------------------------
+// normalizedUnits — Multi-AZ doubles, Single-AZ equals sizeFactor
+// ---------------------------------------------------------------------------
+
+Deno.test("normalizedUnits: Multi-AZ is exactly 2x the Single-AZ units", () => {
+  assertEquals(normalizedUnits("large", "Single-AZ"), 1);
+  assertEquals(normalizedUnits("large", "Multi-AZ"), 2);
+  assertEquals(normalizedUnits("2xlarge", "Single-AZ"), 4);
+  assertEquals(normalizedUnits("2xlarge", "Multi-AZ"), 8);
+});
+
+Deno.test("normalizedUnits: unnormalizable size stays null at either deployment", () => {
+  assertEquals(normalizedUnits("metal", "Single-AZ"), null);
+  assertEquals(normalizedUnits("metal", "Multi-AZ"), null);
+});
+
+// ---------------------------------------------------------------------------
+// deploymentFor — Aurora is forced Single-AZ; everything else passes through
+// ---------------------------------------------------------------------------
+
+Deno.test("deploymentFor: non-Aurora engines pass the multiAZ flag through", () => {
+  assertEquals(deploymentFor("postgres", true), "Multi-AZ");
+  assertEquals(deploymentFor("postgres", false), "Single-AZ");
+  assertEquals(deploymentFor("sqlserver", true), "Multi-AZ");
+  assertEquals(deploymentFor("oracle", true), "Multi-AZ");
+});
+
+Deno.test("deploymentFor: every Aurora engine is forced Single-AZ even when multiAZ", () => {
+  assertEquals(deploymentFor("aurora", true), "Single-AZ");
+  assertEquals(deploymentFor("aurora-mysql", true), "Single-AZ");
+  assertEquals(deploymentFor("aurora-postgresql", true), "Single-AZ");
 });
 
 // ---------------------------------------------------------------------------
@@ -234,7 +269,11 @@ Deno.test("aggregate: a reserved serverless row is dropped, not recorded as a ze
   // entry; the serverless table counts running instances only.
   const agg = aggregate(
     [],
-    [ri({ dbInstanceClass: "db.serverless", dbInstanceCount: 3, state: "active" })],
+    [ri({
+      dbInstanceClass: "db.serverless",
+      dbInstanceCount: 3,
+      state: "active",
+    })],
   );
   assertEquals(agg.buckets.length, 0);
   assertEquals(agg.serverless.length, 0);
@@ -266,11 +305,26 @@ Deno.test("aggregate: unparseable class is surfaced, not silently dropped", () =
 Deno.test("aggregateByAccount: same family in two accounts stays split by owner", () => {
   const acctBuckets = aggregateByAccount(
     [
-      inst({ accountId: "111", accountName: "account-alpha", dbInstanceClass: "db.r8g.2xlarge", dbInstanceIdentifier: "a" }),
-      inst({ accountId: "222", accountName: "account-beta", dbInstanceClass: "db.r8g.large", dbInstanceIdentifier: "b" }),
+      inst({
+        accountId: "111",
+        accountName: "account-alpha",
+        dbInstanceClass: "db.r8g.2xlarge",
+        dbInstanceIdentifier: "a",
+      }),
+      inst({
+        accountId: "222",
+        accountName: "account-beta",
+        dbInstanceClass: "db.r8g.large",
+        dbInstanceIdentifier: "b",
+      }),
     ],
     // reservation owned only by account-alpha must not cover account-beta here.
-    [ri({ accountId: "111", accountName: "account-alpha", dbInstanceClass: "db.r8g.large", dbInstanceCount: 1 })],
+    [ri({
+      accountId: "111",
+      accountName: "account-alpha",
+      dbInstanceClass: "db.r8g.large",
+      dbInstanceCount: 1,
+    })],
   );
   assertEquals(acctBuckets.length, 2);
   const alpha = acctBuckets.find((b) => b.accountName === "account-alpha")!;
@@ -284,9 +338,21 @@ Deno.test("aggregateByAccount: same family in two accounts stays split by owner"
 Deno.test("aggregateByAccount: excludes burstable / serverless / inactive, like org-wide", () => {
   const acctBuckets = aggregateByAccount(
     [
-      inst({ accountName: "x", dbInstanceClass: "db.t4g.medium", dbInstanceIdentifier: "t" }),
-      inst({ accountName: "x", dbInstanceClass: "db.serverless", dbInstanceIdentifier: "s" }),
-      inst({ accountName: "x", dbInstanceClass: "db.r8g.large", dbInstanceIdentifier: "r" }),
+      inst({
+        accountName: "x",
+        dbInstanceClass: "db.t4g.medium",
+        dbInstanceIdentifier: "t",
+      }),
+      inst({
+        accountName: "x",
+        dbInstanceClass: "db.serverless",
+        dbInstanceIdentifier: "s",
+      }),
+      inst({
+        accountName: "x",
+        dbInstanceClass: "db.r8g.large",
+        dbInstanceIdentifier: "r",
+      }),
     ],
     [ri({ accountName: "x", state: "retired", dbInstanceCount: 9 })],
   );
@@ -304,9 +370,154 @@ Deno.test("rollupByGeneration: collapses engine and deployment within region x f
     [],
   );
   // Two buckets (different engine+deployment) collapse to one rollup row.
+  // postgres Multi-AZ large = 1×2 = 2 normalized units; mysql Single-AZ large
+  // = 1; the rollup sums the now-commensurable units to 3.
   assertEquals(agg.buckets.length, 2);
   const rollup = rollupByGeneration(agg.buckets);
   assertEquals(rollup.length, 1);
   assertEquals(rollup[0].family, "r7g");
-  assertEquals(rollup[0].runningLargeEq, 2);
+  assertEquals(rollup[0].runningLargeEq, 3);
+});
+
+// ---------------------------------------------------------------------------
+// Multi-AZ 2x weighting — mixed fleet, the ticket worked example
+// ---------------------------------------------------------------------------
+
+Deno.test("aggregate: mixed Single-AZ/Multi-AZ fleet — per-bucket and rollup match AWS normalized units", () => {
+  // us-east-1 / r7g / postgres, all db.r7g.large:
+  //   running: 2× Single-AZ large, 1× Multi-AZ large
+  //   reserved: 1× Single-AZ large RI (count 1); 0 Multi-AZ RIs
+  const agg = aggregate(
+    [
+      inst({ multiAZ: false, dbInstanceIdentifier: "sa1" }),
+      inst({ multiAZ: false, dbInstanceIdentifier: "sa2" }),
+      inst({ multiAZ: true, dbInstanceIdentifier: "ma1" }),
+    ],
+    [ri({ multiAZ: false, dbInstanceCount: 1 })],
+  );
+
+  assertEquals(agg.buckets.length, 2);
+  const sa = agg.buckets.find((b) => b.deployment === "Single-AZ")!;
+  const ma = agg.buckets.find((b) => b.deployment === "Multi-AZ")!;
+
+  // Single-AZ: 2× large = 2 running; 1 large RI = 1 reserved; gap 1.
+  assertEquals(sa.runningLargeEq, 2);
+  assertEquals(sa.reservedLargeEq, 1);
+  // Multi-AZ: 1× large at 2× = 2 running; 0 reserved; gap 2.
+  assertEquals(ma.runningLargeEq, 2);
+  assertEquals(ma.reservedLargeEq, 0);
+
+  // Rollup folds the commensurable units: running 4, reserved 1, gap 3 —
+  // matching AWS's normalized-unit arithmetic (16 demand − 4 supply = 12
+  // units = 3 Single-AZ-large-equivalents).
+  const rollup = rollupByGeneration(agg.buckets);
+  assertEquals(rollup.length, 1);
+  assertEquals(rollup[0].runningLargeEq, 4);
+  assertEquals(rollup[0].reservedLargeEq, 1);
+  assertEquals(rollup[0].gapLargeEq, 3);
+});
+
+Deno.test("aggregate: a reserved Multi-AZ RI is weighted 2x", () => {
+  // One Multi-AZ large RI supplies 2 normalized units (large=1 × 2 for MA).
+  const agg = aggregate(
+    [inst({ multiAZ: true, dbInstanceClass: "db.r7g.xlarge" })],
+    [ri({
+      multiAZ: true,
+      dbInstanceClass: "db.r7g.large",
+      dbInstanceCount: 1,
+    })],
+  );
+  assertEquals(agg.buckets.length, 1);
+  const b = agg.buckets[0];
+  assertEquals(b.deployment, "Multi-AZ");
+  // running xlarge Multi-AZ = 2 × 2 = 4; reserved large Multi-AZ = 1 × 2 = 2.
+  assertEquals(b.runningLargeEq, 4);
+  assertEquals(b.reservedLargeEq, 2);
+});
+
+// ---------------------------------------------------------------------------
+// Aurora — no Multi-AZ DB instance reservation; forced to a single Single-AZ
+// bucket at 1×, even when the upstream multiAZ flag is set.
+// ---------------------------------------------------------------------------
+
+Deno.test("aggregate: an Aurora instance with multiAZ=true lands in one Single-AZ bucket at 1x", () => {
+  const agg = aggregate(
+    [
+      inst({
+        engine: "aurora-postgresql",
+        multiAZ: true,
+        dbInstanceClass: "db.r7g.large",
+        clusterId: "orders-cluster",
+        dbInstanceIdentifier: "writer",
+      }),
+      inst({
+        engine: "aurora-postgresql",
+        multiAZ: false,
+        dbInstanceClass: "db.r7g.large",
+        clusterId: "orders-cluster",
+        dbInstanceIdentifier: "reader",
+      }),
+    ],
+    [],
+  );
+
+  // No Multi-AZ Aurora bucket exists: both members collapse to one Single-AZ
+  // bucket, each weighted 1× (large = 1) → 2 running large-eq.
+  assertEquals(agg.buckets.length, 1);
+  assertEquals(agg.buckets[0].deployment, "Single-AZ");
+  assertEquals(agg.buckets[0].engine, "aurora-postgresql");
+  assertEquals(agg.buckets[0].runningLargeEq, 2);
+  assertEquals(agg.buckets[0].runningInstances, 2);
+});
+
+Deno.test("aggregate: a reserved Aurora RI flagged multiAZ still nets in the Single-AZ bucket", () => {
+  const agg = aggregate(
+    [inst({
+      engine: "aurora-mysql",
+      multiAZ: false,
+      dbInstanceClass: "db.r7g.large",
+    })],
+    [
+      ri({
+        productDescription: "aurora mysql",
+        multiAZ: true,
+        dbInstanceClass: "db.r7g.large",
+        dbInstanceCount: 1,
+      }),
+    ],
+  );
+  // Aurora reserved is forced Single-AZ and weighted 1×, so it nets against the
+  // running Aurora instance in the same Single-AZ bucket (no phantom MA bucket).
+  assertEquals(agg.buckets.length, 1);
+  assertEquals(agg.buckets[0].deployment, "Single-AZ");
+  assertEquals(agg.buckets[0].runningLargeEq, 1);
+  assertEquals(agg.buckets[0].reservedLargeEq, 1);
+});
+
+Deno.test("aggregateByAccount: Multi-AZ doubles and Aurora stays Single-AZ 1x", () => {
+  const acctBuckets = aggregateByAccount(
+    [
+      inst({
+        accountName: "x",
+        engine: "postgres",
+        multiAZ: true,
+        dbInstanceClass: "db.r7g.large",
+        dbInstanceIdentifier: "p",
+      }),
+      inst({
+        accountName: "x",
+        engine: "aurora-postgresql",
+        multiAZ: true,
+        dbInstanceClass: "db.r7g.large",
+        dbInstanceIdentifier: "a",
+      }),
+    ],
+    [],
+  );
+  const pg = acctBuckets.find((b) => b.engine === "postgres")!;
+  const au = acctBuckets.find((b) => b.engine === "aurora-postgresql")!;
+  assertEquals(pg.deployment, "Multi-AZ");
+  assertEquals(pg.runningLargeEq, 2); // large × 2 for Multi-AZ
+  assertEquals(au.deployment, "Single-AZ");
+  assertEquals(au.runningLargeEq, 1); // Aurora never doubles
 });
