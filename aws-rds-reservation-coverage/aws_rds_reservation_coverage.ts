@@ -63,19 +63,44 @@
  *   - **Burstable** (`t`-class: t2/t3/t4g) capacity is reported separately as
  *     raw counts — burstable reservations are not size-flexible, so folding
  *     them into large-equivalents would mislead.
+ *   - **Non-size-flex commercial** — **SQL Server** (all editions), **Oracle
+ *     License-Included**, and **RDS Custom** (`custom-oracle-*`,
+ *     `custom-sqlserver-*`). RDS size flexibility does not apply to these, so
+ *     they are NOT folded into large-equivalents; they are reported as raw
+ *     counts at `region × family × engine × size × deployment`, with edition
+ *     and license preserved in the engine token.
  *   - **Serverless** (`db.serverless`, Aurora Serverless v2) is counted
  *     separately (ACU-billed, not instance-class capacity).
  *   - **Unparseable** classes are listed with a warning.
  *
+ * ## Engine, edition, and license
+ *
+ * The engine token preserves the dimensions an RDS reservation is actually
+ * scoped to. Open-source and Aurora engines collapse to a base token (running
+ * `postgres` and reserved `postgresql` both become `postgres`; Aurora variants
+ * stay distinct). The **commercial** engines additionally carry edition and
+ * license — `oracle-ee-byol`, `oracle-se2-li`, `sqlserver-se-li`,
+ * `db2-ae-byol` — because a reservation matches on edition AND license: an
+ * `oracle-se2` reservation does not cover an `oracle-ee` instance, and a
+ * License-Included reservation does not cover a BYOL one. The running side's
+ * license comes from the upstream `licenseModel` field; the reserved side's
+ * from the product-description `(byol)`/`(li)` suffix. See
+ * {@link parseEngineIdentity}.
+ *
+ * Size flexibility — and therefore large-equivalent netting — is applied only
+ * to the engines AWS grants it to: MySQL, MariaDB, PostgreSQL, Db2, Aurora, and
+ * Oracle **BYOL**. SQL Server, Oracle License-Included, and RDS Custom go to
+ * the non-size-flex carve-out instead.
+ *
  * ## Caveats
  *
- * Engine is canonicalized (e.g. running `postgres` and reserved `postgresql`
- * collapse to `postgres`); Oracle/SQL-Server license models (LI vs BYOL) are
- * NOT distinguished, so those buckets are advisory. Note that SQL Server and
- * Oracle License-Included are not size-flexible at all, so normalizing them
- * into large-equivalents is itself advisory for those engines (a separate
- * concern from the Multi-AZ 2× weighting, which does apply to them). Only
- * `active` reservations count toward coverage.
+ * Only `active` reservations count toward coverage. When the upstream
+ * `licenseModel` is absent (rows swept before the field existed, or Aurora /
+ * RDS Custom which do not report one), Oracle SE2 cannot be proven BYOL and is
+ * routed conservatively to the non-size-flex carve-out rather than netted —
+ * Oracle EE (BYOL-only) and standard RDS SQL Server (LI-only) are inferred from
+ * the engine and remain unaffected. A re-sweep on the upstream model populates
+ * the real license model.
  *
  * The report never throws — a missing upstream step, malformed artifact, or
  * schema drift degrades to a logged warning and a still-useful (possibly
@@ -130,6 +155,13 @@ const InstanceRecordSchema = z.object({
   dbInstanceClass: z.string(),
   engine: z.string(),
   engineVersion: z.string(),
+  // Optional with an empty default: `licenseModel` was added to the upstream
+  // `instance` resource in @jentz/aws-rds-reservations 2026.06.06.2. Rows swept
+  // before that release lack the field — accept them (default "") rather than
+  // failing safeParse and skipping the instance. Oracle BYOL-vs-LI routing
+  // simply degrades to the conservative carve-out for "" license (see
+  // {@link parseEngineIdentity}). A re-sweep populates the real value.
+  licenseModel: z.string().default(""),
   multiAZ: z.boolean(),
   status: z.string(),
   clusterId: z.string(),
@@ -184,10 +216,17 @@ export interface InstanceRecord {
   dbInstanceIdentifier: string;
   /** Instance class, e.g. `db.r7g.2xlarge`. */
   dbInstanceClass: string;
-  /** Engine, e.g. `postgres`, `aurora-postgresql`, `mysql`. */
+  /** Engine, e.g. `postgres`, `aurora-postgresql`, `mysql`, `oracle-ee`, `sqlserver-se`. */
   engine: string;
   /** Engine version string. */
   engineVersion: string;
+  /**
+   * License model, e.g. `license-included`, `bring-your-own-license`,
+   * `general-public-license`; `""` when unreported (Aurora / RDS Custom) or
+   * when collected before the upstream field existed. Decisive for Oracle
+   * (size-flex applies to BYOL only); see {@link parseEngineIdentity}.
+   */
+  licenseModel: string;
   /** Whether the instance is a Multi-AZ deployment. */
   multiAZ: boolean;
   /** Lifecycle status, e.g. `available`. */
@@ -392,28 +431,204 @@ export function normalizedUnits(
 }
 
 /**
- * Collapse a running `Engine` or a reserved `ProductDescription` onto a single
- * canonical token so the two sides bucket together (e.g. running `postgres`
- * and reserved `postgresql` both become `postgres`). Aurora variants are kept
- * distinct from their provisioned counterparts.
+ * Normalize a raw license token — from a reserved `ProductDescription` suffix
+ * (`byol`, `li`, `mpl`) or a running `LicenseModel`
+ * (`bring-your-own-license`, `license-included`, `marketplace-license`,
+ * `general-public-license`, `postgresql-license`) — onto one of `byol`, `li`,
+ * `mpl`, or `""`. Single-license engines (open-source / Aurora) and unknown
+ * tokens map to `""` so they never split a bucket.
+ *
+ * @param raw The raw license string from either side.
+ * @returns `byol`, `li`, `mpl`, or `""`.
+ */
+export function normalizeLicense(raw: string): string {
+  const s = (raw ?? "").toLowerCase().trim();
+  if (s === "") return "";
+  if (s.includes("byol") || s.includes("bring")) return "byol";
+  if (s === "li" || s.includes("included")) return "li";
+  if (s === "mpl" || s.includes("marketplace")) return "mpl";
+  // general-public-license, postgresql-license, … — a single license per
+  // engine, so it carries no bucketing information.
+  return "";
+}
+
+/**
+ * Edition token from the part of a commercial engine string after its base
+ * keyword (e.g. `oracle-se2-cdb` after `oracle` → `se2`). Returns `""` when the
+ * base keyword is absent — only the spaced `sql server` fallback hits this, and
+ * scanning the whole string there would spuriously match `se` inside `server`.
+ */
+function editionAfter(core: string, base: string, order: string[]): string {
+  const idx = core.indexOf(base);
+  if (idx < 0) return "";
+  const tail = core.slice(idx + base.length).replace(/^-/, "");
+  for (const e of order) if (tail.includes(e)) return e;
+  return "";
+}
+
+/**
+ * Parsed engine identity for bucketing: the base engine, edition, and license
+ * model, plus the bucket token both sides must agree on and whether RDS
+ * size-flexible reservations apply.
+ *
+ * Unlike a flat canonicalization, this **preserves edition and license**, which
+ * an RDS reservation is scoped to for the commercial engines: an `oracle-se2`
+ * reservation does not cover an `oracle-ee` instance, and a License-Included
+ * reservation does not cover a BYOL one. The running side carries the license
+ * in a separate `LicenseModel` field; the reserved side carries it as a
+ * `(byol)`/`(li)` suffix on the product description (with optional whitespace,
+ * e.g. `oracle-se2 (byol)`) — both resolve to the same {@link token}.
+ *
+ * Two well-grounded inferences fill an unknown license: Oracle **Enterprise
+ * Edition is BYOL-only** (no LI offering exists), and standard RDS **SQL Server
+ * is License-Included only** (BYOL SQL Server is RDS Custom, kept distinct as
+ * `custom-sqlserver`). Oracle SE2 stays genuinely ambiguous when the license is
+ * unknown and routes to the conservative non-size-flex carve-out.
+ */
+export interface EngineIdentity {
+  /**
+   * Base engine, kept distinct: `postgres`, `mysql`, `mariadb`, `db2`,
+   * `oracle`, `sqlserver`, `custom-oracle`, `custom-sqlserver`, `aurora-mysql`,
+   * `aurora-postgresql`, `aurora`, or `unknown`.
+   */
+  engine: string;
+  /** Edition for commercial engines: `ee`, `se`, `se2`, `ex`, `web`, `ae`, `dev`; `""` otherwise. */
+  edition: string;
+  /** License: `byol`, `li`, `mpl`, or `""` (single-license / unknown). */
+  license: string;
+  /** Bucket token: the base engine for open-source/Aurora, else `base-edition[-license]`. */
+  token: string;
+  /** True when RDS size-flexible reservations apply, so large-equivalent netting is valid. */
+  sizeFlexEligible: boolean;
+}
+
+/**
+ * Parse a running `Engine` (with its separate `LicenseModel`) or a reserved
+ * `ProductDescription` (with an embedded `(byol)`/`(li)` suffix) into an
+ * {@link EngineIdentity}. Running `postgres` and reserved `postgresql` collapse
+ * to the same `postgres` token; Aurora variants and RDS Custom engines stay
+ * distinct so they never net against their non-Custom counterparts.
  *
  * @param raw The raw engine / product-description string.
- * @returns A canonical engine token.
+ * @param licenseModel The running-side `LicenseModel`; `""` for the reserved
+ *   side (its license rides the product-description suffix instead).
+ * @returns The parsed identity; never throws.
+ */
+export function parseEngineIdentity(
+  raw: string,
+  licenseModel = "",
+): EngineIdentity {
+  const input = (raw ?? "").toLowerCase().trim();
+  // Pull a trailing license suffix off the reserved-side product description,
+  // tolerating whitespace before the paren ("oracle-se2 (byol)").
+  let licenseFromSuffix = "";
+  let head = input;
+  const m = input.match(/^(.*?)\s*\(([^)]*)\)\s*$/);
+  if (m) {
+    head = m[1].trim();
+    licenseFromSuffix = m[2].trim();
+  }
+  const s = head.replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+  if (s === "") {
+    return {
+      engine: "unknown",
+      edition: "",
+      license: "",
+      token: "unknown",
+      sizeFlexEligible: false,
+    };
+  }
+
+  const isCustom = s.startsWith("custom-");
+  const core = isCustom ? s.slice("custom-".length) : s;
+
+  let engine: string;
+  let edition = "";
+  if (core.includes("aurora") && core.includes("postgres")) {
+    engine = "aurora-postgresql";
+  } else if (core.includes("aurora") && core.includes("mysql")) {
+    engine = "aurora-mysql";
+  } else if (core.includes("aurora")) {
+    engine = "aurora";
+  } else if (core.includes("postgres")) {
+    engine = "postgres";
+  } else if (core.includes("maria")) {
+    engine = "mariadb";
+  } else if (core.includes("mysql")) {
+    engine = "mysql";
+  } else if (core.includes("oracle")) {
+    engine = "oracle";
+    edition = editionAfter(core, "oracle", ["se2", "ee", "se"]);
+  } else if (
+    core.includes("sqlserver") ||
+    (core.includes("sql") && core.includes("server"))
+  ) {
+    engine = "sqlserver";
+    edition = editionAfter(core, "sqlserver", ["web", "ex", "dev", "ee", "se"]);
+  } else if (core.includes("db2")) {
+    engine = "db2";
+    edition = editionAfter(core, "db2", ["ae", "se"]);
+  } else {
+    engine = core.split("-")[0] || "unknown";
+  }
+
+  // RDS Custom keeps its own engine token for the commercial engines so a Custom
+  // instance never nets against a regular RDS reservation (and vice versa).
+  if (isCustom && (engine === "oracle" || engine === "sqlserver")) {
+    engine = "custom-" + engine;
+  }
+
+  let license = normalizeLicense(licenseFromSuffix || licenseModel);
+  // Oracle Enterprise Edition is BYOL-only; standard RDS SQL Server is
+  // License-Included only. Fill an unknown license from that fact so pre-license
+  // -model rows still route and bucket consistently. Oracle SE2 has both LI and
+  // BYOL offerings, so it is left ambiguous when the license is unknown. The
+  // `sqlserver` inference deliberately does NOT cover `custom-sqlserver` (RDS
+  // Custom SQL Server is BYOL, not LI) — Custom is non-size-flex regardless, so
+  // an unknown-license Custom row simply keeps a license-less token.
+  if (license === "") {
+    if (engine === "oracle" && edition === "ee") license = "byol";
+    else if (engine === "sqlserver") license = "li";
+  }
+
+  const sizeFlexEligible = (() => {
+    switch (engine) {
+      case "postgres":
+      case "mysql":
+      case "mariadb":
+      case "db2":
+      case "aurora":
+      case "aurora-mysql":
+      case "aurora-postgresql":
+        return true;
+      case "oracle":
+        // Size flexibility applies to Oracle BYOL only, never License-Included.
+        return license === "byol";
+      default:
+        // sqlserver (any edition/license), custom-*, unknown.
+        return false;
+    }
+  })();
+
+  const token = edition === ""
+    ? engine
+    : [engine, edition, license].filter((p) => p !== "").join("-");
+
+  return { engine, edition, license, token, sizeFlexEligible };
+}
+
+/**
+ * Base engine token (edition and license stripped), e.g. `oracle-ee` →
+ * `oracle`, `postgresql` → `postgres`. A thin wrapper over
+ * {@link parseEngineIdentity} kept for consumers that only need the family.
+ * Bucketing uses {@link parseEngineIdentity} directly so editions and licenses
+ * are not collapsed.
+ *
+ * @param raw The raw engine / product-description string.
+ * @returns The base engine token.
  */
 export function canonicalEngine(raw: string): string {
-  const s = (raw ?? "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
-  if (s === "") return "unknown";
-  const has = (needle: string) => s.includes(needle);
-  if (has("aurora") && has("postgres")) return "aurora-postgresql";
-  if (has("aurora") && has("mysql")) return "aurora-mysql";
-  if (has("aurora")) return "aurora";
-  if (has("postgres")) return "postgres";
-  if (has("maria")) return "mariadb";
-  if (has("mysql")) return "mysql";
-  if (has("oracle")) return "oracle";
-  if (has("sqlserver") || (has("sql") && has("server"))) return "sqlserver";
-  if (has("db2")) return "db2";
-  return s.split(" ")[0];
+  return parseEngineIdentity(raw).engine;
 }
 
 /** Deployment dimension label from the Multi-AZ flag. */
@@ -493,6 +708,35 @@ export interface BurstableLine {
   reservedInstances: number;
 }
 
+/**
+ * A non-size-flexible commercial line, reported as raw counts (not normalized).
+ *
+ * RDS size flexibility does **not** apply to SQL Server, Oracle
+ * License-Included, or RDS Custom, so an `xlarge` reservation does not cover two
+ * `large` instances the way it would for a size-flex engine — folding these
+ * into large-equivalents would invent coverage that AWS does not grant. They
+ * are kept here as raw running-vs-reserved counts at the exact granularity a
+ * reservation matches: `region × family × engine × size × deployment`, where
+ * `engine` preserves the edition and license (e.g. `oracle-se2-li`,
+ * `sqlserver-ee-li`, `custom-sqlserver-se-byol`).
+ */
+export interface NonSizeFlexLine {
+  /** AWS region. */
+  region: string;
+  /** Family, e.g. `r6i`. */
+  family: string;
+  /** Engine token with edition and license, e.g. `sqlserver-se-li`, `oracle-ee-li`. */
+  engine: string;
+  /** Size token, e.g. `xlarge`. */
+  size: string;
+  /** Deployment dimension (`Multi-AZ` | `Single-AZ`). */
+  deployment: string;
+  /** Running instance count. */
+  runningInstances: number;
+  /** Reserved instance count (sum of DBInstanceCount, active only). */
+  reservedInstances: number;
+}
+
 /** An unparseable class, surfaced rather than dropped. */
 export interface UnparseableLine {
   /** AWS region. */
@@ -511,6 +755,8 @@ export interface Aggregation {
   buckets: Bucket[];
   /** Burstable lines, sorted. */
   burstable: BurstableLine[];
+  /** Non-size-flex commercial lines (SQL Server, Oracle LI, RDS Custom), sorted. */
+  nonSizeFlex: NonSizeFlexLine[];
   /** Serverless instance count by `region engine`. */
   serverless: Array<{ region: string; engine: string; count: number }>;
   /** Unparseable class lines. */
@@ -566,6 +812,7 @@ export function aggregate(
     { region: string; engine: string; count: number }
   >();
   const unparseable = new Map<string, UnparseableLine>();
+  const nonSizeFlex = new Map<string, NonSizeFlexLine>();
   let inactiveReserved = 0;
 
   const bumpBucket = (
@@ -630,12 +877,40 @@ export function aggregate(
     l.count += count;
   };
 
+  const bumpNonSizeFlex = (
+    region: string,
+    family: string,
+    engine: string,
+    size: string,
+    deployment: string,
+    count: number,
+    side: "running" | "reserved",
+  ) => {
+    const key = `${region} ${family} ${engine} ${size} ${deployment}`;
+    let l = nonSizeFlex.get(key);
+    if (!l) {
+      l = {
+        region,
+        family,
+        engine,
+        size,
+        deployment,
+        runningInstances: 0,
+        reservedInstances: 0,
+      };
+      nonSizeFlex.set(key, l);
+    }
+    if (side === "running") l.runningInstances += count;
+    else l.reservedInstances += count;
+  };
+
   for (const i of instances) {
     const parsed = parseInstanceClass(i.dbInstanceClass);
-    const engine = canonicalEngine(i.engine);
+    const id = parseEngineIdentity(i.engine, i.licenseModel);
     if (parsed.isServerless) {
-      const key = `${i.region} ${engine}`;
-      const s = serverless.get(key) ?? { region: i.region, engine, count: 0 };
+      const key = `${i.region} ${id.engine}`;
+      const s = serverless.get(key) ??
+        { region: i.region, engine: id.engine, count: 0 };
       s.count += 1;
       serverless.set(key, s);
       continue;
@@ -644,23 +919,31 @@ export function aggregate(
       bumpBurstable(i.region, parsed.family, parsed.size, 1, "running");
       continue;
     }
-    const deployment = deploymentFor(engine, i.multiAZ);
-    const units = parsed.unparseable
-      ? null
-      : normalizedUnits(parsed.size, deployment);
+    if (parsed.unparseable) {
+      bumpUnparseable(i.region, i.dbInstanceClass, "instance", 1);
+      continue;
+    }
+    const deployment = deploymentFor(id.engine, i.multiAZ);
+    if (!id.sizeFlexEligible) {
+      // SQL Server, Oracle License-Included, RDS Custom: size flexibility does
+      // not apply, so these are kept as raw counts, never folded into large-eq.
+      bumpNonSizeFlex(
+        i.region,
+        parsed.family,
+        id.token,
+        parsed.size,
+        deployment,
+        1,
+        "running",
+      );
+      continue;
+    }
+    const units = normalizedUnits(parsed.size, deployment);
     if (units === null) {
       bumpUnparseable(i.region, i.dbInstanceClass, "instance", 1);
       continue;
     }
-    bumpBucket(
-      i.region,
-      parsed,
-      engine,
-      deployment,
-      units,
-      1,
-      "running",
-    );
+    bumpBucket(i.region, parsed, id.token, deployment, units, 1, "running");
   }
 
   for (const r of reserved) {
@@ -669,7 +952,7 @@ export function aggregate(
       continue;
     }
     const parsed = parseInstanceClass(r.dbInstanceClass);
-    const engine = canonicalEngine(r.productDescription);
+    const id = parseEngineIdentity(r.productDescription);
     const count = r.dbInstanceCount;
     if (parsed.isServerless) {
       // Aurora Serverless v2 is ACU-billed and not traditionally reservable, so
@@ -682,10 +965,24 @@ export function aggregate(
       bumpBurstable(r.region, parsed.family, parsed.size, count, "reserved");
       continue;
     }
-    const deployment = deploymentFor(engine, r.multiAZ);
-    const units = parsed.unparseable
-      ? null
-      : normalizedUnits(parsed.size, deployment);
+    if (parsed.unparseable) {
+      bumpUnparseable(r.region, r.dbInstanceClass, "reserved", count);
+      continue;
+    }
+    const deployment = deploymentFor(id.engine, r.multiAZ);
+    if (!id.sizeFlexEligible) {
+      bumpNonSizeFlex(
+        r.region,
+        parsed.family,
+        id.token,
+        parsed.size,
+        deployment,
+        count,
+        "reserved",
+      );
+      continue;
+    }
+    const units = normalizedUnits(parsed.size, deployment);
     if (units === null) {
       bumpUnparseable(r.region, r.dbInstanceClass, "reserved", count);
       continue;
@@ -693,7 +990,7 @@ export function aggregate(
     bumpBucket(
       r.region,
       parsed,
-      engine,
+      id.token,
       deployment,
       units * count,
       count,
@@ -720,6 +1017,21 @@ export function aggregate(
         : a.engine < b.engine
         ? -1
         : a.engine > b.engine
+        ? 1
+        : 0
+    ),
+    nonSizeFlex: [...nonSizeFlex.values()].sort((a, b) =>
+      a.region !== b.region
+        ? (a.region < b.region ? -1 : 1)
+        : a.family !== b.family
+        ? (a.family < b.family ? -1 : 1)
+        : a.engine !== b.engine
+        ? (a.engine < b.engine ? -1 : 1)
+        : a.size !== b.size
+        ? (a.size < b.size ? -1 : 1)
+        : a.deployment < b.deployment
+        ? -1
+        : a.deployment > b.deployment
         ? 1
         : 0
     ),
@@ -857,16 +1169,20 @@ export function aggregateByAccount(
     accountName: string,
     region: string,
     parsed: ParsedClass,
-    engine: string,
+    id: EngineIdentity,
     deployment: string,
     count: number,
     side: "running" | "reserved",
   ) => {
     if (parsed.isServerless || parsed.isBurstable || parsed.unparseable) return;
+    // Non-size-flex commercial capacity (SQL Server, Oracle LI, RDS Custom) is
+    // excluded here exactly as in {@link aggregate}; it is not foldable into
+    // large-equivalents and has no per-account large-eq line.
+    if (!id.sizeFlexEligible) return;
     const units = normalizedUnits(parsed.size, deployment);
     if (units === null) return;
     const key =
-      `${accountId} ${region} ${parsed.family} ${engine} ${deployment}`;
+      `${accountId} ${region} ${parsed.family} ${id.token} ${deployment}`;
     let b = map.get(key);
     if (!b) {
       b = {
@@ -875,7 +1191,7 @@ export function aggregateByAccount(
         region,
         family: parsed.family,
         generation: parsed.generation,
-        engine,
+        engine: id.token,
         deployment,
         runningLargeEq: 0,
         reservedLargeEq: 0,
@@ -894,28 +1210,28 @@ export function aggregateByAccount(
   };
 
   for (const i of instances) {
-    const engine = canonicalEngine(i.engine);
+    const id = parseEngineIdentity(i.engine, i.licenseModel);
     bump(
       i.accountId,
       i.accountName,
       i.region,
       parseInstanceClass(i.dbInstanceClass),
-      engine,
-      deploymentFor(engine, i.multiAZ),
+      id,
+      deploymentFor(id.engine, i.multiAZ),
       1,
       "running",
     );
   }
   for (const r of reserved) {
     if (r.state !== "active") continue;
-    const engine = canonicalEngine(r.productDescription);
+    const id = parseEngineIdentity(r.productDescription);
     bump(
       r.accountId,
       r.accountName,
       r.region,
       parseInstanceClass(r.dbInstanceClass),
-      engine,
-      deploymentFor(engine, r.multiAZ),
+      id,
+      deploymentFor(id.engine, r.multiAZ),
       r.dbInstanceCount,
       "reserved",
     );
@@ -1221,7 +1537,9 @@ export function renderMarkdown(
   lines.push(`- Accounts seen: **${accounts.size}**`);
   lines.push(`- Regions covered: **${regions.size}**`);
   lines.push(
-    `- Non-burstable running capacity: **${fmtNum(totalRunning)}** large-eq`,
+    `- Size-flexible running capacity: **${fmtNum(totalRunning)}** large-eq ` +
+      "(burstable, serverless, and SQL Server / Oracle-LI / RDS Custom carved " +
+      "out below)",
   );
   lines.push(
     `- Reserved (active) capacity: **${fmtNum(totalReserved)}** large-eq`,
@@ -1234,6 +1552,21 @@ export function renderMarkdown(
         ? "(over-reserved)"
         : "(fully covered)"),
   );
+  if (agg.nonSizeFlex.length > 0) {
+    const nsfRunning = agg.nonSizeFlex.reduce(
+      (s, l) => s + l.runningInstances,
+      0,
+    );
+    const nsfReserved = agg.nonSizeFlex.reduce(
+      (s, l) => s + l.reservedInstances,
+      0,
+    );
+    lines.push(
+      `- SQL Server / Oracle-LI / RDS Custom (not size-flexible, **excluded** ` +
+        `from the gap above): **${nsfRunning}** running, **${nsfReserved}** ` +
+        "reserved instance(s) — see the dedicated table below",
+    );
+  }
   lines.push(
     `- Coverage gaps: **${authExpired.length}** scan(s) need ` +
       "`aws sso login`, " +
@@ -1349,6 +1682,46 @@ export function renderMarkdown(
     ),
   );
 
+  // Non-size-flex commercial carve-out.
+  lines.push(
+    "## SQL Server / Oracle-LI / RDS Custom — counted separately, " +
+      "not normalized",
+  );
+  lines.push("");
+  lines.push(
+    "Size flexibility does **not** apply to these engines, so an `xlarge` " +
+      "reservation does not cover two `large` instances — folding them into " +
+      "large-equivalents would invent coverage AWS does not grant. Counted " +
+      "raw at the granularity a reservation matches: " +
+      "`region × family × engine × size × deployment`, with edition and " +
+      "license preserved in `engine` (e.g. `oracle-se2-li`, `sqlserver-ee-li`). " +
+      "A reservation only covers a running instance on the **same** row. " +
+      "These rows are **excluded** from the large-eq totals and rollup above.",
+  );
+  lines.push("");
+  lines.push(
+    mdTable(
+      [
+        "region",
+        "family",
+        "engine",
+        "size",
+        "deployment",
+        "running",
+        "reserved",
+      ],
+      agg.nonSizeFlex.map((l) => [
+        l.region,
+        l.family,
+        l.engine,
+        l.size,
+        l.deployment,
+        String(l.runningInstances),
+        String(l.reservedInstances),
+      ]),
+    ),
+  );
+
   // Serverless carve-out.
   if (agg.serverless.length > 0) {
     lines.push("## Serverless (Aurora Serverless v2) — informational");
@@ -1434,7 +1807,7 @@ export interface ReportJson {
   instanceCount: number;
   /** Reserved rows seen. */
   reservedCount: number;
-  /** Total non-burstable running large-equivalents. */
+  /** Total running large-equivalents in the size-flex buckets (excludes burstable, serverless, and the non-size-flex commercial carve-out). */
   totalRunningLargeEq: number;
   /** Total reserved (active) large-equivalents. */
   totalReservedLargeEq: number;
@@ -1450,6 +1823,8 @@ export interface ReportJson {
   csvByAccount: string;
   /** Burstable lines. */
   burstable: BurstableLine[];
+  /** Non-size-flex commercial lines (SQL Server, Oracle LI, RDS Custom). */
+  nonSizeFlex: NonSizeFlexLine[];
   /** Serverless lines. */
   serverless: Array<{ region: string; engine: string; count: number }>;
   /** Unparseable class lines. */
@@ -1477,9 +1852,11 @@ export const report = {
     "Normalizes running and reserved RDS capacity into size-flexible " +
     "large-equivalent units and reports the running-minus-reserved coverage " +
     "gap per region × family × engine × deployment, with a per-account " +
-    "breakdown for the RI-discount-sharing-disabled case. Burstable and " +
-    "serverless capacity are carved out. Consumes @jentz/aws-rds-reservations " +
-    "rows collected earlier in the workflow.",
+    "breakdown for the RI-discount-sharing-disabled case. Engine preserves " +
+    "edition and license for commercial engines; SQL Server, Oracle " +
+    "License-Included, and RDS Custom are not size-flexible and are carved out " +
+    "as raw counts alongside burstable and serverless capacity. Consumes " +
+    "@jentz/aws-rds-reservations rows collected earlier in the workflow.",
   scope: "workflow" as const,
   labels: ["aws", "rds", "cost", "finops", "reserved-instances"],
   // deno-lint-ignore no-explicit-any
@@ -1507,6 +1884,7 @@ export const report = {
     let agg: Aggregation = {
       buckets: [],
       burstable: [],
+      nonSizeFlex: [],
       serverless: [],
       unparseable: [],
       inactiveReserved: 0,
@@ -1590,6 +1968,7 @@ export const report = {
       })),
       csvByAccount,
       burstable: agg.burstable,
+      nonSizeFlex: agg.nonSizeFlex,
       serverless: agg.serverless,
       unparseable: agg.unparseable,
       inactiveReserved: agg.inactiveReserved,

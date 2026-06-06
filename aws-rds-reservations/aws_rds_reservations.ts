@@ -9,7 +9,9 @@
  *   - every provisioned DB instance (`DescribeDBInstances` — this returns
  *     Aurora cluster members AND standalone single-instance RDS, so nothing is
  *     missed), emitting one `instance` resource per DB instance carrying the
- *     instance class, engine, Multi-AZ flag, status, and owning cluster id;
+ *     instance class, engine, license model, Multi-AZ flag, status, and owning
+ *     cluster id (the license model is decisive for Oracle, where size-flexible
+ *     reservations apply to BYOL only — see the coverage report);
  *   - every reserved DB instance (`DescribeReservedDBInstances`), emitting one
  *     `reserved` resource per reservation carrying the offered class, product
  *     description (engine), Multi-AZ flag, instance count, and state.
@@ -78,6 +80,7 @@ const InstanceRecordSchema = z.object({
   dbInstanceClass: z.string(),
   engine: z.string(),
   engineVersion: z.string(),
+  licenseModel: z.string().default(""),
   multiAZ: z.boolean(),
   status: z.string(),
   clusterId: z.string(),
@@ -131,10 +134,20 @@ export interface InstanceRecord {
   dbInstanceIdentifier: string;
   /** Instance class, e.g. `db.r7g.2xlarge`. */
   dbInstanceClass: string;
-  /** Engine, e.g. `postgres`, `aurora-postgresql`, `mysql`. */
+  /** Engine, e.g. `postgres`, `aurora-postgresql`, `mysql`, `oracle-ee`, `sqlserver-se`. */
   engine: string;
   /** Engine version string. */
   engineVersion: string;
+  /**
+   * License model, e.g. `license-included`, `bring-your-own-license`,
+   * `general-public-license`, `postgresql-license`, `marketplace-license`;
+   * `""` if AWS did not report one (e.g. Aurora / RDS Custom). Decisive for
+   * Oracle, where size-flexible reservations apply to BYOL only and an
+   * `oracle-se2` engine can be either BYOL or License-Included — the engine
+   * string alone cannot tell them apart. Consumed by the companion coverage
+   * report to keep License-Included capacity out of the size-flex netting.
+   */
+  licenseModel: string;
   /** Whether the instance is a Multi-AZ deployment. */
   multiAZ: boolean;
   /** Lifecycle status, e.g. `available`. */
@@ -358,6 +371,8 @@ export interface AwsDBInstance {
   Engine?: string;
   /** Engine version. */
   EngineVersion?: string;
+  /** License model, e.g. `license-included`, `bring-your-own-license`. */
+  LicenseModel?: string;
   /** Lifecycle status. */
   DBInstanceStatus?: string;
   /** Multi-AZ deployment flag. */
@@ -616,6 +631,7 @@ export async function runSweep(deps: SweepDeps): Promise<SweepResult> {
             dbInstanceClass: db.DBInstanceClass ?? "",
             engine: db.Engine ?? "",
             engineVersion: db.EngineVersion ?? "",
+            licenseModel: db.LicenseModel ?? "",
             multiAZ: db.MultiAZ ?? false,
             status: db.DBInstanceStatus ?? "",
             clusterId: db.DBClusterIdentifier ?? "",
@@ -738,12 +754,27 @@ export async function runSweep(deps: SweepDeps): Promise<SweepResult> {
  */
 export const model = {
   type: "@jentz/aws-rds-reservations",
-  version: "2026.06.06.1",
+  version: "2026.06.06.2",
   globalArguments: GlobalArgsSchema,
-  // First published version — no prior version to chain from yet. Declared
-  // explicitly (matching the sibling @jentz/aws-rds-inventory convention) so the
-  // first schema-changing release has an anchor to add a `toVersion` entry to.
-  upgrades: [] as Array<{
+  // Still pre-publish, but the upgrade chain is maintained from the start
+  // (matching the sibling @jentz/aws-rds-inventory convention) so existing
+  // instances advance their stored typeVersion cleanly.
+  upgrades: [
+    {
+      toVersion: "2026.06.06.2",
+      description:
+        "Add licenseModel to the instance resource (decisive for Oracle " +
+        "BYOL-vs-LI size-flex routing in the coverage report). Additive; " +
+        'existing instance rows backfill licenseModel to "". A re-sweep is ' +
+        "required to populate the real value on already-collected rows.",
+      upgradeAttributes: (old: Record<string, unknown>) => ({
+        ...old,
+        licenseModel: typeof old.licenseModel === "string"
+          ? old.licenseModel
+          : "",
+      }),
+    },
+  ] as Array<{
     toVersion: string;
     description: string;
     upgradeAttributes: (

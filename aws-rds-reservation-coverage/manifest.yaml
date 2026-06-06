@@ -1,6 +1,6 @@
 manifestVersion: 1
 name: "@jentz/aws-rds-reservation-coverage"
-version: "2026.06.06.1"
+version: "2026.06.06.2"
 description: |
   Workflow-scope report that normalizes running and reserved RDS capacity into
   size-flexible "large-equivalent" units and reports the running-minus-reserved
@@ -18,10 +18,14 @@ description: |
   over-reserved). Netting is bucket-local; the generation rollup sums the
   now-commensurable units for the headline cross-deployment gap.
 
-  Burstable (t-class) and serverless capacity are carved out (reported
-  separately, never folded into large-equivalents); only active reservations
-  count toward coverage. A per-account breakdown covers the case where RI
-  discount sharing is disabled.
+  The engine token preserves edition and license for the commercial engines
+  (oracle-ee-byol, oracle-se2-li, sqlserver-se-li), so a reservation only nets
+  against capacity it can actually cover. Size flexibility applies only to
+  MySQL, MariaDB, PostgreSQL, Db2, Aurora, and Oracle BYOL; SQL Server, Oracle
+  License-Included, and RDS Custom are not size-flexible and are carved out as
+  raw counts alongside burstable (t-class) and serverless capacity, never folded
+  into large-equivalents. Only active reservations count toward coverage. A
+  per-account breakdown covers the case where RI discount sharing is disabled.
 
   Emits `markdown` and `json` artifacts. The companion collector model is
   `@jentz/aws-rds-reservations`.

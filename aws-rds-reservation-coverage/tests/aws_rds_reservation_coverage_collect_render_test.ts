@@ -108,7 +108,8 @@ function stubContext(handles: StubHandle[]): {
         _modelId: string,
         name: string,
         _version: number,
-      ): Promise<Uint8Array | null> => Promise.resolve(byName.get(name) ?? null),
+      ): Promise<Uint8Array | null> =>
+        Promise.resolve(byName.get(name) ?? null),
     },
   };
 
@@ -126,6 +127,7 @@ const instanceFixture: ModelInstanceRecord = {
   dbInstanceClass: "db.r7g.2xlarge",
   engine: "postgres",
   engineVersion: "16.3",
+  licenseModel: "postgresql-license",
   multiAZ: true,
   status: "available",
   clusterId: "orders-cluster",
@@ -167,9 +169,24 @@ const scanErrorFixture: ModelScanError = {
 
 Deno.test("collect: producer-shaped instance/reserved/error rows all decode with zero skipped", async () => {
   const { context } = stubContext([
-    { name: "instance-1", version: 1, specName: INSTANCE_SPEC, json: instanceFixture },
-    { name: "reserved-1", version: 1, specName: RESERVED_SPEC, json: reservedFixture },
-    { name: "error-1", version: 1, specName: SCAN_ERROR_SPEC, json: scanErrorFixture },
+    {
+      name: "instance-1",
+      version: 1,
+      specName: INSTANCE_SPEC,
+      json: instanceFixture,
+    },
+    {
+      name: "reserved-1",
+      version: 1,
+      specName: RESERVED_SPEC,
+      json: reservedFixture,
+    },
+    {
+      name: "error-1",
+      version: 1,
+      specName: SCAN_ERROR_SPEC,
+      json: scanErrorFixture,
+    },
   ]);
 
   const collected = await collect(context);
@@ -184,8 +201,18 @@ Deno.test("collect: producer-shaped instance/reserved/error rows all decode with
 
 Deno.test("collect: decoded field values survive the round-trip", async () => {
   const { context } = stubContext([
-    { name: "instance-1", version: 1, specName: INSTANCE_SPEC, json: instanceFixture },
-    { name: "reserved-1", version: 1, specName: RESERVED_SPEC, json: reservedFixture },
+    {
+      name: "instance-1",
+      version: 1,
+      specName: INSTANCE_SPEC,
+      json: instanceFixture,
+    },
+    {
+      name: "reserved-1",
+      version: 1,
+      specName: RESERVED_SPEC,
+      json: reservedFixture,
+    },
   ]);
 
   const collected = await collect(context);
@@ -207,7 +234,12 @@ Deno.test("collect: a malformed record is safely skipped, not thrown", async () 
   const { multiAZ: _omit, ...broken } = instanceFixture;
 
   const { context } = stubContext([
-    { name: "good", version: 1, specName: INSTANCE_SPEC, json: instanceFixture },
+    {
+      name: "good",
+      version: 1,
+      specName: INSTANCE_SPEC,
+      json: instanceFixture,
+    },
     { name: "bad", version: 1, specName: INSTANCE_SPEC, json: broken },
   ]);
 
@@ -219,9 +251,35 @@ Deno.test("collect: a malformed record is safely skipped, not thrown", async () 
   assertEquals(collected.skipped, 1);
 });
 
+Deno.test("collect: an instance artifact missing licenseModel decodes (back-compat default), not skipped", async () => {
+  // Rows swept before @jentz/aws-rds-reservations 2026.06.06.2 carry no
+  // `licenseModel`. The consumer schema's `.default("")` must admit them rather
+  // than safeParse-fail and silently empty the report. Build a row with the key
+  // genuinely ABSENT (not just empty) and push it through collect().
+  const { licenseModel: _omit, ...preLicenseModel } = instanceFixture;
+
+  const { context } = stubContext([
+    {
+      name: "old",
+      version: 1,
+      specName: INSTANCE_SPEC,
+      json: preLicenseModel,
+    },
+  ]);
+
+  const collected = await collect(context);
+
+  assertEquals(collected.skipped, 0); // admitted, not skipped
+  assertEquals(collected.instances.length, 1);
+  assertEquals(collected.instances[0].licenseModel, ""); // backfilled default
+});
+
 Deno.test("collect: a wrong-typed field is skipped (documents the guard)", async () => {
   // dbInstanceCount as a string instead of a number.
-  const broken = { ...reservedFixture, dbInstanceCount: "2" as unknown as number };
+  const broken = {
+    ...reservedFixture,
+    dbInstanceCount: "2" as unknown as number,
+  };
 
   const { context } = stubContext([
     { name: "bad", version: 1, specName: RESERVED_SPEC, json: broken },
@@ -241,7 +299,12 @@ Deno.test("collect: a non-ISO scannedAt is rejected (the ISO datetime contract i
   const broken = { ...instanceFixture, scannedAt: "2026-06-05 (not iso)" };
 
   const { context } = stubContext([
-    { name: "good", version: 1, specName: INSTANCE_SPEC, json: instanceFixture },
+    {
+      name: "good",
+      version: 1,
+      specName: INSTANCE_SPEC,
+      json: instanceFixture,
+    },
     { name: "bad", version: 1, specName: INSTANCE_SPEC, json: broken },
   ]);
 
@@ -256,7 +319,12 @@ Deno.test("collect: ignores steps whose modelType is not the reservations model"
   const log = (level: string) => (message: string) =>
     logs.push({ level, message });
   const context = {
-    logger: { info: log("info"), debug: log("debug"), warn: log("warn"), error: log("error") },
+    logger: {
+      info: log("info"),
+      debug: log("debug"),
+      warn: log("warn"),
+      error: log("error"),
+    },
     stepExecutions: [
       {
         modelType: "@some/other-model",
@@ -347,6 +415,7 @@ Deno.test("renderMarkdown: non-empty doc with expected section headers", () => {
     dbInstanceClass: "db.r7g.2xlarge",
     engine: "postgres",
     engineVersion: "16",
+    licenseModel: "",
     multiAZ: false,
     status: "available",
     clusterId: "",
@@ -396,6 +465,7 @@ Deno.test("renderMarkdown: a pipe in a table cell is escaped", () => {
     dbInstanceClass: "db.r7g.large",
     engine: "postgres",
     engineVersion: "1",
+    licenseModel: "",
     multiAZ: false,
     status: "available",
     clusterId: "",
@@ -405,7 +475,12 @@ Deno.test("renderMarkdown: a pipe in a table cell is escaped", () => {
   }];
   const agg = aggregate(instances, []);
   const rollup = rollupByGeneration(agg.buckets);
-  const collected: Collected = { instances, reserved: [], errors: [], skipped: 0 };
+  const collected: Collected = {
+    instances,
+    reserved: [],
+    errors: [],
+    skipped: 0,
+  };
 
   const md = renderMarkdown(
     collected,

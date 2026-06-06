@@ -56,7 +56,11 @@ running_large_eq − reserved_large_eq = gap
 
 A **positive** gap is under-covered capacity to buy; a **negative** gap is
 over-coverage. Engine is canonicalized so running `postgres` nets against
-reserved `postgresql` (Aurora variants are kept distinct). Only `active`
+reserved `postgresql` (Aurora variants are kept distinct), and for the
+commercial engines the engine token additionally carries **edition and
+license** — `oracle-ee-byol`, `oracle-se2-li`, `sqlserver-se-li` — so a
+reservation only nets against capacity it can actually cover (see
+[Engine, edition, and license](#engine-edition-and-license)). Only `active`
 reservations count toward coverage.
 
 Netting is **bucket-local**: a Single-AZ RI nets only Single-AZ running, a
@@ -96,19 +100,58 @@ each account's gap in that account.
   large-equivalents would mislead. Instead the report keeps a separate
   `region × family × size` table with running-vs-reserved counts, so burstable
   reservation coverage is still visible — just counted, not normalized.
+- **Non-size-flex commercial** — **SQL Server** (all editions), **Oracle
+  License-Included**, and **RDS Custom** (`custom-oracle-*`,
+  `custom-sqlserver-*`). RDS size flexibility does not apply to these engines,
+  so an `xlarge` reservation does **not** cover two `large` instances — folding
+  them into large-equivalents would invent coverage AWS does not grant. They are
+  reported as raw running-vs-reserved counts at
+  `region × family × engine × size × deployment` (the exact granularity a
+  reservation matches), with edition and license preserved in `engine`. These
+  rows are **excluded** from the large-eq totals and the rollup.
 - **Serverless** (`db.serverless`, Aurora Serverless v2) is counted separately
   (ACU-billed, not instance-class capacity).
 - **Unparseable** classes are listed with a warning rather than dropped.
 
+## Engine, edition, and license
+
+The engine token preserves the dimensions an RDS reservation is actually scoped
+to. Open-source and Aurora engines collapse to a base token (running `postgres`
+and reserved `postgresql` both become `postgres`; Aurora variants stay
+distinct). The **commercial** engines additionally carry edition and license,
+because a reservation matches on edition **and** license:
+
+| running `Engine` + `licenseModel` | reserved `ProductDescription` | engine token | size-flex? |
+| --- | --- | --- | --- |
+| `oracle-ee` + `bring-your-own-license` | `oracle-ee(byol)` | `oracle-ee-byol` | ✅ large-eq |
+| `oracle-se2` + `bring-your-own-license` | `oracle-se2 (byol)` | `oracle-se2-byol` | ✅ large-eq |
+| `oracle-se2` + `license-included` | `oracle-se2(li)` | `oracle-se2-li` | ❌ carve-out |
+| `sqlserver-se` + `license-included` | `sqlserver-se(li)` | `sqlserver-se-li` | ❌ carve-out |
+| `db2-ae` + `bring-your-own-license` | `db2-ae(byol)` | `db2-ae-byol` | ✅ large-eq |
+| `custom-sqlserver-ee` | `custom-sqlserver-ee(byol)` | `custom-sqlserver-ee-byol` | ❌ carve-out |
+
+So an `oracle-se2` reservation never nets against an `oracle-ee` instance, and a
+License-Included reservation never nets against a BYOL one. The running side's
+license comes from the upstream `licenseModel` field; the reserved side's from
+the product-description `(byol)`/`(li)` suffix (whitespace before the paren is
+tolerated). **Size flexibility — and thus large-equivalent netting — applies
+only to MySQL, MariaDB, PostgreSQL, Db2, Aurora, and Oracle BYOL.** SQL Server,
+Oracle License-Included, and RDS Custom go to the non-size-flex carve-out.
+
+Two well-grounded inferences fill an unknown license: Oracle **Enterprise
+Edition is BYOL-only** and standard RDS **SQL Server is License-Included only**.
+Oracle **SE2** has both LI and BYOL offerings, so when the `licenseModel` is
+absent (rows swept before the field existed, or Aurora / RDS Custom which report
+none) an `oracle-se2` instance routes conservatively to the carve-out rather
+than risk a false net. **A re-sweep of the upstream model is required** to
+populate `licenseModel` and pull provably-BYOL SE2 capacity back into the
+size-flex buckets.
+
 ## Caveats
 
-Oracle / SQL-Server license models (LI vs BYOL) are **not** distinguished, so
-those buckets are advisory. SQL Server and Oracle License-Included are also not
-size-flexible at all, so normalizing them into large-equivalents is advisory for
-those engines (a separate concern from the Multi-AZ 2× weighting, which *does*
-apply to them). The report **never throws** — a missing upstream step, malformed
-artifact, or schema drift degrades to a logged warning and a still-useful
-(possibly empty) report with `degraded: true` in the JSON.
+The report **never throws** — a missing upstream step, malformed artifact, or
+schema drift degrades to a logged warning and a still-useful (possibly empty)
+report with `degraded: true` in the JSON.
 
 ## How it fits with @jentz/aws-rds-reservations upstream
 
@@ -156,7 +199,7 @@ swamp data get --workflow <workflow-name> \
 | `generationRollup` | Per `region × family` rollup rows. |
 | `buckets` | Per `region × family × engine × deployment` rows (the purchasable line items). |
 | `accountBuckets`, `csvByAccount` | Per-account buckets and their CSV (the RI-sharing-OFF purchase list). |
-| `burstable`, `serverless`, `unparseable` | The three carve-outs. |
+| `burstable`, `nonSizeFlex`, `serverless`, `unparseable` | The carve-outs. `nonSizeFlex` holds SQL Server / Oracle-LI / RDS Custom rows (`region × family × engine × size × deployment` with running/reserved counts), excluded from the large-eq totals. |
 | `inactiveReserved` | Reservation rows skipped because they were not `active`. |
 | `errorsByKind` | Scan errors counted by `auth_expired` / `access_denied` / `other`. |
 | `skipped` | Upstream artifacts that failed to decode, parse, or validate. |
