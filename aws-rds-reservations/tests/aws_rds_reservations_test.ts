@@ -14,7 +14,7 @@
  * @module
  */
 
-import { assertEquals } from "jsr:@std/assert@1";
+import { assertEquals, assertRejects } from "jsr:@std/assert@1";
 import { createModelTestContext } from "jsr:@systeminit/swamp-testing@0.20260525.18";
 import {
   accountNameFromProfile,
@@ -22,11 +22,14 @@ import {
   type AwsDBInstance,
   type AwsReservedDBInstance,
   classifyError,
+  type Page,
+  paginate,
   resolveBootstrapRegion,
   runSweep,
   type SweepTarget,
   tagsFromAws,
 } from "../aws_rds_reservations.ts";
+import { isThrottlingError, withRetry } from "../_lib/retry.ts";
 
 // ---------------------------------------------------------------------------
 // Pure helpers
@@ -51,7 +54,9 @@ Deno.test("accountNameFromProfile: strips -readonly suffix", () => {
 });
 
 Deno.test("classifyError: expired SSO token -> auth_expired", () => {
-  const err = new Error("The SSO session associated with this profile has expired");
+  const err = new Error(
+    "The SSO session associated with this profile has expired",
+  );
   assertEquals(classifyError(err).kind, "auth_expired");
 });
 
@@ -63,7 +68,10 @@ Deno.test("classifyError: SSO role ARN in AccessDenied does NOT misfire to auth_
 });
 
 Deno.test("resolveBootstrapRegion: first configured region wins", () => {
-  assertEquals(resolveBootstrapRegion(["us-east-1"], () => undefined), "us-east-1");
+  assertEquals(
+    resolveBootstrapRegion(["us-east-1"], () => undefined),
+    "us-east-1",
+  );
 });
 
 Deno.test("resolveBootstrapRegion: falls back to us-east-1 when nothing set", () => {
@@ -226,4 +234,225 @@ Deno.test("runSweep: profile failing required-suffix is skipped before any AWS c
   });
   assertEquals(result.instanceCount, 0);
   assertEquals(result.errorCount, 1);
+});
+
+// ---------------------------------------------------------------------------
+// Throttling retry — withRetry / isThrottlingError (ported verbatim from the
+// sibling @jentz/aws-rds-inventory test, since _lib/retry.ts is a byte-identical
+// twin) plus a paginate() loop+retry wiring test specific to this model.
+// ---------------------------------------------------------------------------
+
+Deno.test("isThrottlingError: matches ThrottlingException name", () => {
+  const err = new Error("rate exceeded");
+  err.name = "ThrottlingException";
+  assertEquals(isThrottlingError(err), true);
+});
+
+Deno.test("isThrottlingError: matches by message substring", () => {
+  assertEquals(isThrottlingError(new Error("Throttling: slow down")), true);
+  assertEquals(isThrottlingError(new Error("TooManyRequests")), true);
+  assertEquals(isThrottlingError(new Error("RequestLimitExceeded")), true);
+});
+
+Deno.test("isThrottlingError: message fallback covers every name in the switch", () => {
+  // The word-boundary regex is strict — `TooManyRequests` does not match inside
+  // `TooManyRequestsException` because there is no word boundary between `s`
+  // and `E`. The regex must spell out both bare and `*Exception`-suffixed
+  // forms so an SDK wrapper that puts the full token in `.message` while
+  // collapsing `.name` to "Error" still trips the retry path.
+  assertEquals(
+    isThrottlingError(new Error("ThrottlingException: ...")),
+    true,
+  );
+  assertEquals(
+    isThrottlingError(new Error("TooManyRequestsException: ...")),
+    true,
+  );
+  assertEquals(
+    isThrottlingError(new Error("RequestThrottledException: ...")),
+    true,
+  );
+});
+
+Deno.test("isThrottlingError: regular errors do not match", () => {
+  assertEquals(isThrottlingError(new Error("connection refused")), false);
+  assertEquals(isThrottlingError(undefined), false);
+  assertEquals(isThrottlingError(null), false);
+});
+
+Deno.test("withRetry: succeeds on first try, no waiting", async () => {
+  let waited = 0;
+  const result = await withRetry(
+    () => Promise.resolve(42),
+    "test",
+    {},
+    {
+      random: () => 0,
+      delay: (ms) => {
+        waited += ms;
+        return Promise.resolve();
+      },
+    },
+  );
+  assertEquals(result, 42);
+  assertEquals(waited, 0);
+});
+
+Deno.test("withRetry: retries throttling errors then succeeds", async () => {
+  const delays: number[] = [];
+  const events: number[] = [];
+  let attempts = 0;
+  const result = await withRetry(
+    () => {
+      attempts++;
+      if (attempts < 3) {
+        const err = new Error("Throttling");
+        return Promise.reject(err);
+      }
+      return Promise.resolve("ok");
+    },
+    "DescribeReservedDBInstances",
+    { baseDelayMs: 10, maxDelayMs: 1000 },
+    {
+      // Full jitter: with random()==1 we get the full ceiling.
+      random: () => 1,
+      delay: (ms) => {
+        delays.push(ms);
+        return Promise.resolve();
+      },
+      onRetry: (e) => events.push(e.attempt),
+    },
+  );
+  assertEquals(result, "ok");
+  assertEquals(attempts, 3);
+  // Two delays for two retries. Ceiling doubles each attempt.
+  assertEquals(delays, [10, 20]);
+  assertEquals(events, [1, 2]);
+});
+
+Deno.test("withRetry: non-throttling errors propagate without retry", async () => {
+  let attempts = 0;
+  await assertRejects(
+    () =>
+      withRetry(
+        () => {
+          attempts++;
+          return Promise.reject(new Error("Bad input"));
+        },
+        "test",
+        {},
+        {
+          random: () => 0,
+          delay: () => Promise.resolve(),
+        },
+      ),
+    Error,
+    "Bad input",
+  );
+  assertEquals(attempts, 1);
+});
+
+Deno.test("withRetry: gives up after maxAttempts and rethrows", async () => {
+  let attempts = 0;
+  await assertRejects(
+    () =>
+      withRetry(
+        () => {
+          attempts++;
+          return Promise.reject(new Error("Throttling"));
+        },
+        "test",
+        { maxAttempts: 3, baseDelayMs: 1, maxDelayMs: 1 },
+        {
+          random: () => 0,
+          delay: () => Promise.resolve(),
+        },
+      ),
+    Error,
+    "Throttling",
+  );
+  assertEquals(attempts, 3);
+});
+
+Deno.test("paginate: drains every page in order, no retry on the happy path", async () => {
+  const pages: Record<string, Page<number>> = {
+    "": { items: [1, 2], marker: "m1" },
+    "m1": { items: [3, 4], marker: "m2" },
+    "m2": { items: [5], marker: undefined },
+  };
+  const seen: (string | undefined)[] = [];
+  let waited = 0;
+  const out = await paginate<number>(
+    (marker) => {
+      seen.push(marker);
+      return Promise.resolve(pages[marker ?? ""]);
+    },
+    "DescribeDBInstances",
+    {
+      random: () => 0,
+      delay: (ms) => {
+        waited += ms;
+        return Promise.resolve();
+      },
+    },
+  );
+  assertEquals(out, [1, 2, 3, 4, 5]);
+  // First page uses marker=undefined, then follows each returned marker.
+  assertEquals(seen, [undefined, "m1", "m2"]);
+  assertEquals(waited, 0);
+});
+
+Deno.test("paginate: a throttled page is retried then succeeds (loop+retry wired)", async () => {
+  // The first send for the SECOND page throttles once, then succeeds — proving
+  // the retry wraps the per-page send and resumes at the same marker rather
+  // than restarting the drain from page one.
+  let throttledSecondPage = 0;
+  const events: string[] = [];
+  const out = await paginate<number>(
+    (marker) => {
+      if (marker === undefined) {
+        return Promise.resolve({ items: [1, 2], marker: "m1" });
+      }
+      if (marker === "m1" && throttledSecondPage === 0) {
+        throttledSecondPage++;
+        const err = new Error("Throttling: slow down");
+        err.name = "ThrottlingException";
+        return Promise.reject(err);
+      }
+      return Promise.resolve({ items: [3, 4], marker: undefined });
+    },
+    "DescribeReservedDBInstances",
+    {
+      random: () => 1,
+      delay: () => Promise.resolve(),
+      onRetry: (e) => events.push(`${e.operationName}#${e.attempt}`),
+    },
+  );
+  assertEquals(out, [1, 2, 3, 4]);
+  assertEquals(throttledSecondPage, 1);
+  // Exactly one retry, on the reserved describe op.
+  assertEquals(events, ["DescribeReservedDBInstances#1"]);
+});
+
+Deno.test("paginate: post-exhaustion throttle propagates to the caller", async () => {
+  // After maxAttempts the throttle is rethrown — runSweep's try/catch then
+  // turns it into a scan_error. We assert the error escapes paginate rather
+  // than being swallowed.
+  await assertRejects(
+    () =>
+      paginate<number>(
+        () => {
+          const err = new Error("Throttling");
+          err.name = "ThrottlingException";
+          return Promise.reject(err);
+        },
+        "DescribeDBInstances",
+        {
+          random: () => 0,
+          delay: () => Promise.resolve(),
+        },
+      ),
+    Error,
+    "Throttling",
+  );
 });

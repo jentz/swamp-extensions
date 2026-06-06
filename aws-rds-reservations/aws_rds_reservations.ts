@@ -41,6 +41,7 @@ import {
   STSClient,
 } from "npm:@aws-sdk/client-sts@3.1021.0";
 import { fromIni } from "npm:@aws-sdk/credential-providers@3.1021.0";
+import { type RetryDeps, withRetry } from "./_lib/retry.ts";
 
 /** Credential provider as returned by `fromIni`; `undefined` means the ambient chain. */
 type CredentialProvider = ReturnType<typeof fromIni>;
@@ -426,12 +427,91 @@ export interface AwsApi {
 
 const CLIENT_RETRY = { maxAttempts: 5 } as const;
 
+/**
+ * Build the {@link RetryDeps} the {@link paginate} loop uses for production
+ * (real `Math.random` jitter, real `setTimeout` waits), logging each retry at
+ * `debug` so a throttled sweep is observable. Mirrors the sibling
+ * `@jentz/aws-rds-inventory`'s `retryDeps`.
+ */
+// deno-lint-ignore no-explicit-any
+function retryDeps(logger: any): RetryDeps {
+  return {
+    random: () => Math.random(),
+    delay: (ms: number) => new Promise<void>((r) => setTimeout(r, ms)),
+    onRetry: (e: { operationName: string; attempt: number; delayMs: number }) =>
+      logger.debug(
+        "Throttled on {op} attempt {attempt}, waiting {delayMs}ms",
+        { op: e.operationName, attempt: e.attempt, delayMs: e.delayMs },
+      ),
+  };
+}
+
+/**
+ * One page of a `Marker`-paginated RDS describe call: the items on this page
+ * plus the `Marker` for the next page (`undefined` once the last page is
+ * reached).
+ *
+ * @typeParam T Element type of the page.
+ */
+export interface Page<T> {
+  /** Items returned on this page. */
+  items: T[];
+  /** Opaque marker for the next page, or `undefined` when exhausted. */
+  marker: string | undefined;
+}
+
+/**
+ * Drain a `Marker`-paginated RDS describe call to exhaustion, retrying each
+ * page on throttling with full-jitter backoff. `fetchPage(marker)` issues one
+ * `rds.send` for the page starting at `marker` and returns that page's items
+ * plus the next marker.
+ *
+ * The retry wraps each individual page send — NOT the whole drain — so a
+ * throttle deep in the pagination re-issues only the current page (with the
+ * same marker) rather than resetting to the first page and re-fetching
+ * everything, which would worsen the throttle. No early exit and no page cap:
+ * every page matters, and a silent truncation is the exact data-completeness
+ * bug this seam exists to prevent.
+ *
+ * Owning the loop+retry wiring here (rather than in `_lib/retry.ts`) keeps the
+ * retry twin byte-identical with the sibling and makes the wiring unit-testable
+ * with a fake `fetchPage` — no AWS SDK fake required.
+ *
+ * @typeParam T Element type accumulated across pages.
+ * @param fetchPage Issues one page request for the given marker.
+ * @param operationName Short op name surfaced via `onRetry` (e.g. `DescribeDBInstances`).
+ * @param deps Retry dependencies — injectable for deterministic tests.
+ * @returns Every item across every page, in page order.
+ */
+export async function paginate<T>(
+  fetchPage: (marker: string | undefined) => Promise<Page<T>>,
+  operationName: string,
+  deps: RetryDeps,
+): Promise<T[]> {
+  const out: T[] = [];
+  let marker: string | undefined;
+  do {
+    const page = await withRetry(
+      () => fetchPage(marker),
+      operationName,
+      undefined,
+      deps,
+    );
+    out.push(...page.items);
+    marker = page.marker;
+  } while (marker);
+  return out;
+}
+
 function sdkApi(
   credentials: CredentialProvider | undefined,
   bootstrapRegion: string,
+  // deno-lint-ignore no-explicit-any
+  logger: any,
 ): AwsApi {
   const rdsFor = (region: string) =>
     new RDSClient({ region, credentials, ...CLIENT_RETRY });
+  const deps = retryDeps(logger);
 
   return {
     getAccountId: async () => {
@@ -443,34 +523,34 @@ function sdkApi(
       const resp = await sts.send(new GetCallerIdentityCommand({}));
       return resp.Account ?? "";
     },
-    describeDBInstances: async (region) => {
+    describeDBInstances: (region) => {
       const rds = rdsFor(region);
-      const out: AwsDBInstance[] = [];
-      let marker: string | undefined;
-      do {
-        const resp = await rds.send(
-          new DescribeDBInstancesCommand({ Marker: marker, MaxRecords: 100 }),
-        );
-        out.push(...(resp.DBInstances ?? []));
-        marker = resp.Marker;
-      } while (marker);
-      return out;
+      return paginate<AwsDBInstance>(
+        async (marker) => {
+          const resp = await rds.send(
+            new DescribeDBInstancesCommand({ Marker: marker, MaxRecords: 100 }),
+          );
+          return { items: resp.DBInstances ?? [], marker: resp.Marker };
+        },
+        "DescribeDBInstances",
+        deps,
+      );
     },
-    describeReservedDBInstances: async (region) => {
+    describeReservedDBInstances: (region) => {
       const rds = rdsFor(region);
-      const out: AwsReservedDBInstance[] = [];
-      let marker: string | undefined;
-      do {
-        const resp = await rds.send(
-          new DescribeReservedDBInstancesCommand({
-            Marker: marker,
-            MaxRecords: 100,
-          }),
-        );
-        out.push(...(resp.ReservedDBInstances ?? []));
-        marker = resp.Marker;
-      } while (marker);
-      return out;
+      return paginate<AwsReservedDBInstance>(
+        async (marker) => {
+          const resp = await rds.send(
+            new DescribeReservedDBInstancesCommand({
+              Marker: marker,
+              MaxRecords: 100,
+            }),
+          );
+          return { items: resp.ReservedDBInstances ?? [], marker: resp.Marker };
+        },
+        "DescribeReservedDBInstances",
+        deps,
+      );
     },
   };
 }
@@ -824,10 +904,13 @@ export const model = {
         const bootstrapRegion = resolveBootstrapRegion(g.regions);
 
         const targets: SweepTarget[] = g.profiles.length === 0
-          ? [{ profile: "", api: sdkApi(undefined, bootstrapRegion) }]
+          ? [{
+            profile: "",
+            api: sdkApi(undefined, bootstrapRegion, context.logger),
+          }]
           : g.profiles.map((profile) => ({
             profile,
-            api: sdkApi(fromIni({ profile }), bootstrapRegion),
+            api: sdkApi(fromIni({ profile }), bootstrapRegion, context.logger),
           }));
 
         return runSweep({
