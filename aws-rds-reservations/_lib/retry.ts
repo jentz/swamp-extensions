@@ -36,9 +36,13 @@ export interface RetryDeps {
 
 /** Information about a single retry decision, surfaced via `onRetry`. */
 export interface RetryEvent {
+  /** Short name of the operation being retried (e.g. `DescribeDBInstances`). */
   operationName: string;
+  /** 1-based retry attempt number. */
   attempt: number;
+  /** Delay in milliseconds before this attempt. */
   delayMs: number;
+  /** The error that triggered the retry. */
   error: unknown;
 }
 
