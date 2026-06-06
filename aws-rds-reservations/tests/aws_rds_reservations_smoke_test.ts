@@ -27,8 +27,8 @@ import {
   reservedKey,
   type ReservedRecord,
   runSweep,
-  scanErrorKey,
   type ScanError,
+  scanErrorKey,
   type SweepTarget,
 } from "../aws_rds_reservations.ts";
 
@@ -220,8 +220,63 @@ Deno.test("smoke: two accounts × two regions sweep in one pass", async () => {
 
   const reserved = ofSpec(out.written, "reserved");
   assertEquals(reserved.length, 1);
-  assertEquals(reserved[0].key, reservedKey("111122223333", "us-east-1", "ri-a-east"));
+  assertEquals(
+    reserved[0].key,
+    reservedKey("111122223333", "us-east-1", "ri-a-east"),
+  );
   assertEquals((reserved[0].data as ReservedRecord).dbInstanceCount, 2);
+});
+
+Deno.test("smoke: storage-key separator is locked to `--` (task-57 published contract)", () => {
+  // The double-hyphen joins the hyphen-bearing identifier; account id and region
+  // keep single hyphens since they are self-delimiting (12 digits / closed set).
+  assertEquals(
+    instanceKey("111122223333", "us-east-1", "orders-db"),
+    "instance-111122223333-us-east-1--orders-db",
+  );
+  assertEquals(
+    reservedKey("111122223333", "us-east-1", "ri-a-east"),
+    "reserved-111122223333-us-east-1--ri-a-east",
+  );
+
+  // scanErrorKey: empty segments for the ambient chain / account-level failure,
+  // NOT word-sentinels — so a profile literally named `ambient` (or a region
+  // named `account`) cannot collide with the absent-value case.
+  assertEquals(
+    scanErrorKey("", "us-east-1", "credentials"),
+    "error----us-east-1--credentials",
+  );
+  // Account-level failure: empty region renders as an empty segment (`----`),
+  // not a sentinel word.
+  assertEquals(
+    scanErrorKey("ro", "", "credentials"),
+    "error--ro----credentials",
+  );
+  assert(
+    scanErrorKey("ambient", "us-east-1", "credentials") !==
+      scanErrorKey("", "us-east-1", "credentials"),
+    "a profile named 'ambient' must not collide with the ambient chain",
+  );
+  assert(
+    scanErrorKey("ro", "account", "credentials") !==
+      scanErrorKey("ro", "", "credentials"),
+    "a region named 'account' must not collide with an account-level failure",
+  );
+  // A profile is a free operator string that MAY contain `--`. Injectivity does
+  // not rely on the separator being absent from the profile — it relies on the
+  // trailing region/phase being closed-set — so a `--`-bearing profile must
+  // still decode distinctly from a swap of where that `--` lands.
+  assert(
+    scanErrorKey("team--prod", "us-east-1", "credentials") !==
+      scanErrorKey("team", "us-east-1", "credentials"),
+    "a profile containing '--' must not collide with a shorter profile",
+  );
+  // Field-swap: a value in profile vs the same value in region must not collide.
+  assert(
+    scanErrorKey("", "us-east-1", "credentials") !==
+      scanErrorKey("us-east-1", "", "credentials"),
+    "profile/region are positional; swapping a value must change the key",
+  );
 });
 
 Deno.test("smoke: a denied region degrades to scan_error; the rest of the sweep continues", async () => {
@@ -301,7 +356,9 @@ Deno.test("smoke: ambient profile has no profile label and falls back to account
 });
 
 Deno.test("smoke: a credential failure skips the account but not its peers", async () => {
-  const expired = new Error("The SSO session associated with this profile has expired");
+  const expired = new Error(
+    "The SSO session associated with this profile has expired",
+  );
   expired.name = "ExpiredTokenException";
 
   const out = await runWithTargets(

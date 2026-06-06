@@ -295,13 +295,35 @@ export function resolveBootstrapRegion(
   return "us-east-1";
 }
 
+// Storage-key separator convention (locked task-57, before first publish).
+// Free identifiers are joined with a DOUBLE hyphen `--`, adopting the same
+// separator token as the sibling `@jentz/aws-rds-inventory`
+// (`instance-<cluster>--<instance>`); the overall key shapes differ (we also
+// carry account id and region), so this is the shared convention, not an
+// identical layout.
+//
+// Why each key is unambiguous — the argument is per-key, not "no component ever
+// contains `--`":
+//   - instanceKey / reservedKey: account id is fixed 12 digits and region is a
+//     closed AWS set (both self-delimiting with single `-`); the only free
+//     component is the trailing identifier, and RDS forbids consecutive hyphens
+//     in identifiers, so the lone `--` marks its boundary unambiguously.
+//   - scanErrorKey: `profile` IS a free operator string and MAY contain `--`,
+//     so safety does not come from the separator. It comes from position: the
+//     two trailing fields `region` (closed set) and `phase` (internal constant,
+//     underscore-only, hyphen-free) contain no `--`, so the value decodes
+//     unambiguously from the right regardless of `profile`. This holds ONLY
+//     while region/phase stay closed-set — do not move a free field to the tail.
+//     Empty segments (not word-sentinels) mark the ambient chain / account-level
+//     failure, so a profile literally named `ambient` cannot impersonate them.
+
 /** Build a stable storage key for an instance row (unique across account/region). */
 export function instanceKey(
   accountId: string,
   region: string,
   dbInstanceIdentifier: string,
 ): string {
-  return `instance-${accountId}-${region}-${dbInstanceIdentifier}`;
+  return `instance-${accountId}-${region}--${dbInstanceIdentifier}`;
 }
 
 /** Build a stable storage key for a reserved-instance row. */
@@ -310,7 +332,7 @@ export function reservedKey(
   region: string,
   reservedDBInstanceId: string,
 ): string {
-  return `reserved-${accountId}-${region}-${reservedDBInstanceId}`;
+  return `reserved-${accountId}-${region}--${reservedDBInstanceId}`;
 }
 
 /** Build a stable storage key for a scan error. */
@@ -319,7 +341,7 @@ export function scanErrorKey(
   region: string,
   phase: string,
 ): string {
-  return `error-${profileLabel || "ambient"}-${region || "account"}-${phase}`;
+  return `error--${profileLabel}--${region}--${phase}`;
 }
 
 // ---------------------------------------------------------------------------

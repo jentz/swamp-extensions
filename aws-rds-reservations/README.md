@@ -108,9 +108,16 @@ regions you list).
 
 All three resources have lifetime `infinite` and retain the last 10 versions.
 
+Storage keys join the free identifier with a double hyphen `--` (the same
+separator the sibling `@jentz/aws-rds-inventory` uses). The `accountId` (fixed
+12 digits) and `region` (closed AWS set) prefixes keep single hyphens because
+they are self-delimiting, and RDS forbids consecutive hyphens inside an
+identifier — so the lone `--` always marks the identifier boundary. Treat keys
+as opaque; the format is a published contract, not something to parse.
+
 ### `instance` resource (factory)
 
-Storage key: `instance-<accountId>-<region>-<dbInstanceIdentifier>`.
+Storage key: `instance-<accountId>-<region>--<dbInstanceIdentifier>`.
 
 | Field                  | Type                 | Notes |
 | ---------------------- | -------------------- | ----- |
@@ -131,7 +138,7 @@ Storage key: `instance-<accountId>-<region>-<dbInstanceIdentifier>`.
 
 ### `reserved` resource (factory)
 
-Storage key: `reserved-<accountId>-<region>-<reservedDBInstanceId>`.
+Storage key: `reserved-<accountId>-<region>--<reservedDBInstanceId>`.
 
 | Field                  | Type      | Notes |
 | ---------------------- | --------- | ----- |
@@ -152,7 +159,11 @@ Storage key: `reserved-<accountId>-<region>-<reservedDBInstanceId>`.
 
 ### `scan_error` resource (factory)
 
-Storage key: `error-<profile|ambient>-<region|account>-<phase>`.
+Storage key: `error--<profile>--<region>--<phase>`. Components are joined with
+`--`; `profile` and `region` are left empty (rather than substituted with a
+sentinel word) when absent, so the ambient chain (`profile` `""`) and an
+account-level failure (`region` `""`) cannot be impersonated by a profile or
+region literally named `ambient`/`account`.
 
 | Field       | Type                                          | Notes |
 | ----------- | --------------------------------------------- | ----- |
@@ -167,7 +178,7 @@ Storage key: `error-<profile|ambient>-<region|account>-<phase>`.
 CEL reference shape (downstream models / reports):
 
 ```cel
-data.latest("rds-res", "instance-111122223333-us-east-1-orders-db").attributes.dbInstanceClass
+data.latest("rds-res", "instance-111122223333-us-east-1--orders-db").attributes.dbInstanceClass
 ```
 
 ## Pairing with the coverage report
