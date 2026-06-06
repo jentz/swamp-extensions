@@ -35,6 +35,7 @@ import {
   type InstanceRecord,
   renderCsv,
   renderMarkdown,
+  report,
   RESERVATIONS_MODEL_TYPE,
   RESERVED_SPEC,
   rollupByGeneration,
@@ -404,6 +405,44 @@ Deno.test("renderCsv: a field containing a comma is quoted in the cell", () => {
 // ---------------------------------------------------------------------------
 // B. renderMarkdown — exercise the rendering path; light assertions
 // ---------------------------------------------------------------------------
+
+Deno.test("report.execute: account and region counts include reserved and scan_error-only rows", async () => {
+  const reservedOnly: ModelReservedRecord = {
+    ...reservedFixture,
+    accountId: "222233334444",
+    accountName: "reserved-only",
+    region: "eu-west-1",
+  };
+  const errorOnly: ModelScanError = {
+    ...scanErrorFixture,
+    accountId: "555566667777",
+    region: "ap-southeast-2",
+  };
+  const { context } = stubContext([
+    {
+      name: "reserved-only",
+      version: 1,
+      specName: RESERVED_SPEC,
+      json: reservedOnly,
+    },
+    {
+      name: "error-only",
+      version: 1,
+      specName: SCAN_ERROR_SPEC,
+      json: errorOnly,
+    },
+  ]);
+
+  const result = await report.execute({
+    ...(context as Record<string, unknown>),
+    workflowName: "coverage-test",
+  });
+
+  assertEquals(result.json.accountCount, 2);
+  assertEquals(result.json.regionCount, 2);
+  assertStringIncludes(result.markdown, "- Accounts seen: **2**");
+  assertStringIncludes(result.markdown, "- Regions covered: **2**");
+});
 
 Deno.test("renderMarkdown: non-empty doc with expected section headers", () => {
   const instances: InstanceRecord[] = [{

@@ -77,7 +77,7 @@ The AWS-managed `ReadOnlyAccess` and `SecurityAudit` policies cover all three.
 | ----------------------- | ----------------- | ------- | ----------- |
 | `profiles`              | `string[]`        | `[]`    | Named AWS profiles to sweep, one account each. Empty uses the ambient credential chain (whatever `AWS_PROFILE` / env is set) as a single account — handy for testing one account before scaling out. |
 | `regions`               | `string[]`        | `[]`    | Regions to sweep per account. Required for any output — RDS describe calls are region-scoped and there is no enabled-region discovery here (an SCP-denied region simply becomes a `scan_error`). Pass your org's approved regions. |
-| `requiredProfileSuffix` | `string`          | `""`    | If set, every profile (and the ambient `AWS_PROFILE`) must end with this suffix or it is refused before any AWS call. Set to `-readonly` to enforce read-only profiles. The suffix is also stripped to derive the friendly `accountName`. Default `""` disables the check. |
+| `requiredProfileSuffix` | `string`          | `""`    | If set, every named profile must end with this suffix or it is refused before any AWS call. Set to `-readonly` to enforce read-only profiles. Ambient credentials have no reliable profile label, so leave this empty when `profiles` is `[]` or pass an explicit named profile instead. The suffix is also stripped to derive the friendly `accountName`. Default `""` disables the check. |
 
 `profiles` and `regions` are arrays — pass them with the `:json=` value suffix:
 

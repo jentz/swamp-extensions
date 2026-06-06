@@ -97,10 +97,11 @@ const GlobalArgsSchema = z.object({
       "approved regions.",
   ),
   requiredProfileSuffix: z.string().default("").describe(
-    "If set, every profile (and the ambient AWS_PROFILE) must end with this " +
-      "suffix or the profile is refused before any AWS call. Set to " +
-      "'-readonly' to enforce read-only profiles. Default '' disables the " +
-      "check.",
+    "If set, every named profile must end with this suffix or it is refused " +
+      "before any AWS call. Set to '-readonly' to enforce read-only profiles. " +
+      "Ambient credentials have no reliable profile label, so leave this empty " +
+      "when profiles is [] or pass an explicit named profile instead. Default " +
+      "'' disables the check.",
   ),
 });
 
