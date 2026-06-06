@@ -91,6 +91,15 @@ is **disabled**, a reservation only benefits the account that bought it, so the
 report also emits the same large-equivalents split by **owning account**: buy
 each account's gap in that account.
 
+The per-account view carries the **same carve-outs** the org-wide view does, so
+nothing an account runs is hidden: an account that runs only burstable,
+serverless, non-size-flexible commercial (SQL Server / Oracle-LI / RDS Custom),
+or unparseable capacity — and would otherwise produce no large-eq bucket — still
+appears in the matching per-account carve-out table, and per-account inactive
+reservations are counted too. Non-size-flex capacity has no large-equivalent
+line on either path, but is surfaced per account as raw running-vs-reserved
+counts so it is attributable for per-account purchasing.
+
 ## Carve-outs (never silently dropped)
 
 - **Burstable** (`t`-class: t2/t3/t4g) — both running **and reserved** t-class
@@ -112,6 +121,12 @@ each account's gap in that account.
 - **Serverless** (`db.serverless`, Aurora Serverless v2) is counted separately
   (ACU-billed, not instance-class capacity).
 - **Unparseable** classes are listed with a warning rather than dropped.
+
+These carve-outs hold on **both** the org-wide and the
+[per-account](#per-account-breakdown-ri-discount-sharing-off) paths — the same
+shared classifier routes both, so the burstable / serverless / non-size-flex /
+unparseable tables (and the inactive-reservation count) appear per account too,
+not just org-wide.
 
 ## Engine, edition, and license
 
@@ -173,7 +188,7 @@ The swamp report runtime persists two artifacts per report:
 
 | Data name                                  | Content type       | Body |
 | ------------------------------------------ | ------------------ | ---- |
-| `report-aws-rds-reservation-coverage`      | `text/markdown`    | The operator markdown report (summary, per-generation rollup, purchasable buckets, per-account purchase list, carve-outs, coverage-gap callouts). |
+| `report-aws-rds-reservation-coverage`      | `text/markdown`    | The operator markdown report (summary, per-generation rollup, purchasable buckets, per-account purchase list with its own per-account carve-out tables, org-wide carve-outs, coverage-gap callouts). |
 | `report-aws-rds-reservation-coverage-json` | `application/json` | The full structured payload (see below), including per-bucket CSV in `csv` and per-account CSV in `csvByAccount`. |
 
 Retrieval:
@@ -199,8 +214,9 @@ swamp data get --workflow <workflow-name> \
 | `generationRollup` | Per `region × family` rollup rows. |
 | `buckets` | Per `region × family × engine × deployment` rows (the purchasable line items). |
 | `accountBuckets`, `csvByAccount` | Per-account buckets and their CSV (the RI-sharing-OFF purchase list). |
-| `burstable`, `nonSizeFlex`, `serverless`, `unparseable` | The carve-outs. `nonSizeFlex` holds SQL Server / Oracle-LI / RDS Custom rows (`region × family × engine × size × deployment` with running/reserved counts), excluded from the large-eq totals. |
-| `inactiveReserved` | Reservation rows skipped because they were not `active`. |
+| `accountBurstable`, `accountServerless`, `accountUnparseable`, `accountNonSizeFlex`, `accountInactiveReserved` | The per-account mirror of every org-wide carve-out, so the RI-sharing-OFF purchase list never silently drops an account that runs only burstable / serverless / non-size-flex commercial / unparseable capacity (or holds only inactive reservations). `accountServerless` counts running instances only; `accountNonSizeFlex` holds SQL Server / Oracle-LI / RDS Custom raw counts at `region × family × engine × size × deployment`. These are JSON arrays only — like the org-wide carve-outs, they are not part of any CSV, so `csvByAccount` and its columns are unchanged. |
+| `burstable`, `nonSizeFlex`, `serverless`, `unparseable` | The org-wide carve-outs. `nonSizeFlex` holds SQL Server / Oracle-LI / RDS Custom rows (`region × family × engine × size × deployment` with running/reserved counts), excluded from the large-eq totals. |
+| `inactiveReserved` | Reservation rows skipped because they were not `active` (org-wide count; `accountInactiveReserved` splits it by account). |
 | `errorsByKind` | Scan errors counted by `auth_expired` / `access_denied` / `other`. |
 | `skipped` | Upstream artifacts that failed to decode, parse, or validate. |
 | `degraded` | `true` when the never-throws envelope absorbed an unexpected failure. |

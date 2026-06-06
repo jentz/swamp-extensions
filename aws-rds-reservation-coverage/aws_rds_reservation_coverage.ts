@@ -73,6 +73,13 @@
  *     separately (ACU-billed, not instance-class capacity).
  *   - **Unparseable** classes are listed with a warning.
  *
+ * A single shared {@link classify} routes every row for both the org-wide
+ * {@link aggregate} and the per-account {@link aggregateByAccount}, so these
+ * carve-outs surface per account too — the RI-discount-sharing-OFF purchase
+ * list never silently drops an account whose footprint is entirely burstable,
+ * serverless, or unparseable. The one exception is the non-size-flex commercial
+ * carve-out, which has no per-account large-eq line and is surfaced org-wide.
+ *
  * ## Engine, edition, and license
  *
  * The engine token preserves the dimensions an RDS reservation is actually
@@ -668,6 +675,81 @@ export function bucketKey(
   return `${region} ${family} ${engine} ${deployment}`;
 }
 
+/**
+ * The single classify-then-route decision for one running or reserved row,
+ * shared by {@link aggregate} and {@link aggregateByAccount} so the two views
+ * can never drift. The discriminant names exactly the carve-out / bucket
+ * destination; the aggregators differ only in how they key and accumulate each
+ * kind (and, for `serverless`, that the reserved side drops it — Aurora
+ * Serverless v2 is not reservable, so the serverless tally is running-only).
+ *
+ * `unparseable` covers both a class that fails {@link parseInstanceClass} and a
+ * parseable-but-unnormalizable size (e.g. `db.r7g.metal`, where
+ * {@link normalizedUnits} returns `null`) — the same fold {@link aggregate} has
+ * always done, now applied identically per account.
+ */
+export type Classification =
+  | { kind: "serverless"; engine: string }
+  | { kind: "burstable"; family: string; size: string }
+  | { kind: "unparseable"; dbInstanceClass: string }
+  | {
+    kind: "nonSizeFlex";
+    family: string;
+    engine: string;
+    size: string;
+    deployment: string;
+  }
+  | {
+    kind: "bucket";
+    family: string;
+    generation: string;
+    engine: string;
+    deployment: string;
+    units: number;
+  };
+
+/**
+ * Classify one row by its raw instance class and parsed {@link EngineIdentity}
+ * into the destination both aggregations route it to. Pure; never throws.
+ *
+ * @param dbInstanceClass The raw class string (e.g. `db.r7g.large`).
+ * @param id The parsed engine identity (carries the bucket token and size-flex eligibility).
+ * @param multiAZ The upstream Multi-AZ flag (Aurora is forced Single-AZ in {@link deploymentFor}).
+ * @returns The routing decision.
+ */
+export function classify(
+  dbInstanceClass: string,
+  id: EngineIdentity,
+  multiAZ: boolean,
+): Classification {
+  const parsed = parseInstanceClass(dbInstanceClass);
+  if (parsed.isServerless) return { kind: "serverless", engine: id.engine };
+  if (parsed.isBurstable) {
+    return { kind: "burstable", family: parsed.family, size: parsed.size };
+  }
+  if (parsed.unparseable) return { kind: "unparseable", dbInstanceClass };
+  const deployment = deploymentFor(id.engine, multiAZ);
+  if (!id.sizeFlexEligible) {
+    return {
+      kind: "nonSizeFlex",
+      family: parsed.family,
+      engine: id.token,
+      size: parsed.size,
+      deployment,
+    };
+  }
+  const units = normalizedUnits(parsed.size, deployment);
+  if (units === null) return { kind: "unparseable", dbInstanceClass };
+  return {
+    kind: "bucket",
+    family: parsed.family,
+    generation: parsed.generation,
+    engine: id.token,
+    deployment,
+    units,
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Aggregation
 // ---------------------------------------------------------------------------
@@ -817,23 +899,18 @@ export function aggregate(
 
   const bumpBucket = (
     region: string,
-    parsed: ParsedClass,
+    family: string,
+    generation: string,
     engine: string,
     deployment: string,
     largeEq: number,
     instances: number,
     side: "running" | "reserved",
   ) => {
-    const key = bucketKey(region, parsed.family, engine, deployment);
+    const key = bucketKey(region, family, engine, deployment);
     let b = buckets.get(key);
     if (!b) {
-      b = emptyBucket(
-        region,
-        parsed.family,
-        parsed.generation,
-        engine,
-        deployment,
-      );
+      b = emptyBucket(region, family, generation, engine, deployment);
       buckets.set(key, b);
     }
     if (side === "running") {
@@ -905,45 +982,49 @@ export function aggregate(
   };
 
   for (const i of instances) {
-    const parsed = parseInstanceClass(i.dbInstanceClass);
     const id = parseEngineIdentity(i.engine, i.licenseModel);
-    if (parsed.isServerless) {
-      const key = `${i.region} ${id.engine}`;
-      const s = serverless.get(key) ??
-        { region: i.region, engine: id.engine, count: 0 };
-      s.count += 1;
-      serverless.set(key, s);
-      continue;
+    const c = classify(i.dbInstanceClass, id, i.multiAZ);
+    switch (c.kind) {
+      case "serverless": {
+        const key = `${i.region} ${c.engine}`;
+        const s = serverless.get(key) ??
+          { region: i.region, engine: c.engine, count: 0 };
+        s.count += 1;
+        serverless.set(key, s);
+        break;
+      }
+      case "burstable":
+        bumpBurstable(i.region, c.family, c.size, 1, "running");
+        break;
+      case "unparseable":
+        bumpUnparseable(i.region, c.dbInstanceClass, "instance", 1);
+        break;
+      case "nonSizeFlex":
+        // SQL Server, Oracle License-Included, RDS Custom: size flexibility does
+        // not apply, so these are kept as raw counts, never folded into large-eq.
+        bumpNonSizeFlex(
+          i.region,
+          c.family,
+          c.engine,
+          c.size,
+          c.deployment,
+          1,
+          "running",
+        );
+        break;
+      case "bucket":
+        bumpBucket(
+          i.region,
+          c.family,
+          c.generation,
+          c.engine,
+          c.deployment,
+          c.units,
+          1,
+          "running",
+        );
+        break;
     }
-    if (parsed.isBurstable) {
-      bumpBurstable(i.region, parsed.family, parsed.size, 1, "running");
-      continue;
-    }
-    if (parsed.unparseable) {
-      bumpUnparseable(i.region, i.dbInstanceClass, "instance", 1);
-      continue;
-    }
-    const deployment = deploymentFor(id.engine, i.multiAZ);
-    if (!id.sizeFlexEligible) {
-      // SQL Server, Oracle License-Included, RDS Custom: size flexibility does
-      // not apply, so these are kept as raw counts, never folded into large-eq.
-      bumpNonSizeFlex(
-        i.region,
-        parsed.family,
-        id.token,
-        parsed.size,
-        deployment,
-        1,
-        "running",
-      );
-      continue;
-    }
-    const units = normalizedUnits(parsed.size, deployment);
-    if (units === null) {
-      bumpUnparseable(i.region, i.dbInstanceClass, "instance", 1);
-      continue;
-    }
-    bumpBucket(i.region, parsed, id.token, deployment, units, 1, "running");
   }
 
   for (const r of reserved) {
@@ -951,51 +1032,46 @@ export function aggregate(
       inactiveReserved += 1;
       continue;
     }
-    const parsed = parseInstanceClass(r.dbInstanceClass);
     const id = parseEngineIdentity(r.productDescription);
+    const c = classify(r.dbInstanceClass, id, r.multiAZ);
     const count = r.dbInstanceCount;
-    if (parsed.isServerless) {
-      // Aurora Serverless v2 is ACU-billed and not traditionally reservable, so
-      // a reserved serverless row is dropped rather than counted. The serverless
-      // table counts running instances only; creating a zero-count entry here
-      // (the previous behavior) just polluted it with empty rows.
-      continue;
+    switch (c.kind) {
+      case "serverless":
+        // Aurora Serverless v2 is ACU-billed and not traditionally reservable, so
+        // a reserved serverless row is dropped rather than counted. The serverless
+        // table counts running instances only; creating a zero-count entry here
+        // (the previous behavior) just polluted it with empty rows.
+        break;
+      case "burstable":
+        bumpBurstable(r.region, c.family, c.size, count, "reserved");
+        break;
+      case "unparseable":
+        bumpUnparseable(r.region, c.dbInstanceClass, "reserved", count);
+        break;
+      case "nonSizeFlex":
+        bumpNonSizeFlex(
+          r.region,
+          c.family,
+          c.engine,
+          c.size,
+          c.deployment,
+          count,
+          "reserved",
+        );
+        break;
+      case "bucket":
+        bumpBucket(
+          r.region,
+          c.family,
+          c.generation,
+          c.engine,
+          c.deployment,
+          c.units * count,
+          count,
+          "reserved",
+        );
+        break;
     }
-    if (parsed.isBurstable) {
-      bumpBurstable(r.region, parsed.family, parsed.size, count, "reserved");
-      continue;
-    }
-    if (parsed.unparseable) {
-      bumpUnparseable(r.region, r.dbInstanceClass, "reserved", count);
-      continue;
-    }
-    const deployment = deploymentFor(id.engine, r.multiAZ);
-    if (!id.sizeFlexEligible) {
-      bumpNonSizeFlex(
-        r.region,
-        parsed.family,
-        id.token,
-        parsed.size,
-        deployment,
-        count,
-        "reserved",
-      );
-      continue;
-    }
-    const units = normalizedUnits(parsed.size, deployment);
-    if (units === null) {
-      bumpUnparseable(r.region, r.dbInstanceClass, "reserved", count);
-      continue;
-    }
-    bumpBucket(
-      r.region,
-      parsed,
-      id.token,
-      deployment,
-      units * count,
-      count,
-      "reserved",
-    );
   }
 
   return {
@@ -1134,6 +1210,122 @@ export interface AccountBucket {
   reservedInstances: number;
 }
 
+/**
+ * A burstable (t-class) line scoped to a single owning account — the
+ * per-account mirror of {@link BurstableLine}, so burstable capacity is visible
+ * per account on the RI-discount-sharing-OFF path, not silently dropped.
+ */
+export interface AccountBurstableLine {
+  /** 12-digit owning account id. */
+  accountId: string;
+  /** Friendly account label. */
+  accountName: string;
+  /** AWS region. */
+  region: string;
+  /** Family, e.g. `t4g`. */
+  family: string;
+  /** Size token, e.g. `medium`. */
+  size: string;
+  /** Running instance count. */
+  runningInstances: number;
+  /** Reserved instance count (sum of DBInstanceCount, active only). */
+  reservedInstances: number;
+}
+
+/**
+ * A serverless line scoped to a single owning account (running instances only,
+ * mirroring the org-wide serverless tally — reserved serverless is dropped on
+ * both paths).
+ */
+export interface AccountServerlessLine {
+  /** 12-digit owning account id. */
+  accountId: string;
+  /** Friendly account label. */
+  accountName: string;
+  /** AWS region. */
+  region: string;
+  /** Canonical engine. */
+  engine: string;
+  /** Running serverless instance count. */
+  count: number;
+}
+
+/** An unparseable class scoped to a single owning account. */
+export interface AccountUnparseableLine {
+  /** 12-digit owning account id. */
+  accountId: string;
+  /** Friendly account label. */
+  accountName: string;
+  /** AWS region. */
+  region: string;
+  /** Raw instance class. */
+  dbInstanceClass: string;
+  /** `instance` or `reserved`. */
+  source: "instance" | "reserved";
+  /** Count of rows with this class. */
+  count: number;
+}
+
+/**
+ * A non-size-flexible commercial line (SQL Server, Oracle LI, RDS Custom) scoped
+ * to a single owning account — the per-account mirror of {@link NonSizeFlexLine}.
+ * Like the org-wide carve-out these are raw running-vs-reserved counts at
+ * `region × family × engine × size × deployment` (never folded into
+ * large-equivalents), now attributable to the owning account for the
+ * RI-discount-sharing-OFF purchasing case.
+ */
+export interface AccountNonSizeFlexLine {
+  /** 12-digit owning account id. */
+  accountId: string;
+  /** Friendly account label. */
+  accountName: string;
+  /** AWS region. */
+  region: string;
+  /** Family, e.g. `r6i`. */
+  family: string;
+  /** Engine token with edition and license, e.g. `sqlserver-se-li`, `oracle-ee-li`. */
+  engine: string;
+  /** Size token, e.g. `xlarge`. */
+  size: string;
+  /** Deployment dimension (`Multi-AZ` | `Single-AZ`). */
+  deployment: string;
+  /** Running instance count. */
+  runningInstances: number;
+  /** Reserved instance count (sum of DBInstanceCount, active only). */
+  reservedInstances: number;
+}
+
+/** Per-account count of reservations skipped because they were not `active`. */
+export interface AccountInactiveReserved {
+  /** 12-digit owning account id. */
+  accountId: string;
+  /** Friendly account label. */
+  accountName: string;
+  /** Inactive reservation rows owned by this account. */
+  count: number;
+}
+
+/**
+ * Full per-account aggregation — the per-account mirror of {@link Aggregation}.
+ * `buckets` is the large-equivalent purchase list; the remaining fields are the
+ * per-account carve-outs that {@link aggregate} surfaces org-wide, so the
+ * "never silently dropped" promise holds per account too.
+ */
+export interface AccountAggregation {
+  /** Per-account large-equivalent buckets, sorted. */
+  buckets: AccountBucket[];
+  /** Per-account burstable lines, sorted. */
+  burstable: AccountBurstableLine[];
+  /** Per-account serverless lines (running only), sorted. */
+  serverless: AccountServerlessLine[];
+  /** Per-account unparseable class lines, sorted. */
+  unparseable: AccountUnparseableLine[];
+  /** Per-account non-size-flex commercial lines (SQL Server, Oracle LI, RDS Custom), sorted. */
+  nonSizeFlex: AccountNonSizeFlexLine[];
+  /** Per-account inactive-reservation counts, sorted. */
+  inactiveReserved: AccountInactiveReserved[];
+}
+
 /** Stable order: account, region, family, engine, deployment. */
 export function compareAccountBuckets(
   a: AccountBucket,
@@ -1149,95 +1341,340 @@ export function compareAccountBuckets(
 }
 
 /**
- * Aggregate the large-equivalent buckets **with the owning account as an extra
- * dimension** — the purchasable line items when RI discount sharing is
- * disabled and a reservation only benefits the account that bought it. Same
- * normalization and carve-out rules as {@link aggregate} (burstable,
- * serverless, unparseable, and inactive reservations are excluded here).
+ * Aggregate running and reserved rows **with the owning account as an extra
+ * dimension** — the purchasable line items when RI discount sharing is disabled
+ * and a reservation only benefits the account that bought it. Routes through the
+ * same shared {@link classify} as {@link aggregate}, so the per-account view
+ * surfaces the identical burstable / serverless / unparseable / non-size-flex /
+ * inactive carve-outs org-wide does — none is silently dropped. Non-size-flex
+ * commercial capacity (SQL Server, Oracle LI, RDS Custom) has no large-eq line
+ * on either path, but is surfaced per account as raw counts (in `nonSizeFlex`)
+ * so an account running only such capacity is still attributable for the
+ * RI-sharing-OFF purchasing case. Reserved serverless is dropped on both paths.
  *
  * @param instances Decoded provisioned-instance rows.
  * @param reserved Decoded reserved-instance rows.
- * @returns Sorted per-account buckets.
+ * @returns The per-account buckets plus per-account carve-outs.
  */
 export function aggregateByAccount(
   instances: InstanceRecord[],
   reserved: ReservedRecord[],
-): AccountBucket[] {
-  const map = new Map<string, AccountBucket>();
-  const bump = (
+): AccountAggregation {
+  const buckets = new Map<string, AccountBucket>();
+  const burstable = new Map<string, AccountBurstableLine>();
+  const serverless = new Map<string, AccountServerlessLine>();
+  const unparseable = new Map<string, AccountUnparseableLine>();
+  const nonSizeFlex = new Map<string, AccountNonSizeFlexLine>();
+  const inactiveReserved = new Map<string, AccountInactiveReserved>();
+
+  const bumpBucket = (
     accountId: string,
     accountName: string,
     region: string,
-    parsed: ParsedClass,
-    id: EngineIdentity,
+    family: string,
+    generation: string,
+    engine: string,
     deployment: string,
+    largeEq: number,
     count: number,
     side: "running" | "reserved",
   ) => {
-    if (parsed.isServerless || parsed.isBurstable || parsed.unparseable) return;
-    // Non-size-flex commercial capacity (SQL Server, Oracle LI, RDS Custom) is
-    // excluded here exactly as in {@link aggregate}; it is not foldable into
-    // large-equivalents and has no per-account large-eq line.
-    if (!id.sizeFlexEligible) return;
-    const units = normalizedUnits(parsed.size, deployment);
-    if (units === null) return;
-    const key =
-      `${accountId} ${region} ${parsed.family} ${id.token} ${deployment}`;
-    let b = map.get(key);
+    const key = `${accountId} ${region} ${family} ${engine} ${deployment}`;
+    let b = buckets.get(key);
     if (!b) {
       b = {
         accountId,
         accountName,
         region,
-        family: parsed.family,
-        generation: parsed.generation,
-        engine: id.token,
+        family,
+        generation,
+        engine,
         deployment,
         runningLargeEq: 0,
         reservedLargeEq: 0,
         runningInstances: 0,
         reservedInstances: 0,
       };
-      map.set(key, b);
+      buckets.set(key, b);
     }
     if (side === "running") {
-      b.runningLargeEq += units * count;
+      b.runningLargeEq += largeEq;
       b.runningInstances += count;
     } else {
-      b.reservedLargeEq += units * count;
+      b.reservedLargeEq += largeEq;
       b.reservedInstances += count;
     }
   };
 
+  const bumpBurstable = (
+    accountId: string,
+    accountName: string,
+    region: string,
+    family: string,
+    size: string,
+    count: number,
+    side: "running" | "reserved",
+  ) => {
+    const key = `${accountId} ${region} ${family} ${size}`;
+    let l = burstable.get(key);
+    if (!l) {
+      l = {
+        accountId,
+        accountName,
+        region,
+        family,
+        size,
+        runningInstances: 0,
+        reservedInstances: 0,
+      };
+      burstable.set(key, l);
+    }
+    if (side === "running") l.runningInstances += count;
+    else l.reservedInstances += count;
+  };
+
+  const bumpServerless = (
+    accountId: string,
+    accountName: string,
+    region: string,
+    engine: string,
+  ) => {
+    const key = `${accountId} ${region} ${engine}`;
+    const l = serverless.get(key) ??
+      { accountId, accountName, region, engine, count: 0 };
+    l.count += 1;
+    serverless.set(key, l);
+  };
+
+  const bumpUnparseable = (
+    accountId: string,
+    accountName: string,
+    region: string,
+    dbInstanceClass: string,
+    source: "instance" | "reserved",
+    count: number,
+  ) => {
+    const key = `${accountId} ${region} ${dbInstanceClass} ${source}`;
+    let l = unparseable.get(key);
+    if (!l) {
+      l = { accountId, accountName, region, dbInstanceClass, source, count: 0 };
+      unparseable.set(key, l);
+    }
+    l.count += count;
+  };
+
+  const bumpNonSizeFlex = (
+    accountId: string,
+    accountName: string,
+    region: string,
+    family: string,
+    engine: string,
+    size: string,
+    deployment: string,
+    count: number,
+    side: "running" | "reserved",
+  ) => {
+    const key =
+      `${accountId} ${region} ${family} ${engine} ${size} ${deployment}`;
+    let l = nonSizeFlex.get(key);
+    if (!l) {
+      l = {
+        accountId,
+        accountName,
+        region,
+        family,
+        engine,
+        size,
+        deployment,
+        runningInstances: 0,
+        reservedInstances: 0,
+      };
+      nonSizeFlex.set(key, l);
+    }
+    if (side === "running") l.runningInstances += count;
+    else l.reservedInstances += count;
+  };
+
+  const bumpInactive = (
+    accountId: string,
+    accountName: string,
+    count: number,
+  ) => {
+    const key = accountId;
+    const l = inactiveReserved.get(key) ??
+      { accountId, accountName, count: 0 };
+    l.count += count;
+    inactiveReserved.set(key, l);
+  };
+
   for (const i of instances) {
     const id = parseEngineIdentity(i.engine, i.licenseModel);
-    bump(
-      i.accountId,
-      i.accountName,
-      i.region,
-      parseInstanceClass(i.dbInstanceClass),
-      id,
-      deploymentFor(id.engine, i.multiAZ),
-      1,
-      "running",
-    );
-  }
-  for (const r of reserved) {
-    if (r.state !== "active") continue;
-    const id = parseEngineIdentity(r.productDescription);
-    bump(
-      r.accountId,
-      r.accountName,
-      r.region,
-      parseInstanceClass(r.dbInstanceClass),
-      id,
-      deploymentFor(id.engine, r.multiAZ),
-      r.dbInstanceCount,
-      "reserved",
-    );
+    const c = classify(i.dbInstanceClass, id, i.multiAZ);
+    switch (c.kind) {
+      case "serverless":
+        bumpServerless(i.accountId, i.accountName, i.region, c.engine);
+        break;
+      case "burstable":
+        bumpBurstable(
+          i.accountId,
+          i.accountName,
+          i.region,
+          c.family,
+          c.size,
+          1,
+          "running",
+        );
+        break;
+      case "unparseable":
+        bumpUnparseable(
+          i.accountId,
+          i.accountName,
+          i.region,
+          c.dbInstanceClass,
+          "instance",
+          1,
+        );
+        break;
+      case "nonSizeFlex":
+        bumpNonSizeFlex(
+          i.accountId,
+          i.accountName,
+          i.region,
+          c.family,
+          c.engine,
+          c.size,
+          c.deployment,
+          1,
+          "running",
+        );
+        break;
+      case "bucket":
+        bumpBucket(
+          i.accountId,
+          i.accountName,
+          i.region,
+          c.family,
+          c.generation,
+          c.engine,
+          c.deployment,
+          c.units,
+          1,
+          "running",
+        );
+        break;
+    }
   }
 
-  return [...map.values()].sort(compareAccountBuckets);
+  for (const r of reserved) {
+    if (r.state !== "active") {
+      bumpInactive(r.accountId, r.accountName, 1);
+      continue;
+    }
+    const id = parseEngineIdentity(r.productDescription);
+    const c = classify(r.dbInstanceClass, id, r.multiAZ);
+    const count = r.dbInstanceCount;
+    switch (c.kind) {
+      case "serverless":
+        // Reserved serverless dropped, mirroring the org-wide path.
+        break;
+      case "burstable":
+        bumpBurstable(
+          r.accountId,
+          r.accountName,
+          r.region,
+          c.family,
+          c.size,
+          count,
+          "reserved",
+        );
+        break;
+      case "unparseable":
+        bumpUnparseable(
+          r.accountId,
+          r.accountName,
+          r.region,
+          c.dbInstanceClass,
+          "reserved",
+          count,
+        );
+        break;
+      case "nonSizeFlex":
+        bumpNonSizeFlex(
+          r.accountId,
+          r.accountName,
+          r.region,
+          c.family,
+          c.engine,
+          c.size,
+          c.deployment,
+          count,
+          "reserved",
+        );
+        break;
+      case "bucket":
+        bumpBucket(
+          r.accountId,
+          r.accountName,
+          r.region,
+          c.family,
+          c.generation,
+          c.engine,
+          c.deployment,
+          c.units * count,
+          count,
+          "reserved",
+        );
+        break;
+    }
+  }
+
+  const byAccountRegion = (a: { accountName: string; region: string }, b: {
+    accountName: string;
+    region: string;
+  }) =>
+    a.accountName !== b.accountName
+      ? (a.accountName < b.accountName ? -1 : 1)
+      : a.region !== b.region
+      ? (a.region < b.region ? -1 : 1)
+      : 0;
+
+  return {
+    buckets: [...buckets.values()].sort(compareAccountBuckets),
+    burstable: [...burstable.values()].sort((a, b) => {
+      const ar = byAccountRegion(a, b);
+      if (ar !== 0) return ar;
+      if (a.family !== b.family) return a.family < b.family ? -1 : 1;
+      return a.size < b.size ? -1 : a.size > b.size ? 1 : 0;
+    }),
+    serverless: [...serverless.values()].sort((a, b) => {
+      const ar = byAccountRegion(a, b);
+      if (ar !== 0) return ar;
+      return a.engine < b.engine ? -1 : a.engine > b.engine ? 1 : 0;
+    }),
+    unparseable: [...unparseable.values()].sort((a, b) => {
+      const ar = byAccountRegion(a, b);
+      if (ar !== 0) return ar;
+      if (a.dbInstanceClass !== b.dbInstanceClass) {
+        return a.dbInstanceClass < b.dbInstanceClass ? -1 : 1;
+      }
+      return a.source < b.source ? -1 : a.source > b.source ? 1 : 0;
+    }),
+    nonSizeFlex: [...nonSizeFlex.values()].sort((a, b) => {
+      const ar = byAccountRegion(a, b);
+      if (ar !== 0) return ar;
+      if (a.family !== b.family) return a.family < b.family ? -1 : 1;
+      if (a.engine !== b.engine) return a.engine < b.engine ? -1 : 1;
+      if (a.size !== b.size) return a.size < b.size ? -1 : 1;
+      return a.deployment < b.deployment
+        ? -1
+        : a.deployment > b.deployment
+        ? 1
+        : 0;
+    }),
+    inactiveReserved: [...inactiveReserved.values()].sort((a, b) =>
+      a.accountName < b.accountName ? -1 : a.accountName > b.accountName ? 1 : 0
+    ),
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -1504,7 +1941,7 @@ export function renderMarkdown(
   collected: Collected,
   agg: Aggregation,
   rollup: GenerationRollup[],
-  accountBuckets: AccountBucket[],
+  accountAgg: AccountAggregation,
   generatedAt: string,
   workflowName: string,
 ): string {
@@ -1565,6 +2002,12 @@ export function renderMarkdown(
       `- SQL Server / Oracle-LI / RDS Custom (not size-flexible, **excluded** ` +
         `from the gap above): **${nsfRunning}** running, **${nsfReserved}** ` +
         "reserved instance(s) — see the dedicated table below",
+    );
+  }
+  if (agg.inactiveReserved > 0) {
+    lines.push(
+      `- Inactive reservations (not \`active\`, **excluded** from coverage): ` +
+        `**${agg.inactiveReserved}**`,
     );
   }
   lines.push(
@@ -1638,7 +2081,11 @@ export function renderMarkdown(
       "AWS Organizations consolidated billing, RI discount sharing is ON by " +
       "default and a reservation floats org-wide — in that case use the " +
       "org-wide buckets above. If sharing is disabled, buy each account's " +
-      "`gap` in that account.",
+      "`gap` in that account. Every carve-out the org-wide view surfaces is " +
+      "broken out per account below — burstable, serverless, non-size-flex " +
+      "commercial (SQL Server / Oracle-LI / RDS Custom, raw counts), " +
+      "unparseable, and inactive reservations — so nothing an account runs is " +
+      "hidden here.",
   );
   lines.push("");
   lines.push(
@@ -1653,7 +2100,7 @@ export function renderMarkdown(
         "reserved",
         "gap (buy)",
       ],
-      accountBuckets.map((b) => [
+      accountAgg.buckets.map((b) => [
         b.accountName,
         b.region,
         b.family,
@@ -1665,6 +2112,108 @@ export function renderMarkdown(
       ]),
     ),
   );
+
+  // Per-account non-size-flex carve-out (always rendered, mirroring org-wide).
+  lines.push("");
+  lines.push("### Per-account SQL Server / Oracle-LI / RDS Custom");
+  lines.push("");
+  lines.push(
+    mdTable(
+      [
+        "account",
+        "region",
+        "family",
+        "engine",
+        "size",
+        "deployment",
+        "running",
+        "reserved",
+      ],
+      accountAgg.nonSizeFlex.map((l) => [
+        l.accountName,
+        l.region,
+        l.family,
+        l.engine,
+        l.size,
+        l.deployment,
+        String(l.runningInstances),
+        String(l.reservedInstances),
+      ]),
+    ),
+  );
+
+  // Per-account burstable carve-out (always rendered, mirroring org-wide).
+  lines.push("");
+  lines.push("### Per-account burstable (t-class)");
+  lines.push("");
+  lines.push(
+    mdTable(
+      ["account", "region", "family", "size", "running", "reserved"],
+      accountAgg.burstable.map((l) => [
+        l.accountName,
+        l.region,
+        l.family,
+        l.size,
+        String(l.runningInstances),
+        String(l.reservedInstances),
+      ]),
+    ),
+  );
+
+  // Per-account serverless carve-out (running only; shown when present).
+  if (accountAgg.serverless.length > 0) {
+    lines.push("");
+    lines.push("### Per-account serverless (Aurora Serverless v2)");
+    lines.push("");
+    lines.push(
+      mdTable(
+        ["account", "region", "engine", "instances"],
+        accountAgg.serverless.map((s) => [
+          s.accountName,
+          s.region,
+          s.engine,
+          String(s.count),
+        ]),
+      ),
+    );
+  }
+
+  // Per-account unparseable carve-out (shown when present).
+  if (accountAgg.unparseable.length > 0) {
+    lines.push("");
+    lines.push("### Per-account unparseable classes (excluded from large-eq)");
+    lines.push("");
+    lines.push(
+      mdTable(
+        ["account", "region", "class", "source", "count"],
+        accountAgg.unparseable.map((u) => [
+          u.accountName,
+          u.region,
+          u.dbInstanceClass,
+          u.source,
+          String(u.count),
+        ]),
+      ),
+    );
+  }
+
+  // Per-account inactive reservations (shown when present).
+  if (accountAgg.inactiveReserved.length > 0) {
+    lines.push("");
+    lines.push(
+      "### Per-account inactive reservations (excluded from coverage)",
+    );
+    lines.push("");
+    lines.push(
+      mdTable(
+        ["account", "inactive reservations"],
+        accountAgg.inactiveReserved.map((r) => [
+          r.accountName,
+          String(r.count),
+        ]),
+      ),
+    );
+  }
 
   // Burstable carve-out.
   lines.push("## Burstable (t-class) — counted separately, not normalized");
@@ -1821,6 +2370,16 @@ export interface ReportJson {
   accountBuckets: AccountBucket[];
   /** Per-account CSV body (header + rows + trailing newline). */
   csvByAccount: string;
+  /** Per-account burstable lines (carve-out, mirrors org-wide `burstable`). */
+  accountBurstable: AccountBurstableLine[];
+  /** Per-account serverless lines (running only). */
+  accountServerless: AccountServerlessLine[];
+  /** Per-account unparseable class lines. */
+  accountUnparseable: AccountUnparseableLine[];
+  /** Per-account non-size-flex commercial lines (SQL Server, Oracle LI, RDS Custom). */
+  accountNonSizeFlex: AccountNonSizeFlexLine[];
+  /** Per-account inactive-reservation counts. */
+  accountInactiveReserved: AccountInactiveReserved[];
   /** Burstable lines. */
   burstable: BurstableLine[];
   /** Non-size-flex commercial lines (SQL Server, Oracle LI, RDS Custom). */
@@ -1890,7 +2449,14 @@ export const report = {
       inactiveReserved: 0,
     };
     let rollup: GenerationRollup[] = [];
-    let accountBuckets: AccountBucket[] = [];
+    let accountAgg: AccountAggregation = {
+      buckets: [],
+      burstable: [],
+      serverless: [],
+      unparseable: [],
+      nonSizeFlex: [],
+      inactiveReserved: [],
+    };
     let generatedAt = "";
     let degraded = false;
     let markdown = "";
@@ -1902,17 +2468,17 @@ export const report = {
       collected = await collect(context);
       agg = aggregate(collected.instances, collected.reserved);
       rollup = rollupByGeneration(agg.buckets);
-      accountBuckets = aggregateByAccount(
+      accountAgg = aggregateByAccount(
         collected.instances,
         collected.reserved,
       );
       csv = renderCsv(agg.buckets);
-      csvByAccount = renderCsvByAccount(accountBuckets);
+      csvByAccount = renderCsvByAccount(accountAgg.buckets);
       markdown = renderMarkdown(
         collected,
         agg,
         rollup,
-        accountBuckets,
+        accountAgg,
         generatedAt,
         workflowName,
       );
@@ -1961,12 +2527,17 @@ export const report = {
         runningLargeEq: round2(b.runningLargeEq),
         reservedLargeEq: round2(b.reservedLargeEq),
       })),
-      accountBuckets: accountBuckets.map((b) => ({
+      accountBuckets: accountAgg.buckets.map((b) => ({
         ...b,
         runningLargeEq: round2(b.runningLargeEq),
         reservedLargeEq: round2(b.reservedLargeEq),
       })),
       csvByAccount,
+      accountBurstable: accountAgg.burstable,
+      accountServerless: accountAgg.serverless,
+      accountUnparseable: accountAgg.unparseable,
+      accountNonSizeFlex: accountAgg.nonSizeFlex,
+      accountInactiveReserved: accountAgg.inactiveReserved,
       burstable: agg.burstable,
       nonSizeFlex: agg.nonSizeFlex,
       serverless: agg.serverless,
