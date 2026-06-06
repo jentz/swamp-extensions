@@ -436,7 +436,14 @@ Deno.test("renderMarkdown: non-empty doc with expected section headers", () => {
     collected,
     agg,
     rollup,
-    [],
+    {
+      buckets: [],
+      burstable: [],
+      serverless: [],
+      unparseable: [],
+      nonSizeFlex: [],
+      inactiveReserved: [],
+    },
     "2026-06-06T00:00:00.000Z",
     "rds-coverage-nightly",
   );
@@ -486,7 +493,14 @@ Deno.test("renderMarkdown: a pipe in a table cell is escaped", () => {
     collected,
     agg,
     rollup,
-    [],
+    {
+      buckets: [],
+      burstable: [],
+      serverless: [],
+      unparseable: [],
+      nonSizeFlex: [],
+      inactiveReserved: [],
+    },
     "2026-06-06T00:00:00.000Z",
     "wf",
   );

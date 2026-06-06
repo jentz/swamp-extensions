@@ -433,7 +433,7 @@ Deno.test("aggregate: unparseable class is surfaced, not silently dropped", () =
 });
 
 Deno.test("aggregateByAccount: same family in two accounts stays split by owner", () => {
-  const acctBuckets = aggregateByAccount(
+  const { buckets: acctBuckets } = aggregateByAccount(
     [
       inst({
         accountId: "111",
@@ -465,8 +465,10 @@ Deno.test("aggregateByAccount: same family in two accounts stays split by owner"
   assertEquals(beta.reservedLargeEq, 0); // not covered when sharing is off
 });
 
-Deno.test("aggregateByAccount: excludes burstable / serverless / inactive, like org-wide", () => {
-  const acctBuckets = aggregateByAccount(
+Deno.test("aggregateByAccount: surfaces burstable / serverless / inactive per account, like org-wide", () => {
+  // Previously these classes were silently dropped on the per-account path. They
+  // must now appear in the per-account carve-out structures, not vanish.
+  const acct = aggregateByAccount(
     [
       inst({
         accountName: "x",
@@ -486,9 +488,105 @@ Deno.test("aggregateByAccount: excludes burstable / serverless / inactive, like 
     ],
     [ri({ accountName: "x", state: "retired", dbInstanceCount: 9 })],
   );
-  assertEquals(acctBuckets.length, 1);
-  assertEquals(acctBuckets[0].runningLargeEq, 1);
-  assertEquals(acctBuckets[0].reservedLargeEq, 0);
+  // The size-flex bucket is still the only large-eq line.
+  assertEquals(acct.buckets.length, 1);
+  assertEquals(acct.buckets[0].runningLargeEq, 1);
+  assertEquals(acct.buckets[0].reservedLargeEq, 0);
+  // ...but burstable, serverless, and the inactive reservation are now surfaced.
+  assertEquals(acct.burstable.length, 1);
+  assertEquals(acct.burstable[0].family, "t4g");
+  assertEquals(acct.burstable[0].runningInstances, 1);
+  assertEquals(acct.serverless.length, 1);
+  assertEquals(acct.serverless[0].count, 1);
+  assertEquals(acct.inactiveReserved.length, 1);
+  assertEquals(acct.inactiveReserved[0].count, 1); // one retired RI row
+});
+
+Deno.test("aggregateByAccount: an all-burstable account and an all-serverless account are not dropped", () => {
+  // The ticket's worked example: three accounts, RI sharing OFF, all running.
+  // prod runs size-flex r7g; burst runs only t4g; server runs only serverless.
+  // Pre-fix, burst and server produced zero rows and vanished entirely.
+  const acct = aggregateByAccount(
+    [
+      inst({
+        accountId: "111111111111",
+        accountName: "prod",
+        dbInstanceClass: "db.r7g.2xlarge",
+        engine: "postgres",
+        dbInstanceIdentifier: "p1",
+      }),
+      inst({
+        accountId: "222222222222",
+        accountName: "burst",
+        dbInstanceClass: "db.t4g.medium",
+        engine: "mysql",
+        dbInstanceIdentifier: "b1",
+      }),
+      inst({
+        accountId: "222222222222",
+        accountName: "burst",
+        dbInstanceClass: "db.t4g.medium",
+        engine: "mysql",
+        dbInstanceIdentifier: "b2",
+      }),
+      inst({
+        accountId: "333333333333",
+        accountName: "server",
+        dbInstanceClass: "db.serverless",
+        engine: "aurora-postgresql",
+        dbInstanceIdentifier: "s1",
+      }),
+    ],
+    [],
+  );
+  // prod is the only large-eq bucket.
+  assertEquals(acct.buckets.length, 1);
+  assertEquals(acct.buckets[0].accountName, "prod");
+  // burst's two t4g.medium surface in the per-account burstable table.
+  const burst = acct.burstable.find((l) => l.accountName === "burst")!;
+  assertEquals(burst.family, "t4g");
+  assertEquals(burst.size, "medium");
+  assertEquals(burst.runningInstances, 2);
+  // server's Aurora Serverless v2 surfaces in the per-account serverless table.
+  const server = acct.serverless.find((s) => s.accountName === "server")!;
+  assertEquals(server.engine, "aurora-postgresql");
+  assertEquals(server.count, 1);
+});
+
+Deno.test("aggregateByAccount: a parseable-but-unnormalizable size (.metal) surfaces per account", () => {
+  // AC#8 — natural result of the shared classifier; no path-specific branch.
+  const acct = aggregateByAccount(
+    [
+      inst({
+        accountName: "x",
+        dbInstanceClass: "db.r7g.metal",
+        dbInstanceIdentifier: "m",
+      }),
+    ],
+    [],
+  );
+  assertEquals(acct.buckets.length, 0);
+  assertEquals(acct.unparseable.length, 1);
+  assertEquals(acct.unparseable[0].dbInstanceClass, "db.r7g.metal");
+  assertEquals(acct.unparseable[0].source, "instance");
+  assertEquals(acct.unparseable[0].count, 1);
+});
+
+Deno.test("aggregateByAccount: a reserved serverless row is dropped, mirroring org-wide", () => {
+  // AC#7 — the per-account serverless tally counts running only; an active
+  // reserved serverless row must neither bucket nor inflate the serverless table.
+  const acct = aggregateByAccount(
+    [],
+    [ri({
+      accountName: "x",
+      dbInstanceClass: "db.serverless",
+      dbInstanceCount: 3,
+      state: "active",
+    })],
+  );
+  assertEquals(acct.buckets.length, 0);
+  assertEquals(acct.serverless.length, 0);
+  assertEquals(acct.inactiveReserved.length, 0); // it was active, just dropped
 });
 
 Deno.test("rollupByGeneration: collapses engine and deployment within region x family", () => {
@@ -625,7 +723,7 @@ Deno.test("aggregate: a reserved Aurora RI flagged multiAZ still nets in the Sin
 });
 
 Deno.test("aggregateByAccount: Multi-AZ doubles and Aurora stays Single-AZ 1x", () => {
-  const acctBuckets = aggregateByAccount(
+  const { buckets: acctBuckets } = aggregateByAccount(
     [
       inst({
         accountName: "x",
@@ -781,7 +879,7 @@ Deno.test("aggregate: Oracle License-Included capacity is carved out, not normal
   assertEquals(agg.nonSizeFlex[0].runningInstances, 1);
 });
 
-Deno.test("aggregateByAccount: excludes SQL Server and Oracle LI from the large-eq buckets", () => {
+Deno.test("aggregateByAccount: SQL Server and Oracle LI surface in the per-account non-size-flex table", () => {
   const acct = aggregateByAccount(
     [
       inst({
@@ -808,8 +906,149 @@ Deno.test("aggregateByAccount: excludes SQL Server and Oracle LI from the large-
     ],
     [],
   );
-  // Only the EE BYOL instance is size-flex eligible.
-  assertEquals(acct.length, 1);
-  assertEquals(acct[0].engine, "oracle-ee-byol");
-  assertEquals(acct[0].runningLargeEq, 1);
+  // Only the EE BYOL instance is size-flex eligible — the one large-eq bucket.
+  assertEquals(acct.buckets.length, 1);
+  assertEquals(acct.buckets[0].engine, "oracle-ee-byol");
+  assertEquals(acct.buckets[0].runningLargeEq, 1);
+  // ...but the SQL Server LI and Oracle SE2 LI capacity is no longer dropped:
+  // it surfaces in the per-account non-size-flex table, attributable to "x".
+  assertEquals(acct.nonSizeFlex.length, 2);
+  const sql = acct.nonSizeFlex.find((l) => l.engine === "sqlserver-se-li")!;
+  const ora = acct.nonSizeFlex.find((l) => l.engine === "oracle-se2-li")!;
+  assertEquals(sql.accountName, "x");
+  assertEquals(sql.size, "large");
+  assertEquals(sql.runningInstances, 1);
+  assertEquals(ora.runningInstances, 1);
+});
+
+Deno.test("aggregateByAccount: an all-SQL-Server account is not silently dropped", () => {
+  // The non-size-flex analogue of the all-burstable / all-serverless case: an
+  // account that runs ONLY SQL Server would otherwise produce zero per-account
+  // rows and vanish from the RI-sharing-OFF view entirely.
+  const acct = aggregateByAccount(
+    [
+      inst({
+        accountId: "444444444444",
+        accountName: "winsql",
+        dbInstanceClass: "db.r6i.xlarge",
+        engine: "sqlserver-ee",
+        licenseModel: "license-included",
+        dbInstanceIdentifier: "w1",
+      }),
+    ],
+    [
+      ri({
+        accountId: "444444444444",
+        accountName: "winsql",
+        dbInstanceClass: "db.r6i.xlarge",
+        productDescription: "sqlserver-ee(li)",
+        dbInstanceCount: 1,
+      }),
+    ],
+  );
+  assertEquals(acct.buckets.length, 0);
+  assertEquals(acct.nonSizeFlex.length, 1);
+  const l = acct.nonSizeFlex[0];
+  assertEquals(l.accountName, "winsql");
+  assertEquals(l.engine, "sqlserver-ee-li");
+  assertEquals(l.size, "xlarge");
+  assertEquals(l.deployment, "Single-AZ");
+  assertEquals(l.runningInstances, 1);
+  assertEquals(l.reservedInstances, 1); // same-row reservation nets visibly
+});
+
+// ---------------------------------------------------------------------------
+// Org-wide regression snapshot (AC#6) — pins the full Aggregation across all
+// five classify() kinds so the shared-classifier refactor cannot change the
+// org-wide outputs. A representative fleet hits bucket / burstable / serverless
+// / nonSizeFlex / unparseable plus an inactive reservation.
+// ---------------------------------------------------------------------------
+
+Deno.test("aggregate: full-fleet snapshot is unchanged by the shared classifier", () => {
+  const agg = aggregate(
+    [
+      inst({
+        dbInstanceClass: "db.r7g.large",
+        engine: "postgres",
+        dbInstanceIdentifier: "pg",
+      }),
+      inst({
+        dbInstanceClass: "db.t4g.medium",
+        engine: "mysql",
+        dbInstanceIdentifier: "bu",
+      }),
+      inst({
+        dbInstanceClass: "db.serverless",
+        engine: "aurora-postgresql",
+        dbInstanceIdentifier: "sv",
+      }),
+      inst({
+        dbInstanceClass: "db.r6i.large",
+        engine: "sqlserver-se",
+        licenseModel: "license-included",
+        dbInstanceIdentifier: "ms",
+      }),
+      inst({
+        dbInstanceClass: "db.r7g.metal",
+        engine: "postgres",
+        dbInstanceIdentifier: "mt",
+      }),
+    ],
+    [
+      ri({
+        dbInstanceClass: "db.r7g.large",
+        productDescription: "postgresql",
+        dbInstanceCount: 1,
+      }),
+      ri({ state: "retired", dbInstanceCount: 9 }),
+    ],
+  );
+
+  assertEquals(agg, {
+    buckets: [
+      {
+        region: "us-east-1",
+        family: "r7g",
+        generation: "7g",
+        engine: "postgres",
+        deployment: "Single-AZ",
+        runningLargeEq: 1,
+        reservedLargeEq: 1,
+        runningInstances: 1,
+        reservedInstances: 1,
+      },
+    ],
+    burstable: [
+      {
+        region: "us-east-1",
+        family: "t4g",
+        size: "medium",
+        runningInstances: 1,
+        reservedInstances: 0,
+      },
+    ],
+    nonSizeFlex: [
+      {
+        region: "us-east-1",
+        family: "r6i",
+        engine: "sqlserver-se-li",
+        size: "large",
+        deployment: "Single-AZ",
+        runningInstances: 1,
+        reservedInstances: 0,
+      },
+    ],
+    serverless: [
+      { region: "us-east-1", engine: "aurora-postgresql", count: 1 },
+    ],
+    unparseable: [
+      {
+        region: "us-east-1",
+        dbInstanceClass: "db.r7g.metal",
+        source: "instance",
+        count: 1,
+      },
+    ],
+    inactiveReserved: 1,
+  });
 });
