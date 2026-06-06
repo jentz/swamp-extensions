@@ -19,6 +19,8 @@ import {
   deploymentFor,
   type InstanceRecord,
   normalizedUnits,
+  normalizeLicense,
+  parseEngineIdentity,
   parseInstanceClass,
   type ReservedRecord,
   rollupByGeneration,
@@ -145,6 +147,133 @@ Deno.test("canonicalEngine: oracle / sqlserver editions collapse to base engine"
 });
 
 // ---------------------------------------------------------------------------
+// normalizeLicense — reserved suffix and running LicenseModel onto one token
+// ---------------------------------------------------------------------------
+
+Deno.test("normalizeLicense: maps both suffix and LicenseModel spellings", () => {
+  assertEquals(normalizeLicense("byol"), "byol");
+  assertEquals(normalizeLicense("bring-your-own-license"), "byol");
+  assertEquals(normalizeLicense("li"), "li");
+  assertEquals(normalizeLicense("license-included"), "li");
+  assertEquals(normalizeLicense("mpl"), "mpl");
+  assertEquals(normalizeLicense("marketplace-license"), "mpl");
+  // single-license engines carry no bucketing info
+  assertEquals(normalizeLicense("general-public-license"), "");
+  assertEquals(normalizeLicense("postgresql-license"), "");
+  assertEquals(normalizeLicense(""), "");
+});
+
+// ---------------------------------------------------------------------------
+// parseEngineIdentity — edition + license preserved; size-flex eligibility
+// ---------------------------------------------------------------------------
+
+Deno.test("parseEngineIdentity: open-source and Aurora collapse to a base token", () => {
+  assertEquals(parseEngineIdentity("postgres").token, "postgres");
+  assertEquals(parseEngineIdentity("postgresql").token, "postgres");
+  assertEquals(
+    parseEngineIdentity("aurora-postgresql").token,
+    "aurora-postgresql",
+  );
+  assertEquals(parseEngineIdentity("mysql").token, "mysql");
+  // Legacy Aurora MySQL 5.6 reports a bare `aurora` on both sides — it must net
+  // with itself and stay size-flexible.
+  assertEquals(parseEngineIdentity("aurora").token, "aurora");
+  for (const e of ["postgres", "mysql", "mariadb", "aurora-mysql", "aurora"]) {
+    assertEquals(parseEngineIdentity(e).sizeFlexEligible, true);
+  }
+});
+
+Deno.test("parseEngineIdentity: reserved-side (byol)/(li) suffix parsed, including whitespace", () => {
+  const eeByol = parseEngineIdentity("oracle-ee(byol)");
+  assertEquals(eeByol.engine, "oracle");
+  assertEquals(eeByol.edition, "ee");
+  assertEquals(eeByol.license, "byol");
+  assertEquals(eeByol.token, "oracle-ee-byol");
+  assertEquals(eeByol.sizeFlexEligible, true);
+
+  // The live value set includes a space before the paren: "oracle-se2 (byol)".
+  const se2Byol = parseEngineIdentity("oracle-se2 (byol)");
+  assertEquals(se2Byol.edition, "se2");
+  assertEquals(se2Byol.license, "byol");
+  assertEquals(se2Byol.token, "oracle-se2-byol");
+  assertEquals(se2Byol.sizeFlexEligible, true);
+
+  const se2Li = parseEngineIdentity("oracle-se2(li)");
+  assertEquals(se2Li.token, "oracle-se2-li");
+  assertEquals(se2Li.sizeFlexEligible, false); // Oracle LI is not size-flexible
+});
+
+Deno.test("parseEngineIdentity: SQL Server is never size-flexible, edition preserved", () => {
+  const seLi = parseEngineIdentity("sqlserver-se(li)");
+  assertEquals(seLi.engine, "sqlserver");
+  assertEquals(seLi.edition, "se");
+  assertEquals(seLi.token, "sqlserver-se-li");
+  assertEquals(seLi.sizeFlexEligible, false);
+  // running-side sqlserver-ee with no license model infers LI (standard RDS).
+  const eeRunning = parseEngineIdentity("sqlserver-ee");
+  assertEquals(eeRunning.token, "sqlserver-ee-li");
+  assertEquals(eeRunning.sizeFlexEligible, false);
+});
+
+Deno.test("parseEngineIdentity: running LicenseModel drives Oracle SE2 BYOL-vs-LI routing", () => {
+  const byol = parseEngineIdentity("oracle-se2", "bring-your-own-license");
+  assertEquals(byol.token, "oracle-se2-byol");
+  assertEquals(byol.sizeFlexEligible, true);
+
+  const li = parseEngineIdentity("oracle-se2", "license-included");
+  assertEquals(li.token, "oracle-se2-li");
+  assertEquals(li.sizeFlexEligible, false);
+
+  // Unknown license: SE2 is genuinely ambiguous (LI and BYOL both exist), so it
+  // stays out of the size-flex netting rather than risk a false net.
+  const unknown = parseEngineIdentity("oracle-se2", "");
+  assertEquals(unknown.license, "");
+  assertEquals(unknown.token, "oracle-se2");
+  assertEquals(unknown.sizeFlexEligible, false);
+});
+
+Deno.test("parseEngineIdentity: Oracle EE is BYOL-only even when license unknown", () => {
+  // EE has no License-Included offering, so a missing license infers BYOL and
+  // EE stays size-flexible.
+  const ee = parseEngineIdentity("oracle-ee", "");
+  assertEquals(ee.license, "byol");
+  assertEquals(ee.token, "oracle-ee-byol");
+  assertEquals(ee.sizeFlexEligible, true);
+});
+
+Deno.test("parseEngineIdentity: RDS Custom keeps a distinct engine and is not size-flexible", () => {
+  const custOra = parseEngineIdentity("custom-oracle-ee-cdb");
+  assertEquals(custOra.engine, "custom-oracle");
+  assertEquals(custOra.edition, "ee");
+  assertEquals(custOra.sizeFlexEligible, false);
+
+  const custSql = parseEngineIdentity("custom-sqlserver-se(byol)");
+  assertEquals(custSql.engine, "custom-sqlserver");
+  assertEquals(custSql.token, "custom-sqlserver-se-byol");
+  assertEquals(custSql.sizeFlexEligible, false);
+});
+
+Deno.test("parseEngineIdentity: spaced 'sql server' fallback does not invent a 'se' edition", () => {
+  // The "se" inside "server" must not be mistaken for Standard Edition when the
+  // base keyword can't be located (the editionAfter idx<0 guard).
+  const id = parseEngineIdentity("sql server");
+  assertEquals(id.engine, "sqlserver");
+  assertEquals(id.edition, "");
+  assertEquals(id.token, "sqlserver");
+  assertEquals(id.sizeFlexEligible, false);
+});
+
+Deno.test("parseEngineIdentity: Db2 preserves edition and license; stays size-flexible", () => {
+  const ae = parseEngineIdentity("db2-ae(byol)");
+  assertEquals(ae.engine, "db2");
+  assertEquals(ae.edition, "ae");
+  assertEquals(ae.token, "db2-ae-byol");
+  assertEquals(ae.sizeFlexEligible, true);
+  // marketplace vs byol must not cross-net.
+  assertEquals(parseEngineIdentity("db2-se(mpl)").token, "db2-se-mpl");
+});
+
+// ---------------------------------------------------------------------------
 // aggregate + rollup — the headline math
 // ---------------------------------------------------------------------------
 
@@ -158,6 +287,7 @@ function inst(over: Partial<InstanceRecord>): InstanceRecord {
     dbInstanceClass: "db.r7g.large",
     engine: "postgres",
     engineVersion: "16",
+    licenseModel: "",
     multiAZ: false,
     status: "available",
     clusterId: "",
@@ -520,4 +650,166 @@ Deno.test("aggregateByAccount: Multi-AZ doubles and Aurora stays Single-AZ 1x", 
   assertEquals(pg.runningLargeEq, 2); // large × 2 for Multi-AZ
   assertEquals(au.deployment, "Single-AZ");
   assertEquals(au.runningLargeEq, 1); // Aurora never doubles
+});
+
+// ---------------------------------------------------------------------------
+// Edition / license non-collapse + non-size-flex carve-out (task-58)
+// ---------------------------------------------------------------------------
+
+Deno.test("aggregate: an SE2 License-Included RI does not cover an EE BYOL instance (task example)", () => {
+  // us-east-1 / r6i / Single-AZ: 1× oracle-ee BYOL xlarge running; 1× oracle-se2
+  // LI xlarge reserved. The old code collapsed both to `oracle` and reported
+  // gap 0 ("fully covered"). They must not net.
+  const agg = aggregate(
+    [
+      inst({
+        region: "us-east-1",
+        dbInstanceClass: "db.r6i.xlarge",
+        engine: "oracle-ee",
+        licenseModel: "bring-your-own-license",
+      }),
+    ],
+    [
+      ri({
+        region: "us-east-1",
+        dbInstanceClass: "db.r6i.xlarge",
+        productDescription: "oracle-se2(li)",
+        dbInstanceCount: 1,
+      }),
+    ],
+  );
+  // EE BYOL is size-flex eligible → a large-eq bucket with NO reservation.
+  assertEquals(agg.buckets.length, 1);
+  const b = agg.buckets[0];
+  assertEquals(b.engine, "oracle-ee-byol");
+  assertEquals(b.runningLargeEq, 2); // xlarge
+  assertEquals(b.reservedLargeEq, 0); // the SE2 LI RI cannot cover it
+  // The SE2 LI reservation lands unmatched in the non-size-flex carve-out.
+  assertEquals(agg.nonSizeFlex.length, 1);
+  const c = agg.nonSizeFlex[0];
+  assertEquals(c.engine, "oracle-se2-li");
+  assertEquals(c.runningInstances, 0);
+  assertEquals(c.reservedInstances, 1);
+  // The EE instance now surfaces as uncovered (gap 2), not "fully covered".
+  const rollup = rollupByGeneration(agg.buckets);
+  assertEquals(rollup[0].gapLargeEq, 2);
+});
+
+Deno.test("aggregate: SQL Server is not size-flexible — an xlarge RI does not cover two large", () => {
+  const agg = aggregate(
+    [
+      inst({
+        dbInstanceClass: "db.r6i.large",
+        engine: "sqlserver-se",
+        licenseModel: "license-included",
+        dbInstanceIdentifier: "a",
+      }),
+      inst({
+        dbInstanceClass: "db.r6i.large",
+        engine: "sqlserver-se",
+        licenseModel: "license-included",
+        dbInstanceIdentifier: "b",
+      }),
+    ],
+    [
+      ri({
+        dbInstanceClass: "db.r6i.xlarge",
+        productDescription: "sqlserver-se(li)",
+        dbInstanceCount: 1,
+      }),
+    ],
+  );
+  // Nothing in the size-flex buckets; everything in the carve-out.
+  assertEquals(agg.buckets.length, 0);
+  const large = agg.nonSizeFlex.find((l) => l.size === "large")!;
+  const xlarge = agg.nonSizeFlex.find((l) => l.size === "xlarge")!;
+  assertEquals(large.engine, "sqlserver-se-li");
+  assertEquals(large.runningInstances, 2);
+  assertEquals(large.reservedInstances, 0); // xlarge RI does not cover large
+  assertEquals(xlarge.runningInstances, 0);
+  assertEquals(xlarge.reservedInstances, 1);
+});
+
+Deno.test("aggregate: Oracle BYOL keeps large-eq netting split by edition", () => {
+  // ee and se2, both BYOL — separate buckets; an SE2 RI never nets against EE.
+  const agg = aggregate(
+    [
+      inst({
+        dbInstanceClass: "db.r6i.large",
+        engine: "oracle-ee",
+        licenseModel: "bring-your-own-license",
+        dbInstanceIdentifier: "ee",
+      }),
+      inst({
+        dbInstanceClass: "db.r6i.large",
+        engine: "oracle-se2",
+        licenseModel: "bring-your-own-license",
+        dbInstanceIdentifier: "se2",
+      }),
+    ],
+    [
+      ri({
+        dbInstanceClass: "db.r6i.large",
+        productDescription: "oracle-se2 (byol)",
+        dbInstanceCount: 1,
+      }),
+    ],
+  );
+  assertEquals(agg.buckets.length, 2);
+  const ee = agg.buckets.find((b) => b.engine === "oracle-ee-byol")!;
+  const se2 = agg.buckets.find((b) => b.engine === "oracle-se2-byol")!;
+  assertEquals(ee.reservedLargeEq, 0); // SE2 RI must not cover EE
+  assertEquals(se2.reservedLargeEq, 1); // SE2 RI covers the SE2 instance
+  assertEquals(agg.nonSizeFlex.length, 0); // both BYOL → both size-flex eligible
+});
+
+Deno.test("aggregate: Oracle License-Included capacity is carved out, not normalized", () => {
+  const agg = aggregate(
+    [
+      inst({
+        dbInstanceClass: "db.r6i.xlarge",
+        engine: "oracle-se2",
+        licenseModel: "license-included",
+      }),
+    ],
+    [],
+  );
+  assertEquals(agg.buckets.length, 0);
+  assertEquals(agg.nonSizeFlex.length, 1);
+  assertEquals(agg.nonSizeFlex[0].engine, "oracle-se2-li");
+  assertEquals(agg.nonSizeFlex[0].size, "xlarge");
+  assertEquals(agg.nonSizeFlex[0].runningInstances, 1);
+});
+
+Deno.test("aggregateByAccount: excludes SQL Server and Oracle LI from the large-eq buckets", () => {
+  const acct = aggregateByAccount(
+    [
+      inst({
+        accountName: "x",
+        dbInstanceClass: "db.r6i.large",
+        engine: "sqlserver-se",
+        licenseModel: "license-included",
+        dbInstanceIdentifier: "s",
+      }),
+      inst({
+        accountName: "x",
+        dbInstanceClass: "db.r6i.large",
+        engine: "oracle-se2",
+        licenseModel: "license-included",
+        dbInstanceIdentifier: "o",
+      }),
+      inst({
+        accountName: "x",
+        dbInstanceClass: "db.r6i.large",
+        engine: "oracle-ee",
+        licenseModel: "bring-your-own-license",
+        dbInstanceIdentifier: "e",
+      }),
+    ],
+    [],
+  );
+  // Only the EE BYOL instance is size-flex eligible.
+  assertEquals(acct.length, 1);
+  assertEquals(acct[0].engine, "oracle-ee-byol");
+  assertEquals(acct[0].runningLargeEq, 1);
 });

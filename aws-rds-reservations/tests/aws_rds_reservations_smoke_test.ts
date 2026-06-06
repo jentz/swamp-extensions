@@ -164,6 +164,7 @@ Deno.test("smoke: two accounts × two regions sweep in one pass", async () => {
           DBInstanceIdentifier: "billing-db",
           DBInstanceClass: "db.m6g.large",
           Engine: "mysql",
+          LicenseModel: "general-public-license",
           DBInstanceStatus: "available",
         }],
       },
@@ -210,6 +211,16 @@ Deno.test("smoke: two accounts × two regions sweep in one pass", async () => {
   assertEquals((orders.data as InstanceRecord).accountId, "111122223333");
   assertEquals((orders.data as InstanceRecord).accountName, "prod");
   assertEquals((orders.data as InstanceRecord).region, "us-east-1");
+  // licenseModel is captured when AWS reports it, and backfills to "" when the
+  // SDK omits it (orders-db carried no LicenseModel in the fixture).
+  assertEquals((orders.data as InstanceRecord).licenseModel, "");
+  const billing = instances.find((i) =>
+    (i.data as InstanceRecord).dbInstanceIdentifier === "billing-db"
+  )!;
+  assertEquals(
+    (billing.data as InstanceRecord).licenseModel,
+    "general-public-license",
+  );
 
   // Storage keys are unique per (account, region, id) — no cross-account clash.
   const keys = new Set(instances.map((i) => i.key));

@@ -39,8 +39,8 @@ the repository's fan-out-over-loops convention). For each `(account, region)`
 it writes:
 
 - one **`instance`** resource per provisioned DB instance, carrying account id,
-  region, instance class, engine, Multi-AZ flag, status, owning cluster id
-  (empty for standalone instances), storage type, and tags;
+  region, instance class, engine, license model, Multi-AZ flag, status, owning
+  cluster id (empty for standalone instances), storage type, and tags;
 - one **`reserved`** resource per reservation, carrying the offered class,
   product description (engine), Multi-AZ flag, instance count, state, offering
   type, and term;
@@ -127,8 +127,9 @@ Storage key: `instance-<accountId>-<region>--<dbInstanceIdentifier>`.
 | `region`               | `string`             | AWS region. |
 | `dbInstanceIdentifier` | `string`             | DB instance identifier. |
 | `dbInstanceClass`      | `string`             | e.g. `db.r7g.2xlarge`. |
-| `engine`               | `string`             | e.g. `postgres`, `aurora-postgresql`, `mysql`. |
+| `engine`               | `string`             | e.g. `postgres`, `aurora-postgresql`, `mysql`, `oracle-ee`, `sqlserver-se`. |
 | `engineVersion`        | `string`             | Engine version. |
+| `licenseModel`         | `string`             | e.g. `license-included`, `bring-your-own-license`, `general-public-license`; `""` if unreported (Aurora / RDS Custom). Decisive for Oracle BYOL-vs-LI size-flex routing in the coverage report. |
 | `multiAZ`              | `boolean`            | Multi-AZ deployment flag. |
 | `status`               | `string`             | Lifecycle status, e.g. `available`. |
 | `clusterId`            | `string`             | Owning DB cluster id, or `""` for a standalone instance. |
