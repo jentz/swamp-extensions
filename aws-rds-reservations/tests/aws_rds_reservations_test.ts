@@ -33,6 +33,9 @@ import {
   paginate,
   resolveBootstrapRegion,
   runSweep,
+  safeDestroy,
+  sdkApiWithFactories,
+  type SdkClient,
   type SweepTarget,
   tagsFromAws,
 } from "../aws_rds_reservations.ts";
@@ -677,4 +680,245 @@ Deno.test("paginate: post-exhaustion throttle propagates to the caller", async (
     Error,
     "Throttling",
   );
+});
+
+// ---------------------------------------------------------------------------
+// SDK client lifetime — injected client factories prove every RDSClient /
+// STSClient is destroyed exactly once on success, throttle-then-success, and
+// thrown-error paths, without resetting pagination or masking the error
+// (task-82). Driven through sdkApiWithFactories so the public AwsApi /
+// ApiFactory surface and production defaults stay untouched.
+// ---------------------------------------------------------------------------
+
+// A no-throttle, no-wait retry surface so sdkApiWithFactories' internal
+// retryDeps (real Math.random / setTimeout) is bypassed deterministically only
+// where the fake send drives the throttle. The factory clients still go through
+// the model's own retryDeps, so we keep the throttle on the FIRST send and rely
+// on the standard full-jitter retry to re-issue — matching how paginate /
+// getCallerAccountId tests simulate throttle-then-success.
+
+/**
+ * Build a fake SDK client recording send + destroy, with scripted send behavior.
+ *
+ * `send` first asserts the client has NOT been destroyed yet. This gives the
+ * fake teeth against a premature-destroy regression: if `destroy()` ever fires
+ * before the pagination drain completes (e.g. a lost `await` on
+ * `return await paginate(...)`, so the `finally` runs while a later page is
+ * still in flight), the next page's `send` lands after `destroyCount` has been
+ * bumped and trips this assertion — turning a silent ordering bug into a red
+ * test. A counter-only `destroy` cannot catch this, since the post-drain
+ * `destroyCount === 1` assertion stays green either way.
+ */
+function fakeClient<C, R>(
+  send: (command: C) => Promise<R>,
+): SdkClient<C, R> & { destroyCount: number; sendCount: number } {
+  const client = {
+    sendCount: 0,
+    destroyCount: 0,
+    send(command: C): Promise<R> {
+      assertEquals(
+        client.destroyCount,
+        0,
+        "send() called after destroy() — client destroyed before the drain finished",
+      );
+      client.sendCount++;
+      return send(command);
+    },
+    destroy(): void {
+      client.destroyCount++;
+    },
+  };
+  return client;
+}
+
+/** Minimal view of an AWS SDK command — its `input` carries the `Marker`. */
+interface DescribeDBInstancesCommandLike {
+  input?: { Marker?: string };
+}
+
+function throttle(): Error {
+  const err = new Error("Throttling: slow down");
+  err.name = "ThrottlingException";
+  return err;
+}
+
+const noopLogger = { debug() {}, info() {}, warn() {} };
+
+Deno.test("safeDestroy: invokes destroy once and swallows a destroy() failure", () => {
+  let destroyed = 0;
+  safeDestroy({
+    destroy() {
+      destroyed++;
+    },
+  });
+  assertEquals(destroyed, 1);
+
+  // A throwing destroy must not propagate; the debug logger is invoked.
+  const logs: string[] = [];
+  safeDestroy(
+    {
+      destroy() {
+        throw new Error("socket already closed");
+      },
+    },
+    { debug: (msg: string) => logs.push(msg) },
+  );
+  assertEquals(logs.length, 1);
+  // Tolerates a missing client / missing destroy.
+  safeDestroy(undefined);
+  safeDestroy({});
+});
+
+Deno.test("sdkApi getAccountId: destroys the STS client once on success", async () => {
+  const sts = fakeClient(() => Promise.resolve({ Account: "111122223333" }));
+  const api = sdkApiWithFactories(
+    undefined,
+    "us-east-1",
+    noopLogger,
+    undefined,
+    () => sts,
+  );
+  const accountId = await api.getAccountId();
+  assertEquals(accountId, "111122223333");
+  assertEquals(sts.sendCount, 1);
+  assertEquals(sts.destroyCount, 1);
+});
+
+Deno.test("sdkApi getAccountId: destroys the STS client once after throttle-then-success", async () => {
+  let calls = 0;
+  const sts = fakeClient(() => {
+    calls++;
+    if (calls === 1) return Promise.reject(throttle());
+    return Promise.resolve({ Account: "444455556666" });
+  });
+  const api = sdkApiWithFactories(
+    undefined,
+    "us-east-1",
+    noopLogger,
+    undefined,
+    () => sts,
+  );
+  const accountId = await api.getAccountId();
+  assertEquals(accountId, "444455556666");
+  assertEquals(calls, 2);
+  // Destroyed exactly once even though send retried — destroy is per-client,
+  // after the whole drain, never per-attempt.
+  assertEquals(sts.destroyCount, 1);
+});
+
+Deno.test("sdkApi getAccountId: destroys the STS client once on thrown error, error propagates", async () => {
+  const boom = new Error("AccessDenied");
+  boom.name = "AccessDeniedException";
+  const sts = fakeClient(() => Promise.reject(boom));
+  const api = sdkApiWithFactories(
+    undefined,
+    "us-east-1",
+    noopLogger,
+    undefined,
+    () => sts,
+  );
+  await assertRejects(() => api.getAccountId(), Error, "AccessDenied");
+  assertEquals(sts.destroyCount, 1);
+});
+
+Deno.test("sdkApi describeDBInstances: destroys the RDS client once on multi-page success, after the drain", async () => {
+  // Two pages on the happy path. The fake's send asserts destroyCount === 0,
+  // so if a lost `await` on `return await paginate(...)` let the finally's
+  // safeDestroy fire before the second page's send, that send would land
+  // post-destroy and trip the in-send assertion — catching the ordering bug a
+  // counter-only fake misses. destroy still runs exactly once, after the drain.
+  const rds = fakeClient((
+    command: DescribeDBInstancesCommandLike,
+  ): Promise<{ DBInstances: AwsDBInstance[]; Marker: string | undefined }> => {
+    const marker = command.input?.Marker;
+    if (marker === undefined) {
+      return Promise.resolve({
+        DBInstances: [{ DBInstanceIdentifier: "orders-db" }],
+        Marker: "m1",
+      });
+    }
+    return Promise.resolve({
+      DBInstances: [{ DBInstanceIdentifier: "carts-db" }],
+      Marker: undefined,
+    });
+  });
+  const created: string[] = [];
+  const api = sdkApiWithFactories(
+    undefined,
+    "us-east-1",
+    noopLogger,
+    (region) => {
+      created.push(region);
+      return rds;
+    },
+  );
+  const out = await api.describeDBInstances("eu-north-1");
+  assertEquals(out.map((d) => d.DBInstanceIdentifier), [
+    "orders-db",
+    "carts-db",
+  ]);
+  assertEquals(rds.sendCount, 2);
+  assertEquals(created, ["eu-north-1"]);
+  assertEquals(rds.destroyCount, 1);
+});
+
+Deno.test("sdkApi describeDBInstances: destroys the RDS client once after throttle-then-success, no pagination reset", async () => {
+  // The first send throttles, then the drain proceeds across two real pages.
+  // destroy must run exactly once after the full drain, and the marker loop
+  // must NOT restart from page one. The fake's send also asserts
+  // destroyCount === 0, so a lost `await` on `return await paginate(...)` that
+  // let safeDestroy fire mid-drain would trip the in-send guard on the second
+  // page rather than passing silently.
+  let firstThrottled = false;
+  const markersSeen: (string | undefined)[] = [];
+  const rds = fakeClient((
+    command: DescribeDBInstancesCommandLike,
+  ): Promise<{ DBInstances: AwsDBInstance[]; Marker: string | undefined }> => {
+    const marker = command.input?.Marker;
+    if (marker === undefined && !firstThrottled) {
+      firstThrottled = true;
+      return Promise.reject(throttle());
+    }
+    markersSeen.push(marker);
+    if (marker === undefined) {
+      return Promise.resolve({
+        DBInstances: [{ DBInstanceIdentifier: "a" }],
+        Marker: "m1",
+      });
+    }
+    return Promise.resolve({
+      DBInstances: [{ DBInstanceIdentifier: "b" }],
+      Marker: undefined,
+    });
+  });
+  const api = sdkApiWithFactories(
+    undefined,
+    "us-east-1",
+    noopLogger,
+    () => rds,
+  );
+  const out = await api.describeDBInstances("us-east-1");
+  assertEquals(out.map((d) => d.DBInstanceIdentifier), ["a", "b"]);
+  // Successful page sends saw the first page once then the second marker once —
+  // proving the retry resumed at the same marker, not a drain restart.
+  assertEquals(markersSeen, [undefined, "m1"]);
+  assertEquals(rds.destroyCount, 1);
+});
+
+Deno.test("sdkApi describeReservedDBInstances: destroys the RDS client once on thrown error, error propagates", async () => {
+  const boom = new Error("AccessDenied");
+  boom.name = "AccessDeniedException";
+  const rds = fakeClient(() => Promise.reject(boom));
+  const api = sdkApiWithFactories(
+    undefined,
+    "us-east-1",
+    noopLogger,
+    () => rds,
+  );
+  await assertRejects(
+    () => api.describeReservedDBInstances("us-east-1"),
+    Error,
+    "AccessDenied",
+  );
+  assertEquals(rds.destroyCount, 1);
 });
