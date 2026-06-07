@@ -18,12 +18,12 @@ running-minus-reserved coverage gap.
 
 ## See also: cluster-level vs instance-level scope
 
-This repo ships two RDS extension pairs that work at **different levels** — pick
-the one that matches your question:
+This repo ships RDS extensions that work at **different levels** — pick the
+one that matches your question:
 
-| Pair | Level | Use it when you want… |
-| ---- | ----- | --------------------- |
-| [`@jentz/aws-rds-inventory`](../aws-rds-inventory/) (+ [`-csv`](../aws-rds-inventory-csv/)) | **Cluster** | A CEL-filterable audit of Aurora / Multi-AZ DB **clusters** and their members in one region — one resource per cluster, one per cluster member. |
+| Extension | Level | Use it when you want… |
+| --------- | ----- | --------------------- |
+| [`@jentz/aws-rds-inventory`](../aws-rds-inventory/) | **Cluster** | A CEL-filterable audit of Aurora / Multi-AZ DB **clusters** and their members in one region — one resource per cluster, one per cluster member. |
 | **`@jentz/aws-rds-reservations`** (this) (+ [`-reservation-coverage`](../aws-rds-reservation-coverage/)) | **Instance + reservation** | Every running DB **instance** (Aurora members *and* standalone) plus every **reservation**, swept across many accounts and regions, for reserved-instance coverage planning. |
 
 `aws-rds-inventory` reads `DescribeDBClusters` (cluster shape, single region,

@@ -13,9 +13,8 @@ Pure data shaping — no AWS API access, no mutation.
 
 This is the report half of the **instance + reservation** RDS pair. The
 collector is [`@jentz/aws-rds-reservations`](../aws-rds-reservations/). For
-**cluster-level** RDS work (Aurora / Multi-AZ DB clusters and their members)
-see the sibling pair [`@jentz/aws-rds-inventory`](../aws-rds-inventory/) and its
-CSV report [`@jentz/aws-rds-inventory-csv`](../aws-rds-inventory-csv/).
+**cluster-level** RDS work (Aurora / Multi-AZ DB clusters and their members),
+see [`@jentz/aws-rds-inventory`](../aws-rds-inventory/).
 
 ## The large-equivalent unit
 
