@@ -1205,7 +1205,7 @@ export function rollupByPool(buckets: Bucket[]): PoolRollup[] {
     r.reservedLargeEq += b.reservedLargeEq;
   }
   for (const r of map.values()) {
-    r.gapLargeEq = round2(r.runningLargeEq - r.reservedLargeEq);
+    r.gapLargeEq = gapLargeEq(r);
     r.runningLargeEq = round2(r.runningLargeEq);
     r.reservedLargeEq = round2(r.reservedLargeEq);
   }
@@ -1944,6 +1944,52 @@ export function csvField(value: string): string {
   return value;
 }
 
+/**
+ * The coverage gap for a bucket: running minus reserved large-equivalents,
+ * rounded. The single source of truth for `gap = running − reserved` used by
+ * both CSV and markdown render sites and the pool rollup, so the figure cannot
+ * drift between emitters.
+ *
+ * @param b Any row carrying large-equivalent running/reserved totals.
+ * @returns The rounded gap (positive = under-reserved, negative = over).
+ */
+export function gapLargeEq(
+  b: { runningLargeEq: number; reservedLargeEq: number },
+): number {
+  return round2(b.runningLargeEq - b.reservedLargeEq);
+}
+
+/**
+ * Count the distinct accounts and regions represented across collected
+ * instances, reservations, and scan errors. Errors contribute only when they
+ * carry a non-empty account / region (account- and credential-level failures
+ * have no region). The single source of truth used by both the JSON counts in
+ * {@link report} and the markdown summary in {@link renderMarkdown}, so the two
+ * cannot drift.
+ *
+ * @param collected Decoded rows from {@link collect}.
+ * @returns The distinct account and region counts.
+ */
+export function countAccountsRegions(
+  collected: Collected,
+): { accountCount: number; regionCount: number } {
+  const accounts = new Set<string>();
+  const regions = new Set<string>();
+  for (const i of collected.instances) {
+    accounts.add(i.accountId);
+    regions.add(i.region);
+  }
+  for (const r of collected.reserved) {
+    accounts.add(r.accountId);
+    regions.add(r.region);
+  }
+  for (const e of collected.errors) {
+    if (e.accountId) accounts.add(e.accountId);
+    if (e.region) regions.add(e.region);
+  }
+  return { accountCount: accounts.size, regionCount: regions.size };
+}
+
 function bucketRowValues(b: Bucket): string[] {
   return [
     b.region,
@@ -1953,17 +1999,34 @@ function bucketRowValues(b: Bucket): string[] {
     b.deployment,
     fmtNum(b.runningLargeEq),
     fmtNum(b.reservedLargeEq),
-    fmtNum(round2(b.runningLargeEq - b.reservedLargeEq)),
+    fmtNum(gapLargeEq(b)),
     String(b.runningInstances),
     String(b.reservedInstances),
   ];
 }
 
+/**
+ * Render a gap table as CSV: a header row plus one comma-joined, field-escaped
+ * row per entry, with a trailing newline. The single CSV emitter shared by the
+ * per-bucket and per-account tables; the entry points below differ only by
+ * column set and row projection.
+ *
+ * @param columns Header columns, in order.
+ * @param rows Pre-projected string cells per row (before CSV escaping).
+ * @returns The CSV body (header + rows + trailing newline).
+ */
+function renderCsvTable(
+  columns: readonly string[],
+  rows: string[][],
+): string {
+  const header = columns.join(",");
+  const body = rows.map((r) => r.map(csvField).join(","));
+  return [header, ...body].join("\n") + "\n";
+}
+
 /** Render the actionable per-bucket gap table as CSV (header always present). */
 export function renderCsv(buckets: Bucket[]): string {
-  const header = COLUMNS.join(",");
-  const rows = buckets.map((b) => bucketRowValues(b).map(csvField).join(","));
-  return [header, ...rows].join("\n") + "\n";
+  return renderCsvTable(COLUMNS, buckets.map(bucketRowValues));
 }
 
 /** CSV columns for the per-account gap table, in header order. */
@@ -1982,26 +2045,26 @@ export const ACCOUNT_COLUMNS = [
   "reserved_instances",
 ] as const;
 
+function accountBucketRowValues(b: AccountBucket): string[] {
+  return [
+    b.accountName,
+    b.accountId,
+    b.region,
+    b.family,
+    b.generation,
+    b.engine,
+    b.deployment,
+    fmtNum(b.runningLargeEq),
+    fmtNum(b.reservedLargeEq),
+    fmtNum(gapLargeEq(b)),
+    String(b.runningInstances),
+    String(b.reservedInstances),
+  ];
+}
+
 /** Render the per-account gap table as CSV (header always present). */
 export function renderCsvByAccount(buckets: AccountBucket[]): string {
-  const header = ACCOUNT_COLUMNS.join(",");
-  const rows = buckets.map((b) =>
-    [
-      b.accountName,
-      b.accountId,
-      b.region,
-      b.family,
-      b.generation,
-      b.engine,
-      b.deployment,
-      fmtNum(b.runningLargeEq),
-      fmtNum(b.reservedLargeEq),
-      fmtNum(round2(b.runningLargeEq - b.reservedLargeEq)),
-      String(b.runningInstances),
-      String(b.reservedInstances),
-    ].map(csvField).join(",")
-  );
-  return [header, ...rows].join("\n") + "\n";
+  return renderCsvTable(ACCOUNT_COLUMNS, buckets.map(accountBucketRowValues));
 }
 
 function mdEscape(value: string): string {
@@ -2039,14 +2102,7 @@ export function renderMarkdown(
   const accessDenied = errors.filter((e) => e.kind === "access_denied");
   const otherErrors = errors.filter((e) => e.kind === "other");
 
-  const accounts = new Set<string>();
-  for (const i of collected.instances) accounts.add(i.accountId);
-  for (const r of collected.reserved) accounts.add(r.accountId);
-  for (const e of errors) if (e.accountId) accounts.add(e.accountId);
-  const regions = new Set<string>();
-  for (const i of collected.instances) regions.add(i.region);
-  for (const r of collected.reserved) regions.add(r.region);
-  for (const e of errors) if (e.region) regions.add(e.region);
+  const { accountCount, regionCount } = countAccountsRegions(collected);
 
   const totalRunning = round2(
     agg.buckets.reduce((s, b) => s + b.runningLargeEq, 0),
@@ -2063,8 +2119,8 @@ export function renderMarkdown(
   lines.push("");
   lines.push("## Summary");
   lines.push("");
-  lines.push(`- Accounts seen: **${accounts.size}**`);
-  lines.push(`- Regions covered: **${regions.size}**`);
+  lines.push(`- Accounts seen: **${accountCount}**`);
+  lines.push(`- Regions covered: **${regionCount}**`);
   lines.push(
     `- Size-flexible running capacity: **${fmtNum(totalRunning)}** large-eq ` +
       "(burstable, serverless, and SQL Server / Oracle-LI / RDS Custom carved " +
@@ -2161,7 +2217,7 @@ export function renderMarkdown(
         b.deployment,
         fmtNum(b.runningLargeEq),
         fmtNum(b.reservedLargeEq),
-        fmtNum(round2(b.runningLargeEq - b.reservedLargeEq)),
+        fmtNum(gapLargeEq(b)),
         String(b.runningInstances),
       ]),
     ),
@@ -2202,7 +2258,7 @@ export function renderMarkdown(
         b.deployment,
         fmtNum(b.runningLargeEq),
         fmtNum(b.reservedLargeEq),
-        fmtNum(round2(b.runningLargeEq - b.reservedLargeEq)),
+        fmtNum(gapLargeEq(b)),
       ]),
     ),
   );
@@ -2440,8 +2496,10 @@ export interface ReportJson {
   workflow: string;
   /** ISO timestamp taken at report start; `""` only if the report degraded before the timestamp was captured. */
   generatedAt: string;
-  /** CSV columns, in header order. */
+  /** Per-bucket CSV columns (`csv`), in header order. */
   columns: string[];
+  /** Per-account CSV columns (`csvByAccount`), in header order. */
+  accountColumns: string[];
   /** Accounts represented. */
   accountCount: number;
   /** Regions represented. */
@@ -2500,6 +2558,35 @@ export interface ReportJson {
   csv: string;
 }
 
+/** An empty {@link Collected} — no rows seen. */
+function emptyCollected(): Collected {
+  return { instances: [], reserved: [], errors: [], skipped: 0 };
+}
+
+/** An empty {@link Aggregation} — no buckets or carve-out lines. */
+function emptyAggregation(): Aggregation {
+  return {
+    buckets: [],
+    burstable: [],
+    nonSizeFlex: [],
+    serverless: [],
+    unparseable: [],
+    inactiveReserved: 0,
+  };
+}
+
+/** An empty {@link AccountAggregation} — no per-account rows. */
+function emptyAccountAggregation(): AccountAggregation {
+  return {
+    buckets: [],
+    burstable: [],
+    serverless: [],
+    unparseable: [],
+    nonSizeFlex: [],
+    inactiveReserved: [],
+  };
+}
+
 /**
  * The `@jentz/aws-rds-reservation-coverage` workflow-scope report. Returns
  * `{ markdown, json }`; swamp persists them as `report-{name}` (text/markdown)
@@ -2534,29 +2621,10 @@ export const report = {
       },
     );
 
-    let collected: Collected = {
-      instances: [],
-      reserved: [],
-      errors: [],
-      skipped: 0,
-    };
-    let agg: Aggregation = {
-      buckets: [],
-      burstable: [],
-      nonSizeFlex: [],
-      serverless: [],
-      unparseable: [],
-      inactiveReserved: 0,
-    };
+    let collected: Collected = emptyCollected();
+    let agg: Aggregation = emptyAggregation();
     let rollup: PoolRollup[] = [];
-    let accountAgg: AccountAggregation = {
-      buckets: [],
-      burstable: [],
-      serverless: [],
-      unparseable: [],
-      nonSizeFlex: [],
-      inactiveReserved: [],
-    };
+    let accountAgg: AccountAggregation = emptyAccountAggregation();
     let generatedAt = "";
     let degraded = false;
     let markdown = "";
@@ -2588,7 +2656,20 @@ export const report = {
       tryLog(logger, "warn", "report degraded: {detail}", { detail });
       markdown =
         `# RDS Large-Equivalent Reservation Gap\n\n_Report degraded: ${detail}_\n`;
+      // Reset EVERY derived field to a coherent empty state. The count fields
+      // (instanceCount/reservedCount/accountCount/regionCount/errorsByKind) are
+      // derived from `collected`, while the totals/buckets/rollup come from
+      // `agg`/`accountAgg`; if a step after `collect` threw, the populated
+      // `collected` would otherwise pair with empty `agg`, emitting a payload
+      // that reads "N instances, 0 buckets, fully covered" with degraded=true —
+      // a consumer ignoring the flag would misread it as healthy. Zeroing all
+      // sources together makes a degraded payload unambiguously empty.
+      collected = emptyCollected();
+      agg = emptyAggregation();
+      rollup = [];
+      accountAgg = emptyAccountAggregation();
       csv = renderCsv([]);
+      csvByAccount = renderCsvByAccount([]);
     }
 
     const errorsByKind: Record<string, number> = {
@@ -2598,16 +2679,7 @@ export const report = {
     };
     for (const e of collected.errors) errorsByKind[e.kind]++;
 
-    const accounts = new Set<string>();
-    for (const i of collected.instances) accounts.add(i.accountId);
-    for (const r of collected.reserved) accounts.add(r.accountId);
-    for (const e of collected.errors) {
-      if (e.accountId) accounts.add(e.accountId);
-    }
-    const regions = new Set<string>();
-    for (const i of collected.instances) regions.add(i.region);
-    for (const r of collected.reserved) regions.add(r.region);
-    for (const e of collected.errors) if (e.region) regions.add(e.region);
+    const { accountCount, regionCount } = countAccountsRegions(collected);
     const totalRunning = round2(
       agg.buckets.reduce((s, b) => s + b.runningLargeEq, 0),
     );
@@ -2620,8 +2692,9 @@ export const report = {
       workflow: workflowName,
       generatedAt,
       columns: [...COLUMNS],
-      accountCount: accounts.size,
-      regionCount: regions.size,
+      accountColumns: [...ACCOUNT_COLUMNS],
+      accountCount,
+      regionCount,
       instanceCount: collected.instances.length,
       reservedCount: collected.reserved.length,
       totalRunningLargeEq: totalRunning,
