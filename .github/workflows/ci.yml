@@ -17,6 +17,7 @@ jobs:
       - uses: denoland/setup-deno@667a34cdef165d8d2b2e98dde39547c9daac7282 # v2.0.4
         with:
           deno-version: v2.x
+      - uses: systeminit/setup-swamp@8764f3226a675af5b78708adfdee4e13eaa19aac # v0.1.0
       - run: deno fmt --check
       - run: deno lint
       - name: check
@@ -44,6 +45,27 @@ jobs:
             exit 1
           fi
           xargs -0 -n 50 deno check < "$check_files"
+      - name: manifest fmt
+        shell: bash
+        run: |
+          manifests=()
+          while IFS= read -r -d '' manifest; do
+            manifests+=("$manifest")
+          done < <(
+            find . -mindepth 2 -maxdepth 2 -name manifest.yaml \
+              -not -path './.swamp/*' \
+              -print0 \
+            | sort -z
+          )
+          if [ "${#manifests[@]}" -eq 0 ]; then
+            echo "No extension manifests found"
+            exit 1
+          fi
+
+          for manifest in "${manifests[@]}"; do
+            echo "Checking $manifest"
+            swamp extension fmt "$manifest" --check
+          done
       - name: test
         run: |
           deno test \
