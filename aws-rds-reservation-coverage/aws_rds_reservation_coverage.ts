@@ -1568,18 +1568,30 @@ export function aggregateByAccount(
       ? (a.region < b.region ? -1 : 1)
       : 0;
 
+  // Final tie-break: every carve-out map is keyed with `accountId` as its
+  // prefix, so two rows that compare equal on all display keys but carry a
+  // different `accountId` are genuinely distinct entries (same-named accounts:
+  // blank labels, two profiles both `prod`). Without this their order would
+  // fall to Map-insertion (instance arrival) order and not be byte-stable —
+  // the same defect compareAccountBuckets fixes for the bucket table. It only
+  // disambiguates already-equal rows; distinct keys are never reordered.
+  const byAccountId = (a: { accountId: string }, b: { accountId: string }) =>
+    a.accountId < b.accountId ? -1 : a.accountId > b.accountId ? 1 : 0;
+
   return {
     buckets: [...buckets.values()].sort(compareAccountBuckets),
     burstable: [...burstable.values()].sort((a, b) => {
       const ar = byAccountRegion(a, b);
       if (ar !== 0) return ar;
       if (a.family !== b.family) return a.family < b.family ? -1 : 1;
-      return a.size < b.size ? -1 : a.size > b.size ? 1 : 0;
+      if (a.size !== b.size) return a.size < b.size ? -1 : 1;
+      return byAccountId(a, b);
     }),
     serverless: [...serverless.values()].sort((a, b) => {
       const ar = byAccountRegion(a, b);
       if (ar !== 0) return ar;
-      return a.engine < b.engine ? -1 : a.engine > b.engine ? 1 : 0;
+      if (a.engine !== b.engine) return a.engine < b.engine ? -1 : 1;
+      return byAccountId(a, b);
     }),
     unparseable: [...unparseable.values()].sort((a, b) => {
       const ar = byAccountRegion(a, b);
@@ -1587,7 +1599,8 @@ export function aggregateByAccount(
       if (a.dbInstanceClass !== b.dbInstanceClass) {
         return a.dbInstanceClass < b.dbInstanceClass ? -1 : 1;
       }
-      return a.source < b.source ? -1 : a.source > b.source ? 1 : 0;
+      if (a.source !== b.source) return a.source < b.source ? -1 : 1;
+      return byAccountId(a, b);
     }),
     nonSizeFlex: [...nonSizeFlex.values()].sort((a, b) => {
       const ar = byAccountRegion(a, b);
@@ -1595,14 +1608,15 @@ export function aggregateByAccount(
       if (a.family !== b.family) return a.family < b.family ? -1 : 1;
       if (a.engine !== b.engine) return a.engine < b.engine ? -1 : 1;
       if (a.size !== b.size) return a.size < b.size ? -1 : 1;
-      return a.deployment < b.deployment
-        ? -1
-        : a.deployment > b.deployment
-        ? 1
-        : 0;
+      if (a.deployment !== b.deployment) {
+        return a.deployment < b.deployment ? -1 : 1;
+      }
+      return byAccountId(a, b);
     }),
     inactiveReserved: [...inactiveReserved.values()].sort((a, b) =>
-      a.accountName < b.accountName ? -1 : a.accountName > b.accountName ? 1 : 0
+      a.accountName !== b.accountName
+        ? (a.accountName < b.accountName ? -1 : 1)
+        : byAccountId(a, b)
     ),
   };
 }
