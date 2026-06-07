@@ -569,58 +569,163 @@ export async function getCallerAccountId(
   return resp.Account ?? "";
 }
 
+/**
+ * The slice of an AWS SDK v3 client this extension drives: `send` to issue a
+ * command, and the synchronous `destroy` to release the underlying socket /
+ * handle pool. Both `RDSClient` and `STSClient` satisfy this structurally, so
+ * tests can inject a fake that records `send` calls and `destroy` invocations.
+ *
+ * @typeParam C Command type accepted by `send`.
+ * @typeParam R Response type resolved by `send`.
+ */
+export interface SdkClient<C, R> {
+  /** Issue one command. */
+  send(command: C): Promise<R>;
+  /** Release the client's connection resources. Synchronous (returns void). */
+  destroy(): void;
+}
+
+/** Constructs the per-region RDS client driving the describe paths. */
+export type RdsClientFactory = (
+  region: string,
+) => SdkClient<
+  DescribeDBInstancesCommand | DescribeReservedDBInstancesCommand,
+  {
+    DBInstances?: AwsDBInstance[];
+    ReservedDBInstances?: AwsReservedDBInstance[];
+    Marker?: string;
+  }
+>;
+
+/** Constructs the bootstrap STS client driving the account-id lookup. */
+export type StsClientFactory = () => SdkClient<
+  GetCallerIdentityCommand,
+  CallerIdentity
+>;
+
+/**
+ * Call `client.destroy()` if present, swallowing and logging any failure at
+ * `debug`. SDK `destroy()` is synchronous and best-effort cleanup: a failure
+ * here must never mask the operation's original outcome — neither turning a
+ * successful sweep into a failure nor replacing a real thrown error. Lives
+ * outside the operation's try/finally chain so it is the last thing to run.
+ */
+export function safeDestroy(
+  client: { destroy?: () => void } | undefined,
+  // deno-lint-ignore no-explicit-any
+  logger?: any,
+): void {
+  try {
+    client?.destroy?.();
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    logger?.debug?.(
+      "Ignoring AWS SDK client destroy() failure during cleanup: {message}",
+      { message },
+    );
+  }
+}
+
 function sdkApi(
   credentials: CredentialProvider | undefined,
   bootstrapRegion: string,
   // deno-lint-ignore no-explicit-any
   logger: any,
+  rdsClientFactory: RdsClientFactory = (region) =>
+    new RDSClient({ region, credentials, ...CLIENT_RETRY }),
+  stsClientFactory: StsClientFactory = () =>
+    new STSClient({ region: bootstrapRegion, credentials, ...CLIENT_RETRY }),
 ): AwsApi {
-  const rdsFor = (region: string) =>
-    new RDSClient({ region, credentials, ...CLIENT_RETRY });
   const deps = retryDeps(logger);
 
   return {
-    getAccountId: () => {
-      const sts = new STSClient({
-        region: bootstrapRegion,
-        credentials,
-        ...CLIENT_RETRY,
-      });
-      return getCallerAccountId(
-        () => sts.send(new GetCallerIdentityCommand({})),
-        deps,
-      );
+    getAccountId: async () => {
+      const sts = stsClientFactory();
+      try {
+        return await getCallerAccountId(
+          () => sts.send(new GetCallerIdentityCommand({})),
+          deps,
+        );
+      } finally {
+        safeDestroy(sts, logger);
+      }
     },
-    describeDBInstances: (region) => {
-      const rds = rdsFor(region);
-      return paginate<AwsDBInstance>(
-        async (marker) => {
-          const resp = await rds.send(
-            new DescribeDBInstancesCommand({ Marker: marker, MaxRecords: 100 }),
-          );
-          return { items: resp.DBInstances ?? [], marker: resp.Marker };
-        },
-        "DescribeDBInstances",
-        deps,
-      );
+    describeDBInstances: async (region) => {
+      const rds = rdsClientFactory(region);
+      try {
+        return await paginate<AwsDBInstance>(
+          async (marker) => {
+            const resp = await rds.send(
+              new DescribeDBInstancesCommand({
+                Marker: marker,
+                MaxRecords: 100,
+              }),
+            );
+            return { items: resp.DBInstances ?? [], marker: resp.Marker };
+          },
+          "DescribeDBInstances",
+          deps,
+        );
+      } finally {
+        safeDestroy(rds, logger);
+      }
     },
-    describeReservedDBInstances: (region) => {
-      const rds = rdsFor(region);
-      return paginate<AwsReservedDBInstance>(
-        async (marker) => {
-          const resp = await rds.send(
-            new DescribeReservedDBInstancesCommand({
-              Marker: marker,
-              MaxRecords: 100,
-            }),
-          );
-          return { items: resp.ReservedDBInstances ?? [], marker: resp.Marker };
-        },
-        "DescribeReservedDBInstances",
-        deps,
-      );
+    describeReservedDBInstances: async (region) => {
+      const rds = rdsClientFactory(region);
+      try {
+        return await paginate<AwsReservedDBInstance>(
+          async (marker) => {
+            const resp = await rds.send(
+              new DescribeReservedDBInstancesCommand({
+                Marker: marker,
+                MaxRecords: 100,
+              }),
+            );
+            return {
+              items: resp.ReservedDBInstances ?? [],
+              marker: resp.Marker,
+            };
+          },
+          "DescribeReservedDBInstances",
+          deps,
+        );
+      } finally {
+        safeDestroy(rds, logger);
+      }
     },
   };
+}
+
+/**
+ * Construct the production SDK-backed {@link AwsApi} with optional injected
+ * client factories. The default factories build real `RDSClient` / `STSClient`
+ * instances, so production behavior is identical to calling {@link sdkApi}
+ * directly. Tests pass fakes to assert each client's `destroy()` runs exactly
+ * once on success, throttle-then-success, and thrown-error paths without
+ * touching the public {@link AwsApi} / {@link ApiFactory} surface.
+ *
+ * @param credentials Credential provider, or `undefined` for the ambient chain.
+ * @param bootstrapRegion Region for the STS bootstrap call.
+ * @param logger Runtime logger.
+ * @param rdsClientFactory Builds the per-region RDS client. Defaults to a real `RDSClient`.
+ * @param stsClientFactory Builds the bootstrap STS client. Defaults to a real `STSClient`.
+ * @returns An {@link AwsApi} facade that destroys each client after use.
+ */
+export function sdkApiWithFactories(
+  credentials: CredentialProvider | undefined,
+  bootstrapRegion: string,
+  // deno-lint-ignore no-explicit-any
+  logger: any,
+  rdsClientFactory?: RdsClientFactory,
+  stsClientFactory?: StsClientFactory,
+): AwsApi {
+  return sdkApi(
+    credentials,
+    bootstrapRegion,
+    logger,
+    rdsClientFactory,
+    stsClientFactory,
+  );
 }
 
 // ---------------------------------------------------------------------------
