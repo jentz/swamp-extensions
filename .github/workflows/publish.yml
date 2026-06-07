@@ -1,0 +1,73 @@
+name: publish
+
+on:
+  workflow_run:
+    workflows: [ci]
+    types: [completed]
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  detect-changes:
+    name: Detect changed extension manifests
+    runs-on: ubuntu-latest
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+    outputs:
+      extensions: ${{ steps.changes.outputs.extensions }}
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          fetch-depth: 2
+          ref: ${{ github.event.workflow_run.head_sha }}
+      - id: changes
+        name: Find changed source manifests
+        shell: bash
+        run: |
+          if git rev-parse HEAD^ >/dev/null 2>&1; then
+            changed_files="$(git diff --name-only HEAD^ HEAD)"
+          else
+            changed_files="$(git ls-tree --name-only -r HEAD)"
+          fi
+
+          echo "Changed files:"
+          echo "$changed_files"
+
+          extensions="[]"
+          while IFS= read -r -d '' manifest; do
+            manifest="${manifest#./}"
+            dir="$(dirname "$manifest")"
+            if grep -Fxq "$manifest" <<< "$changed_files"; then
+              extensions="$(jq -c --arg dir "$dir" '. + [$dir]' <<< "$extensions")"
+              echo "Extension manifest changed: $manifest"
+            fi
+          done < <(
+            find . -mindepth 2 -maxdepth 2 -name manifest.yaml \
+              -not -path './.swamp/*' \
+              -print0 \
+            | sort -z
+          )
+
+          echo "extensions=$extensions" >> "$GITHUB_OUTPUT"
+          echo "Extensions to publish: $extensions"
+
+  publish:
+    name: Publish ${{ matrix.extension }}
+    needs: detect-changes
+    if: needs.detect-changes.outputs.extensions != '[]'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        extension: ${{ fromJson(needs.detect-changes.outputs.extensions) }}
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+      - uses: systeminit/setup-swamp@8764f3226a675af5b78708adfdee4e13eaa19aac # v0.1.0
+        with:
+          api-key: ${{ secrets.SWAMP_API_KEY }}
+      - name: Publish extension
+        working-directory: ${{ matrix.extension }}
+        run: swamp extension push manifest.yaml --yes
