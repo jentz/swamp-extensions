@@ -584,6 +584,92 @@ Deno.test("aggregateByAccount: same-named distinct accounts have a run-independe
   );
 });
 
+Deno.test("aggregateByAccount: carve-out tables order is run-independent for same-named accounts", () => {
+  // The burstable / serverless / unparseable / nonSizeFlex / inactiveReserved
+  // carve-outs are keyed by accountId but were tie-broken on accountName only,
+  // so two distinct accounts sharing a blank display name fell to Map-insertion
+  // (arrival) order. Each carve-out below has two such accounts that compare
+  // equal on every display key; only the accountId tie-break makes the order
+  // total and byte-stable.
+  const acctA = { accountId: "222222222222", accountName: "" };
+  const acctB = { accountId: "111111111111", accountName: "" };
+
+  const rows = [
+    // burstable
+    inst({
+      ...acctA,
+      dbInstanceClass: "db.t4g.medium",
+      dbInstanceIdentifier: "ba",
+    }),
+    inst({
+      ...acctB,
+      dbInstanceClass: "db.t4g.medium",
+      dbInstanceIdentifier: "bb",
+    }),
+    // serverless
+    inst({
+      ...acctA,
+      dbInstanceClass: "db.serverless",
+      dbInstanceIdentifier: "sa",
+    }),
+    inst({
+      ...acctB,
+      dbInstanceClass: "db.serverless",
+      dbInstanceIdentifier: "sb",
+    }),
+    // unparseable
+    inst({
+      ...acctA,
+      dbInstanceClass: "db.weird.???",
+      dbInstanceIdentifier: "ua",
+    }),
+    inst({
+      ...acctB,
+      dbInstanceClass: "db.weird.???",
+      dbInstanceIdentifier: "ub",
+    }),
+    // nonSizeFlex (SQL Server)
+    inst({
+      ...acctA,
+      dbInstanceClass: "db.r8g.large",
+      engine: "sqlserver-se",
+      dbInstanceIdentifier: "na",
+    }),
+    inst({
+      ...acctB,
+      dbInstanceClass: "db.r8g.large",
+      engine: "sqlserver-se",
+      dbInstanceIdentifier: "nb",
+    }),
+  ];
+  const inactive = [
+    ri({ ...acctA, state: "retired", reservedDBInstanceId: "ia" }),
+    ri({ ...acctB, state: "retired", reservedDBInstanceId: "ib" }),
+  ];
+
+  const forward = aggregateByAccount(rows, inactive);
+  const reverse = aggregateByAccount(
+    rows.slice().reverse(),
+    inactive.slice().reverse(),
+  );
+
+  for (
+    const k of [
+      "burstable",
+      "serverless",
+      "unparseable",
+      "nonSizeFlex",
+      "inactiveReserved",
+    ] as const
+  ) {
+    const fwd = forward[k].map((l) => l.accountId);
+    // Same order regardless of arrival order.
+    assertEquals(fwd, reverse[k].map((l) => l.accountId), `${k} not stable`);
+    // And it is the ascending accountId tie-break.
+    assertEquals(fwd, ["111111111111", "222222222222"], `${k} wrong order`);
+  }
+});
+
 Deno.test("aggregateByAccount: surfaces burstable / serverless / inactive per account, like org-wide", () => {
   // Previously these classes were silently dropped on the per-account path. They
   // must now appear in the per-account carve-out structures, not vanish.
