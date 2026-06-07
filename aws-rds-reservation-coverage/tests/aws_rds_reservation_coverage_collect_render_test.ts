@@ -25,15 +25,20 @@
 import { assert, assertEquals, assertStringIncludes } from "jsr:@std/assert@1";
 
 import {
+  ACCOUNT_COLUMNS,
+  type AccountBucket,
   aggregate,
   type Bucket,
   collect,
   type Collected,
   COLUMNS,
+  countAccountsRegions,
   csvField,
+  gapLargeEq,
   INSTANCE_SPEC,
   type InstanceRecord,
   renderCsv,
+  renderCsvByAccount,
   renderMarkdown,
   report,
   RESERVATIONS_MODEL_TYPE,
@@ -767,4 +772,178 @@ Deno.test("renderMarkdown: a pipe in a table cell is escaped", () => {
 
   // The escaped form must appear in the rendered table.
   assertStringIncludes(md, "weird\\|region");
+});
+
+// ---------------------------------------------------------------------------
+// C. Degraded coherence — a degraded payload must never read as healthy
+// ---------------------------------------------------------------------------
+
+Deno.test("report.execute: a post-collect throw yields a coherent, all-empty degraded payload", async () => {
+  // collect() succeeds and populates rows, then renderMarkdown throws when it
+  // coerces a hostile workflowName in its template literal — a genuine
+  // post-collect failure. The catch must reset EVERY source so the JSON cannot
+  // read "N instances, 0 buckets, fully covered" with degraded=true.
+  const reserved: ModelReservedRecord = {
+    ...reservedFixture,
+    accountId: "999988887777",
+    region: "eu-central-1",
+  };
+  const { context } = stubContext([
+    {
+      name: "inst",
+      version: 1,
+      specName: INSTANCE_SPEC,
+      json: instanceFixture,
+    },
+    { name: "resv", version: 1, specName: RESERVED_SPEC, json: reserved },
+    {
+      name: "err",
+      version: 1,
+      specName: SCAN_ERROR_SPEC,
+      json: {
+        ...scanErrorFixture,
+        accountId: "111111111111",
+        region: "sa-east-1",
+      },
+    },
+  ]);
+
+  // An object whose primitive coercion throws: the only thing it touches is the
+  // `${workflowName}` interpolation inside renderMarkdown, after collect and the
+  // aggregations have already populated `collected`/`agg`/`accountAgg`.
+  const explodingWorkflowName = {
+    [Symbol.toPrimitive]() {
+      throw new Error("boom during render");
+    },
+  };
+
+  const result = await report.execute({
+    ...(context as Record<string, unknown>),
+    workflowName: explodingWorkflowName,
+  });
+
+  const j = result.json;
+  assertEquals(j.degraded, true);
+  // Counts (derived from `collected`) and totals/buckets (derived from `agg`)
+  // must agree: all zero/empty. No "N instances but 0 buckets" contradiction.
+  assertEquals(j.instanceCount, 0);
+  assertEquals(j.reservedCount, 0);
+  assertEquals(j.accountCount, 0);
+  assertEquals(j.regionCount, 0);
+  assertEquals(j.skipped, 0);
+  assertEquals(j.errorsByKind, { auth_expired: 0, access_denied: 0, other: 0 });
+  assertEquals(j.totalRunningLargeEq, 0);
+  assertEquals(j.totalReservedLargeEq, 0);
+  assertEquals(j.largeEqToBuy, 0);
+  assertEquals(j.buckets, []);
+  assertEquals(j.reservationPools, []);
+  assertEquals(j.accountBuckets, []);
+  // CSV bodies are reset to header-only.
+  assertEquals(j.csv, renderCsv([]));
+  assertEquals(j.csvByAccount.split("\n").length, 2); // header + trailing ""
+  // The markdown is the degraded notice, not a healthy report.
+  assertStringIncludes(result.markdown, "_Report degraded:");
+});
+
+// ---------------------------------------------------------------------------
+// D. Shared helpers — countAccountsRegions, gapLargeEq, accountColumns
+// ---------------------------------------------------------------------------
+
+Deno.test("countAccountsRegions: unions accounts/regions across instances, reserved, and errors", () => {
+  const collected: Collected = {
+    instances: [{ ...instanceFixture, accountId: "a1", region: "r1" }],
+    reserved: [{ ...reservedFixture, accountId: "a2", region: "r2" }],
+    errors: [
+      // account-only error (no region) contributes an account, not a region.
+      { ...scanErrorFixture, accountId: "a3", region: "" },
+      // region-only credential failure with empty account contributes a region.
+      { ...scanErrorFixture, accountId: "", region: "r3" },
+    ],
+    skipped: 0,
+  };
+  assertEquals(countAccountsRegions(collected), {
+    accountCount: 3,
+    regionCount: 3,
+  });
+});
+
+Deno.test("countAccountsRegions: JSON counts equal the markdown summary (shared source)", async () => {
+  const reservedOnly: ModelReservedRecord = {
+    ...reservedFixture,
+    accountId: "222233334444",
+    accountName: "reserved-only",
+    region: "eu-west-1",
+  };
+  const { context } = stubContext([
+    { name: "r", version: 1, specName: RESERVED_SPEC, json: reservedOnly },
+    {
+      name: "i",
+      version: 1,
+      specName: INSTANCE_SPEC,
+      json: instanceFixture,
+    },
+  ]);
+  const result = await report.execute({
+    ...(context as Record<string, unknown>),
+    workflowName: "coverage-test",
+  });
+  // The markdown summary and the JSON counts are now fed by one helper.
+  assertStringIncludes(
+    result.markdown,
+    `- Accounts seen: **${result.json.accountCount}**`,
+  );
+  assertStringIncludes(
+    result.markdown,
+    `- Regions covered: **${result.json.regionCount}**`,
+  );
+});
+
+Deno.test("renderCsvByAccount: exact bytes — header, per-cell escaping, gap, trailing newline", () => {
+  const bucket: AccountBucket = {
+    accountId: "111122223333",
+    // A comma forces RFC4180 quoting in this cell only.
+    accountName: "team, alpha",
+    region: "us-east-1",
+    family: "r7g",
+    generation: "7g",
+    engine: "postgres",
+    deployment: "Single-AZ",
+    runningLargeEq: 4,
+    reservedLargeEq: 1.5,
+    runningInstances: 2,
+    reservedInstances: 1,
+  };
+  const out = renderCsvByAccount([bucket]);
+  const expected = ACCOUNT_COLUMNS.join(",") + "\n" +
+    '"team, alpha",111122223333,us-east-1,r7g,7g,postgres,Single-AZ,4,1.5,2.5,2,1' +
+    "\n";
+  // Locks the consolidated emitter's exact output: quoting of the comma cell,
+  // gap = 4 - 1.5 = 2.5 via gapLargeEq, and the trailing newline.
+  assertEquals(out, expected);
+});
+
+Deno.test("renderCsvByAccount: empty list emits header-only with trailing newline", () => {
+  assertEquals(renderCsvByAccount([]), ACCOUNT_COLUMNS.join(",") + "\n");
+});
+
+Deno.test("gapLargeEq: gap is running minus reserved, rounded to 2 decimals", () => {
+  assertEquals(gapLargeEq({ runningLargeEq: 4, reservedLargeEq: 1.5 }), 2.5);
+  assertEquals(gapLargeEq({ runningLargeEq: 1, reservedLargeEq: 3 }), -2);
+  // Floating-point noise is rounded away.
+  assertEquals(gapLargeEq({ runningLargeEq: 0.1, reservedLargeEq: 0.2 }), -0.1);
+});
+
+Deno.test("report.execute: accountColumns surfaces the csvByAccount header order", async () => {
+  const { context } = stubContext([
+    { name: "i", version: 1, specName: INSTANCE_SPEC, json: instanceFixture },
+  ]);
+  const result = await report.execute({
+    ...(context as Record<string, unknown>),
+    workflowName: "coverage-test",
+  });
+  // The declared accountColumns must exactly match the emitted CSV header so a
+  // consumer can parse csvByAccount from the structured output alone.
+  assertEquals(result.json.accountColumns, [...ACCOUNT_COLUMNS]);
+  const header = result.json.csvByAccount.split("\n")[0];
+  assertEquals(header, result.json.accountColumns.join(","));
 });
