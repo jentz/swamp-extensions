@@ -40,3 +40,29 @@ schema of the CLI (commands, options, arguments) intended for agent
 consumption, run `swamp help [<command>...]` — e.g. `swamp help` returns
 the full tree, and `swamp help model method run` scopes to a subtree.
 <!-- END swamp managed section -->
+
+# Project-specific guidance
+
+Do not edit inside the swamp-managed section above. Add project-specific agent
+instructions below that marker so future `swamp repo upgrade` runs can safely
+refresh the managed content.
+
+## Publishing and manifest versions
+
+Each extension in this repository publishes independently. Treat that
+extension's `manifest.yaml` as its release signal:
+
+- For any publishable code or documentation change, bump the changed
+  extension's `manifest.yaml` `version` in the same PR.
+- Publish automation keys off changed `manifest.yaml` files. If an extension's
+  manifest is not changed, that extension will not publish after merge.
+- If a change is intentionally not meant to publish an extension, do not bump
+  that extension's manifest version.
+- Keep CalVer versions in the existing `YYYY.MM.DD.MICRO` style used by the
+  extension.
+
+Before opening a PR, run the relevant local gates for the changed extensions:
+format check, lint, type check when available, tests, and swamp manifest/package
+checks such as `swamp extension fmt manifest.yaml --check`,
+`swamp extension quality manifest.yaml`, and
+`swamp extension push manifest.yaml --dry-run`.
