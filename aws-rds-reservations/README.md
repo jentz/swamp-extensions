@@ -179,7 +179,7 @@ region literally named `ambient`/`account`.
 CEL reference shape (downstream models / reports):
 
 ```cel
-data.latest("rds-res", "instance-111122223333-us-east-1--orders-db").attributes.dbInstanceClass
+data.latest("rds-res", "instance-<accountId>-us-east-1--orders-db").attributes.dbInstanceClass
 ```
 
 ## Throttling
