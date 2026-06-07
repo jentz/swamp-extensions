@@ -25,6 +25,7 @@ import {
   escapeMarkdownTableCell,
   findGateTrippers,
   inventoryTags,
+  normalizePolicyDocument,
   parseFailOnThreshold,
   type PolicyStatement,
   report,
@@ -2088,12 +2089,17 @@ Deno.test("collectBundles: succeeded step with schema-mismatched data surfaces v
 });
 
 Deno.test(
-  "report.execute does not throw on malformed bucket-policy data; emits per-rule findings",
+  "report.execute does not throw on an unparseable string PolicyDocument; emits per-rule findings",
   async () => {
-    // Locks in the post-swamp#1394 non-throw invariant for malformed
-    // bucket-policy data: collectBundles records the schema mismatch as a
-    // policyError and each rule surfaces its own finding instead of the
-    // report collapsing into swamp's generic error fallback artifact.
+    // Locks in the post-swamp#1394 non-throw invariant. Upstream may deliver
+    // `state.PolicyDocument` as a raw JSON string (AWS CloudControl shape); a
+    // PRESENT-but-unparseable string is honestly distinct from an ABSENT
+    // policy: a policy IS attached, we just couldn't read it. collectBundles
+    // records this as a policyError so the policy rules SKIP ("couldn't
+    // evaluate") instead of silently degrading to PASS. Contrast the
+    // genuinely-absent case below, where bucket-no-overbroad-allow PASSes.
+    // Each rule still surfaces its own finding rather than collapsing into
+    // swamp's generic error fallback artifact.
     const stateJson = JSON.stringify({ BucketName: "bad-policy-bucket" });
     const policyJson = JSON.stringify({
       Bucket: "bad-policy-bucket",
@@ -2144,9 +2150,86 @@ Deno.test(
     assertExists(tlsOnly);
     assertExists(noOverbroad);
     assertExists(tlsMinVersion);
+    // Policy present but unreadable => no TLS-enforcing Deny we can confirm
+    // (real audit failure).
     assertEquals(tlsOnly.status, "fail");
+    // Policy present but unreadable => we CANNOT claim "no overbroad Allow".
+    // A policy IS attached; an unparseable doc must SKIP ("couldn't evaluate"),
+    // NOT silently PASS. This is the security-honesty teeth: present-but-
+    // unparseable is distinct from genuinely-absent (which DOES pass below).
     assertEquals(noOverbroad.status, "skip");
+    // Policy present but unreadable => minimum TLS version cannot be confirmed
+    // (warn).
     assertEquals(tlsMinVersion.status, "warn");
+  },
+);
+
+Deno.test(
+  "report.execute: valid string-form PolicyDocument (CloudControl shape) is parsed and evaluated",
+  async () => {
+    // AWS CloudControl returns `@swamp/aws/s3/bucket-policy` `state.PolicyDocument`
+    // as a JSON string. End-to-end: a well-formed TLS-enforcing policy delivered
+    // as a string must normalize and PASS bucket-tls-only-policy — the case the
+    // pre-union schema silently dropped as a "schema mismatch".
+    const stateJson = JSON.stringify({
+      BucketName: "str-policy-bucket",
+      VersioningConfiguration: { Status: "Enabled" },
+    });
+    const policyJson = JSON.stringify({
+      Bucket: "str-policy-bucket",
+      PolicyDocument: JSON.stringify({
+        Version: "2012-10-17",
+        Statement: [
+          {
+            Effect: "Deny",
+            Principal: "*",
+            Action: "s3:*",
+            Resource: [
+              "arn:aws:s3:::str-policy-bucket",
+              "arn:aws:s3:::str-policy-bucket/*",
+            ],
+            Condition: { Bool: { "aws:SecureTransport": "false" } },
+          },
+        ],
+      }),
+    });
+    const out = await runReport(
+      [
+        ["@swamp/aws/s3/bucket", "audit-state", "default", 1, stateJson],
+        [
+          "@swamp/aws/s3/bucket-policy",
+          "audit-policy",
+          "default",
+          1,
+          policyJson,
+        ],
+      ],
+      [
+        {
+          jobName: "lookup",
+          stepName: "bucket-state",
+          modelType: "@swamp/aws/s3/bucket",
+          modelId: "audit-state",
+          status: "succeeded",
+          methodArgs: { identifier: "str-policy-bucket" },
+          dataHandles: [{ name: "default", version: 1 }],
+        },
+        {
+          jobName: "lookup",
+          stepName: "bucket-policy",
+          modelType: "@swamp/aws/s3/bucket-policy",
+          modelId: "audit-policy",
+          status: "succeeded",
+          methodArgs: { identifier: "str-policy-bucket" },
+          dataHandles: [{ name: "default", version: 1 }],
+        },
+      ],
+    );
+    const tlsOnly = out.json.findings.find((f) =>
+      f.id === "bucket-tls-only-policy"
+    );
+    assertExists(tlsOnly);
+    assertEquals(tlsOnly.status, "pass");
   },
 );
 
@@ -2209,3 +2292,65 @@ Deno.test("escapeMarkdownTableCell escapes backslashes and pipes, and flattens n
     "path\\\\to\\\\file \\| literal \\\\\\| pipe next line end",
   );
 });
+
+// ---------------------------------------------------------------------------
+// normalizePolicyDocument — upstream `@swamp/aws/s3/bucket-policy` `state`
+// returns `PolicyDocument` as EITHER an object OR a raw JSON string (AWS
+// CloudControl emits a string for `AWS::S3::BucketPolicy`). These tests pin
+// the coercion that lets the object-only rule predicates stay unchanged.
+// ---------------------------------------------------------------------------
+
+Deno.test("normalizePolicyDocument: object passes through unchanged", () => {
+  const doc = { Version: "2012-10-17", Statement: [] };
+  assertEquals(normalizePolicyDocument(doc), doc);
+});
+
+Deno.test("normalizePolicyDocument: undefined stays undefined", () => {
+  assertEquals(normalizePolicyDocument(undefined), undefined);
+});
+
+Deno.test("normalizePolicyDocument: JSON-string document parses to an object", () => {
+  const doc = { Version: "2012-10-17", Statement: [{ Effect: "Deny" }] };
+  assertEquals(normalizePolicyDocument(JSON.stringify(doc)), doc);
+});
+
+Deno.test("normalizePolicyDocument: unparseable string yields undefined", () => {
+  assertEquals(normalizePolicyDocument("{not valid json"), undefined);
+});
+
+Deno.test("normalizePolicyDocument: non-object JSON (array/scalar) yields undefined", () => {
+  assertEquals(normalizePolicyDocument("[1,2,3]"), undefined);
+  assertEquals(normalizePolicyDocument("42"), undefined);
+});
+
+Deno.test(
+  "checkTLSOnlyPolicy: PASS when a string-form PolicyDocument is normalized first",
+  () => {
+    // Simulate the upstream string-form `state.PolicyDocument` flowing through
+    // collection: normalize, then run the (object-only) rule. This is the real
+    // CloudControl shape for `@swamp/aws/s3/bucket-policy.get`/`.sync`.
+    const stringDoc = JSON.stringify({
+      Version: "2012-10-17",
+      Statement: [
+        {
+          Effect: "Deny",
+          Principal: "*",
+          Action: "s3:*",
+          Resource: [
+            "arn:aws:s3:::str-bucket",
+            "arn:aws:s3:::str-bucket/*",
+          ],
+          Condition: { Bool: { "aws:SecureTransport": "false" } },
+        },
+      ],
+    });
+    const bundle: BucketBundle = {
+      name: "str-bucket",
+      policy: {
+        Bucket: "str-bucket",
+        PolicyDocument: normalizePolicyDocument(stringDoc),
+      } as unknown as BucketBundle["policy"],
+    };
+    assertEquals(checkTLSOnlyPolicy(bundle).status, "pass");
+  },
+);

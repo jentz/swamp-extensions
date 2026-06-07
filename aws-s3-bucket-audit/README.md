@@ -5,6 +5,29 @@ best practices. Pairs with the upstream `@swamp/aws/s3` extension: earlier
 workflow steps fetch bucket state and bucket policies; this report consumes
 those step outputs and produces structured, lint-style findings.
 
+## Upstream compatibility
+
+This report has no runtime dependency on AWS — it parses step output emitted by
+the upstream [`@swamp/aws/s3`](https://github.com/systeminit/swamp-extensions)
+extension. It requires these two upstream model types in the workflow:
+
+- `@swamp/aws/s3/bucket` — bucket state (the `get`/`sync` `state` resource)
+- `@swamp/aws/s3/bucket-policy` — bucket policy (the `get`/`sync` `state`
+  resource)
+
+Validated against `@swamp/aws/s3` **2026.06.06.1** (minimum tested version). The
+parser reads upstream fields defensively (extra or missing fields are tolerated
+and produce `skip` findings rather than errors), so newer `@swamp/aws/s3`
+releases that only add fields remain compatible. The `state.PolicyDocument`
+field is accepted as either a parsed object or the raw JSON string AWS
+CloudControl returns; a valid string is parsed and evaluated normally. If a
+policy is attached but its `PolicyDocument` is present yet unparseable, the
+policy rules degrade to `skip` ("couldn't evaluate") rather than reporting a
+misleading pass — a policy we cannot read is never treated as "no policy
+attached". If the upstream `state` shape changes incompatibly, findings degrade
+to `skip`/`fail` rather than crashing the report — re-run with the report JSON
+and check `findings[].message`.
+
 ## What it checks
 
 Rules across three severities:
