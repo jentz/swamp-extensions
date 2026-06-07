@@ -585,7 +585,7 @@ export function parseEngineIdentity(
     edition = editionAfter(core, "sqlserver", ["web", "ex", "dev", "ee", "se"]);
   } else if (core.includes("db2")) {
     engine = "db2";
-    edition = editionAfter(core, "db2", ["ae", "se"]);
+    edition = editionAfter(core, "db2", ["ae", "se", "ce"]);
   } else {
     engine = core.split("-")[0] || "unknown";
   }
