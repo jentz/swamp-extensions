@@ -345,6 +345,19 @@ Deno.test("parseEngineIdentity: a suffixless reserved Db2 row stays license-less
   assertEquals(id.sizeFlexEligible, true);
 });
 
+Deno.test("parseEngineIdentity: Db2 Community Edition buckets distinctly, not as bare db2", () => {
+  // Db2 CE (GA June 2026, Db2 v12.1; Engine `db2-ce`) is BYOL-only. It must
+  // carry its own edition so it does not collapse into the edition-less `db2`
+  // token and share a pool with any other edition-less Db2 row.
+  const running = parseEngineIdentity("db2-ce", "bring-your-own-license");
+  assertEquals(running.engine, "db2");
+  assertEquals(running.edition, "ce");
+  assertEquals(running.token, "db2-ce-byol");
+  assertNotEquals(running.token, "db2");
+  // A reserved CE row (should AWS ever offer one) agrees on the same token.
+  assertEquals(parseEngineIdentity("db2-ce(byol)").token, "db2-ce-byol");
+});
+
 // ---------------------------------------------------------------------------
 // aggregate + rollup — the headline math
 // ---------------------------------------------------------------------------
