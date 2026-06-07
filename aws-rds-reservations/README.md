@@ -76,7 +76,7 @@ The AWS-managed `ReadOnlyAccess` and `SecurityAudit` policies cover all three.
 | Name                    | Type              | Default | Description |
 | ----------------------- | ----------------- | ------- | ----------- |
 | `profiles`              | `string[]`        | `[]`    | Named AWS profiles to sweep, one account each. Empty uses the ambient credential chain (whatever `AWS_PROFILE` / env is set) as a single account — handy for testing one account before scaling out. |
-| `regions`               | `string[]`        | `[]`    | Regions to sweep per account. Required for any output — RDS describe calls are region-scoped and there is no enabled-region discovery here (an SCP-denied region simply becomes a `scan_error`). Pass your org's approved regions. |
+| `regions`               | `string[]`        | `[]`    | Regions to sweep per account. **Required** — RDS describe calls are region-scoped and there is no enabled-region discovery here (an SCP-denied region simply becomes a `scan_error`). Pass your org's approved regions. If empty or omitted, the sweep makes no AWS calls and writes a single `no_regions` `scan_error` (zero `instance`/`reserved` rows) so the misconfiguration is visible, not a silent empty result. |
 | `requiredProfileSuffix` | `string`          | `""`    | If set, every named profile must end with this suffix or it is refused before any AWS call. Set to `-readonly` to enforce read-only profiles. Ambient credentials have no reliable profile label, so leave this empty when `profiles` is `[]` or pass an explicit named profile instead. The suffix is also stripped to derive the friendly `accountName`. Default `""` disables the check. |
 
 `profiles` and `regions` are arrays — pass them with the `:json=` value suffix:
@@ -171,7 +171,7 @@ region literally named `ambient`/`account`.
 | `profile`   | `string`                                      | Profile being swept; `""` for ambient. |
 | `accountId` | `string`                                      | Account id if known by the time of failure; `""` otherwise. |
 | `region`    | `string`                                      | Region being swept; `""` for account-level failures. |
-| `phase`     | `string`                                      | `profile_suffix_check`, `credentials`, `describe_db_instances`, `describe_reserved_db_instances`. |
+| `phase`     | `string`                                      | `no_regions`, `profile_suffix_check`, `credentials`, `describe_db_instances`, `describe_reserved_db_instances`. `no_regions` is the single account-less row written when `regions` is empty (see the `regions` argument). |
 | `kind`      | `"auth_expired" \| "access_denied" \| "other"` | Coarse classification driving the operator's next action. |
 | `message`   | `string`                                      | Error detail. |
 | `scannedAt` | `string`                                      | ISO 8601 timestamp. |

@@ -371,6 +371,59 @@ Deno.test("runSweep: profile failing required-suffix is skipped before any AWS c
   assertEquals(result.errorCount, 1);
 });
 
+Deno.test("runSweep: empty regions writes one no_regions scan_error and makes no AWS call", async () => {
+  const { context, getWrittenResources } = createModelTestContext({});
+  // A spying facade that fails loudly if any AWS call slips through, so the
+  // test proves the guard returns before getAccountId / describe* run.
+  const aws = { accountId: false, instances: false, reserved: false };
+  const spyApi: AwsApi = {
+    getAccountId: () => {
+      aws.accountId = true;
+      return Promise.resolve("111122223333");
+    },
+    describeDBInstances: (_region) => {
+      aws.instances = true;
+      return Promise.resolve([]);
+    },
+    describeReservedDBInstances: (_region) => {
+      aws.reserved = true;
+      return Promise.resolve([]);
+    },
+  };
+
+  const result = await runSweep({
+    targets: [{ profile: "prod-readonly", api: spyApi }],
+    regions: [],
+    requiredProfileSuffix: "-readonly",
+    context,
+  });
+
+  // Counts: exactly one error, zero data rows.
+  assertEquals(result.instanceCount, 0);
+  assertEquals(result.reservedCount, 0);
+  assertEquals(result.errorCount, 1);
+
+  // No AWS work happened — the guard short-circuits before the targets loop.
+  assertEquals(aws.accountId, false);
+  assertEquals(aws.instances, false);
+  assertEquals(aws.reserved, false);
+
+  // Exactly one scan_error, none of any other spec.
+  const written = getWrittenResources();
+  assertEquals(written.length, 1);
+  assertEquals(written.filter((w) => w.specName === "instance").length, 0);
+  assertEquals(written.filter((w) => w.specName === "reserved").length, 0);
+  const errs = written.filter((w) => w.specName === "scan_error");
+  assertEquals(errs.length, 1);
+
+  const err = errs[0].data as Record<string, unknown>;
+  assertEquals(err.phase, "no_regions");
+  assertEquals(err.kind, "other");
+  assertEquals(err.profile, "");
+  assertEquals(err.accountId, "");
+  assertEquals(err.region, "");
+});
+
 // ---------------------------------------------------------------------------
 // Throttling retry — withRetry / isThrottlingError (ported verbatim from the
 // sibling @jentz/aws-rds-inventory test, since _lib/retry.ts is a byte-identical
