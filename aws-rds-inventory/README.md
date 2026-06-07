@@ -39,7 +39,7 @@ misconfigured profile or account can never reach RDS APIs.
 
 The official [`@swamp/aws/rds`](https://github.com/systeminit/swamp-extensions)
 `dbcluster` model ships a native `list` method (as of `@swamp/aws/rds`
-`2026.06.05.1`). It looks similar to `list_clusters` here, but the two are built
+`2026.06.06.1`). It looks similar to `list_clusters` here, but the two are built
 for different jobs — reach for whichever matches yours:
 
 | Aspect | `@swamp/aws/rds` `dbcluster.list` | `@jentz/aws-rds-inventory` `list_clusters` |
