@@ -44,6 +44,18 @@ import {
 import { isThrottlingError, type RetryDeps, withRetry } from "../_lib/retry.ts";
 
 // ---------------------------------------------------------------------------
+// Fake account identifiers. The schema treats `accountId` as an opaque string
+// (`z.string()`, no numeric/length constraint), so these stand in for the
+// 12-digit AWS account ids without using account-id-shaped literals. They are
+// only ever round-tripped through the producer, used as map keys, or asserted
+// back unchanged — none of these tests rely on a numeric shape.
+// ---------------------------------------------------------------------------
+
+const ACCOUNT_ALPHA = "ACCT_ALPHA";
+const ACCOUNT_BETA = "ACCT_BETA";
+const ACCOUNT_ADMIN = "ACCT_ADMIN";
+
+// ---------------------------------------------------------------------------
 // Pure helpers
 // ---------------------------------------------------------------------------
 
@@ -112,7 +124,7 @@ function fakeApi(spec: FakeSpec): AwsApi {
     getAccountId: () =>
       spec.accountIdError
         ? Promise.reject(spec.accountIdError)
-        : Promise.resolve(spec.accountId ?? "000000000000"),
+        : Promise.resolve(spec.accountId ?? "ACCT_UNSET"),
     describeDBInstances: (region) => {
       const r = spec.perRegion?.[region];
       if (r?.instancesError) return Promise.reject(r.instancesError);
@@ -132,7 +144,7 @@ function target(profile: string, spec: FakeSpec): SweepTarget {
 
 Deno.test("buildTargets: empty profiles produce one ambient target", () => {
   const logger = {};
-  const api = fakeApi({ accountId: "111122223333" });
+  const api = fakeApi({ accountId: ACCOUNT_ALPHA });
   const calls: Array<{
     credentials: CredentialProvider | undefined;
     bootstrapRegion: string;
@@ -184,8 +196,8 @@ Deno.test("buildTargets: named profiles use credentialFactory and preserve order
     logger: unknown;
   }> = [];
   const apis = [
-    fakeApi({ accountId: "111122223333" }),
-    fakeApi({ accountId: "444455556666" }),
+    fakeApi({ accountId: ACCOUNT_ALPHA }),
+    fakeApi({ accountId: ACCOUNT_BETA }),
   ];
 
   const targets = buildTargets({
@@ -226,7 +238,7 @@ Deno.test("runSweep: injected clock propagates to instance, reserved, and scan_e
   await runSweep({
     targets: [
       target("prod-readonly", {
-        accountId: "111122223333",
+        accountId: ACCOUNT_ALPHA,
         perRegion: {
           "us-east-1": {
             instances: [{
@@ -240,7 +252,7 @@ Deno.test("runSweep: injected clock propagates to instance, reserved, and scan_e
           },
         },
       }),
-      target("admin", { accountId: "444455556666" }),
+      target("admin", { accountId: ACCOUNT_BETA }),
     ],
     regions: ["us-east-1"],
     requiredProfileSuffix: "-readonly",
@@ -262,7 +274,7 @@ Deno.test("runSweep: writes one instance + one reserved row, derives account nam
   const { context, getWrittenResources } = createModelTestContext({});
   const result = await runSweep({
     targets: [target("prod-readonly", {
-      accountId: "111122223333",
+      accountId: ACCOUNT_ALPHA,
       perRegion: {
         "us-east-1": {
           instances: [{
@@ -301,7 +313,7 @@ Deno.test("runSweep: writes one instance + one reserved row, derives account nam
   const written = getWrittenResources();
   const inst = written.find((w) => w.specName === "instance")!
     .data as Record<string, unknown>;
-  assertEquals(inst.accountId, "111122223333");
+  assertEquals(inst.accountId, ACCOUNT_ALPHA);
   assertEquals(inst.accountName, "prod");
   assertEquals(inst.dbInstanceClass, "db.r7g.2xlarge");
   assertEquals(inst.multiAZ, true);
@@ -320,7 +332,7 @@ Deno.test("runSweep: DescribeDBInstances error in one region does not abort; res
   denied.name = "AccessDeniedException";
   const result = await runSweep({
     targets: [target("app-readonly", {
-      accountId: "444455556666",
+      accountId: ACCOUNT_BETA,
       perRegion: {
         "us-west-2": {
           instancesError: denied,
@@ -367,7 +379,7 @@ Deno.test("runSweep: credential failure writes one scan_error and skips the acco
 Deno.test("runSweep: profile failing required-suffix is skipped before any AWS call", async () => {
   const { context } = createModelTestContext({});
   const result = await runSweep({
-    targets: [target("admin-profile", { accountId: "123456789012" })],
+    targets: [target("admin-profile", { accountId: ACCOUNT_ADMIN })],
     regions: ["us-east-1"],
     requiredProfileSuffix: "-readonly",
     context,
@@ -384,7 +396,7 @@ Deno.test("runSweep: empty regions writes one no_regions scan_error and makes no
   const spyApi: AwsApi = {
     getAccountId: () => {
       aws.accountId = true;
-      return Promise.resolve("111122223333");
+      return Promise.resolve(ACCOUNT_ALPHA);
     },
     describeDBInstances: (_region) => {
       aws.instances = true;
@@ -495,10 +507,10 @@ Deno.test("getCallerAccountId: retries throttled STS call then returns account i
   const accountId = await getCallerAccountId(() => {
     calls++;
     if (calls === 1) return Promise.reject(throttled);
-    return Promise.resolve({ Account: "111122223333" });
+    return Promise.resolve({ Account: ACCOUNT_ALPHA });
   }, deps);
 
-  assertEquals(accountId, "111122223333");
+  assertEquals(accountId, ACCOUNT_ALPHA);
   assertEquals(calls, 2);
   assertEquals(retryEvents, [{
     operationName: "GetCallerIdentity",
@@ -772,7 +784,7 @@ Deno.test("safeDestroy: invokes destroy once and swallows a destroy() failure", 
 });
 
 Deno.test("sdkApi getAccountId: destroys the STS client once on success", async () => {
-  const sts = fakeClient(() => Promise.resolve({ Account: "111122223333" }));
+  const sts = fakeClient(() => Promise.resolve({ Account: ACCOUNT_ALPHA }));
   const api = sdkApiWithFactories(
     undefined,
     "us-east-1",
@@ -781,7 +793,7 @@ Deno.test("sdkApi getAccountId: destroys the STS client once on success", async 
     () => sts,
   );
   const accountId = await api.getAccountId();
-  assertEquals(accountId, "111122223333");
+  assertEquals(accountId, ACCOUNT_ALPHA);
   assertEquals(sts.sendCount, 1);
   assertEquals(sts.destroyCount, 1);
 });
@@ -791,7 +803,7 @@ Deno.test("sdkApi getAccountId: destroys the STS client once after throttle-then
   const sts = fakeClient(() => {
     calls++;
     if (calls === 1) return Promise.reject(throttle());
-    return Promise.resolve({ Account: "444455556666" });
+    return Promise.resolve({ Account: ACCOUNT_BETA });
   });
   const api = sdkApiWithFactories(
     undefined,
@@ -801,7 +813,7 @@ Deno.test("sdkApi getAccountId: destroys the STS client once after throttle-then
     () => sts,
   );
   const accountId = await api.getAccountId();
-  assertEquals(accountId, "444455556666");
+  assertEquals(accountId, ACCOUNT_BETA);
   assertEquals(calls, 2);
   // Destroyed exactly once even though send retried — destroy is per-client,
   // after the whole drain, never per-attempt.
@@ -1057,7 +1069,7 @@ Deno.test("runSweep: instance missing DBInstanceIdentifier -> malformed_db_insta
   const { context, getWrittenResources } = createModelTestContext({});
   const result = await runSweep({
     targets: [target("prod-readonly", {
-      accountId: "111122223333",
+      accountId: ACCOUNT_ALPHA,
       perRegion: {
         "us-east-1": {
           instances: [{
@@ -1092,7 +1104,7 @@ Deno.test("runSweep: instance missing DBInstanceClass -> malformed_db_instance s
   const { context, getWrittenResources } = createModelTestContext({});
   const result = await runSweep({
     targets: [target("prod-readonly", {
-      accountId: "111122223333",
+      accountId: ACCOUNT_ALPHA,
       perRegion: {
         "us-east-1": {
           instances: [{
@@ -1123,7 +1135,7 @@ Deno.test("runSweep: instance missing Engine -> malformed_db_instance scan_error
   const { context, getWrittenResources } = createModelTestContext({});
   const result = await runSweep({
     targets: [target("prod-readonly", {
-      accountId: "111122223333",
+      accountId: ACCOUNT_ALPHA,
       perRegion: {
         "us-east-1": {
           instances: [{
@@ -1154,7 +1166,7 @@ Deno.test("runSweep: reserved missing ReservedDBInstanceId -> malformed_reserved
   const { context, getWrittenResources } = createModelTestContext({});
   const result = await runSweep({
     targets: [target("prod-readonly", {
-      accountId: "111122223333",
+      accountId: ACCOUNT_ALPHA,
       perRegion: {
         "us-east-1": {
           reserved: [{
@@ -1191,7 +1203,7 @@ Deno.test("runSweep: reserved missing DBInstanceCount -> malformed_reserved_db_i
   const { context, getWrittenResources } = createModelTestContext({});
   const result = await runSweep({
     targets: [target("prod-readonly", {
-      accountId: "111122223333",
+      accountId: ACCOUNT_ALPHA,
       perRegion: {
         "us-east-1": {
           reserved: [{
@@ -1224,7 +1236,7 @@ Deno.test("runSweep: reserved missing ProductDescription -> malformed_reserved_d
   const { context, getWrittenResources } = createModelTestContext({});
   const result = await runSweep({
     targets: [target("prod-readonly", {
-      accountId: "111122223333",
+      accountId: ACCOUNT_ALPHA,
       perRegion: {
         "us-east-1": {
           reserved: [{
@@ -1260,7 +1272,7 @@ Deno.test("runSweep: a malformed row does not abort sweeping its valid siblings"
   const { context, getWrittenResources } = createModelTestContext({});
   const result = await runSweep({
     targets: [target("prod-readonly", {
-      accountId: "111122223333",
+      accountId: ACCOUNT_ALPHA,
       perRegion: {
         "us-east-1": {
           instances: [
@@ -1312,7 +1324,7 @@ Deno.test("runSweep: two malformed instance rows (hyphenated ids) in same region
   const { context, getWrittenResources } = createModelTestContext({});
   const result = await runSweep({
     targets: [target("prod-readonly", {
-      accountId: "111122223333",
+      accountId: ACCOUNT_ALPHA,
       perRegion: {
         "us-east-1": {
           instances: [
@@ -1352,7 +1364,7 @@ Deno.test("runSweep: two malformed reserved rows in same region -> distinct scan
   const { context, getWrittenResources } = createModelTestContext({});
   const result = await runSweep({
     targets: [target("prod-readonly", {
-      accountId: "111122223333",
+      accountId: ACCOUNT_ALPHA,
       perRegion: {
         "us-east-1": {
           reserved: [
@@ -1391,7 +1403,7 @@ Deno.test("runSweep: WORST CASE - two id-less malformed rows in same region -> d
   const { context, getWrittenResources } = createModelTestContext({});
   const result = await runSweep({
     targets: [target("prod-readonly", {
-      accountId: "111122223333",
+      accountId: ACCOUNT_ALPHA,
       perRegion: {
         "us-east-1": {
           instances: [
