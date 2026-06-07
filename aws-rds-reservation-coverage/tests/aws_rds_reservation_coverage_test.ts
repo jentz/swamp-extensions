@@ -18,12 +18,13 @@ import {
   canonicalEngine,
   deploymentFor,
   type InstanceRecord,
+  largeEqToBuy,
   normalizedUnits,
   normalizeLicense,
   parseEngineIdentity,
   parseInstanceClass,
   type ReservedRecord,
-  rollupByGeneration,
+  rollupByPool,
   sizeFactor,
 } from "../aws_rds_reservation_coverage.ts";
 
@@ -345,7 +346,7 @@ Deno.test("aggregate: reserved nets against running with engine collapse and cou
   assertEquals(b.reservedLargeEq, 2);
   assertEquals(b.engine, "postgres");
   // gap surfaces in the rollup.
-  const rollup = rollupByGeneration(agg.buckets);
+  const rollup = rollupByPool(agg.buckets);
   assertEquals(rollup[0].gapLargeEq, 2);
 });
 
@@ -589,22 +590,34 @@ Deno.test("aggregateByAccount: a reserved serverless row is dropped, mirroring o
   assertEquals(acct.inactiveReserved.length, 0); // it was active, just dropped
 });
 
-Deno.test("rollupByGeneration: collapses engine and deployment within region x family", () => {
+Deno.test("rollupByPool: keeps engines distinct (deployment collapsed) and the buy figure does not net across engines", () => {
+  // Same region × family (r7g), two engines with OPPOSITE gaps:
+  //   postgres: 1× large running (1 large-eq), reserved large × count 2 (2) ->
+  //             gap −1 (over-reserved)
+  //   mysql:    2× large running (2 large-eq), no reservation -> gap +2
+  //             (under-reserved)
   const agg = aggregate(
     [
-      inst({ engine: "postgres", multiAZ: true, dbInstanceIdentifier: "a" }),
-      inst({ engine: "mysql", multiAZ: false, dbInstanceIdentifier: "b" }),
+      inst({ engine: "postgres", dbInstanceIdentifier: "pg1" }),
+      inst({ engine: "mysql", dbInstanceIdentifier: "my1" }),
+      inst({ engine: "mysql", dbInstanceIdentifier: "my2" }),
     ],
-    [],
+    [ri({ productDescription: "postgresql", dbInstanceCount: 2 })],
   );
-  // Two buckets (different engine+deployment) collapse to one rollup row.
-  // postgres Multi-AZ large = 1×2 = 2 normalized units; mysql Single-AZ large
-  // = 1; the rollup sums the now-commensurable units to 3.
-  assertEquals(agg.buckets.length, 2);
-  const rollup = rollupByGeneration(agg.buckets);
-  assertEquals(rollup.length, 1);
-  assertEquals(rollup[0].family, "r7g");
-  assertEquals(rollup[0].runningLargeEq, 3);
+
+  // Engine is a hard reservation boundary: two pools, not one collapsed row.
+  const rollup = rollupByPool(agg.buckets);
+  assertEquals(rollup.length, 2);
+  const pg = rollup.find((r) => r.engine === "postgres")!;
+  const my = rollup.find((r) => r.engine === "mysql")!;
+  assertEquals(pg.family, "r7g");
+  assertEquals(pg.gapLargeEq, -1); // over-reserved
+  assertEquals(my.gapLargeEq, 2); // under-reserved
+
+  // The buy figure sums only the POSITIVE pool gaps: the postgres surplus must
+  // NOT offset the mysql deficit across the engine boundary. A naive
+  // all-running-minus-all-reserved net would read (3 − 2) = 1 and under-buy.
+  assertEquals(largeEqToBuy(rollup), 2);
 });
 
 // ---------------------------------------------------------------------------
@@ -638,7 +651,7 @@ Deno.test("aggregate: mixed Single-AZ/Multi-AZ fleet — per-bucket and rollup m
   // Rollup folds the commensurable units: running 4, reserved 1, gap 3 —
   // matching AWS's normalized-unit arithmetic (16 demand − 4 supply = 12
   // units = 3 Single-AZ-large-equivalents).
-  const rollup = rollupByGeneration(agg.buckets);
+  const rollup = rollupByPool(agg.buckets);
   assertEquals(rollup.length, 1);
   assertEquals(rollup[0].runningLargeEq, 4);
   assertEquals(rollup[0].reservedLargeEq, 1);
@@ -789,7 +802,7 @@ Deno.test("aggregate: an SE2 License-Included RI does not cover an EE BYOL insta
   assertEquals(c.runningInstances, 0);
   assertEquals(c.reservedInstances, 1);
   // The EE instance now surfaces as uncovered (gap 2), not "fully covered".
-  const rollup = rollupByGeneration(agg.buckets);
+  const rollup = rollupByPool(agg.buckets);
   assertEquals(rollup[0].gapLargeEq, 2);
 });
 
