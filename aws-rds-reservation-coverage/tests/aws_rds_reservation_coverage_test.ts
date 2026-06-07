@@ -11,7 +11,7 @@
  * @module
  */
 
-import { assertEquals } from "jsr:@std/assert@1";
+import { assertEquals, assertNotEquals } from "jsr:@std/assert@1";
 import {
   aggregate,
   aggregateByAccount,
@@ -272,6 +272,77 @@ Deno.test("parseEngineIdentity: Db2 preserves edition and license; stays size-fl
   assertEquals(ae.sizeFlexEligible, true);
   // marketplace vs byol must not cross-net.
   assertEquals(parseEngineIdentity("db2-se(mpl)").token, "db2-se-mpl");
+});
+
+Deno.test("parseEngineIdentity: running and reserved Db2 net on the same token for the same real license", () => {
+  // Db2 is offered both BYOL and via AWS Marketplace, and an RDS Db2 RI is
+  // scoped to one of them — the two must NOT cross-net. For each edition and
+  // each license model, the running row (Engine + LicenseModel) and the
+  // reserved row (ProductDescription with a license suffix) must resolve to the
+  // SAME bucket token, and both must stay size-flexible.
+  const cases: Array<
+    { edition: string; runningLM: string; mpl: boolean }
+  > = [
+    { edition: "ae", runningLM: "bring-your-own-license", mpl: false },
+    { edition: "ae", runningLM: "marketplace-license", mpl: true },
+    { edition: "se", runningLM: "bring-your-own-license", mpl: false },
+    { edition: "se", runningLM: "marketplace-license", mpl: true },
+  ];
+  for (const { edition, runningLM, mpl } of cases) {
+    const lic = mpl ? "mpl" : "byol";
+    const expected = `db2-${edition}-${lic}`;
+
+    // Running side: Engine `db2-ae`/`db2-se` plus a separate LicenseModel.
+    const running = parseEngineIdentity(`db2-${edition}`, runningLM);
+    assertEquals(running.engine, "db2");
+    assertEquals(running.edition, edition);
+    assertEquals(running.license, lic);
+    assertEquals(running.token, expected);
+    assertEquals(running.sizeFlexEligible, true);
+
+    // Reserved side: short suffix as AWS uses for other multi-license engines.
+    const reservedShort = parseEngineIdentity(`db2-${edition}(${lic})`);
+    assertEquals(reservedShort.token, expected);
+    assertEquals(reservedShort.sizeFlexEligible, true);
+
+    // Reserved side: worded suffix variant (defensive — exact Db2 spelling is
+    // unconfirmed, so accept both `(mpl)` and `(marketplace)` etc.).
+    const wordedSuffix = mpl ? "marketplace-license" : "bring-your-own-license";
+    const reservedWorded = parseEngineIdentity(
+      `db2-${edition} (${wordedSuffix})`,
+    );
+    assertEquals(reservedWorded.token, expected);
+    assertEquals(reservedWorded.sizeFlexEligible, true);
+
+    // The two reserved spellings agree with each other and with the running row.
+    assertEquals(reservedShort.token, running.token);
+    assertEquals(reservedWorded.token, running.token);
+  }
+});
+
+Deno.test("parseEngineIdentity: BYOL and Marketplace Db2 stay in distinct buckets", () => {
+  // A BYOL Db2 RI must not cover Marketplace-licensed usage (and vice versa).
+  assertNotEquals(
+    parseEngineIdentity("db2-ae", "bring-your-own-license").token,
+    parseEngineIdentity("db2-ae", "marketplace-license").token,
+  );
+  assertNotEquals(
+    parseEngineIdentity("db2-ae(byol)").token,
+    parseEngineIdentity("db2-ae(mpl)").token,
+  );
+});
+
+Deno.test("parseEngineIdentity: a suffixless reserved Db2 row stays license-less and conservative", () => {
+  // The exact Db2 ProductDescription suffix is unconfirmed. If AWS ever omits
+  // it, the reserved row must NOT guess byol-vs-mpl (that would risk a
+  // cross-license over-credit); it keeps a license-less token, the same
+  // conservative stance as unknown-license Oracle SE2.
+  const id = parseEngineIdentity("db2-ae");
+  assertEquals(id.engine, "db2");
+  assertEquals(id.edition, "ae");
+  assertEquals(id.license, "");
+  assertEquals(id.token, "db2-ae");
+  assertEquals(id.sizeFlexEligible, true);
 });
 
 // ---------------------------------------------------------------------------
