@@ -5,8 +5,6 @@ their own resources. Designed for fleet audits where you want to query cluster
 shape with CEL — engine, member count, instance class, tags — without scripting
 around the SDK.
 
-For a CSV summary of the inventory, see the companion report extension
-[`@jentz/aws-rds-inventory-csv`](../aws-rds-inventory-csv/).
 
 ## What it does
 
@@ -49,7 +47,7 @@ for different jobs — reach for whichever matches yours:
 Use the native `dbcluster.list` when you are managing cluster lifecycle and want
 raw state in the shared RDS resource space. Use this extension when you want a
 complete, enriched, CEL-filterable audit of your cluster fleet — for example to
-feed the [`@jentz/aws-rds-inventory-csv`](../aws-rds-inventory-csv/) report.
+feed compliance checks or cost analysis.
 
 ## What is and is NOT in scope
 

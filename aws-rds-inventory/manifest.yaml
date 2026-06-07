@@ -1,6 +1,6 @@
 manifestVersion: 1
 name: "@jentz/aws-rds-inventory"
-version: "2026.06.05.1"
+version: "2026.06.07.1"
 description: |
   Lists RDS DB clusters in the configured AWS region and emits two
   factory-style resources — one per cluster, one per cluster-member
@@ -23,8 +23,6 @@ description: |
   rather than feeding the create/update/sync lifecycle. See the README for
   when to use which.
 
-  For a CSV summary of the inventory, see the companion report extension
-  `@jentz/aws-rds-inventory-csv`.
 repository: "https://github.com/jentz/swamp-extensions"
 homepage: "https://github.com/jentz/swamp-extensions/tree/main/aws-rds-inventory"
 paths:

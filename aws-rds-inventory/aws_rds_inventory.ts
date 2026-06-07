@@ -14,9 +14,7 @@
  * single-instance RDS instances (no cluster) are out of scope.
  *
  * Designed to run downstream of `@jentz/aws-context-guard` in a workflow so a
- * misconfigured AWS profile or account can never reach the RDS APIs. For a
- * CSV summary of the inventory, see the companion report extension
- * `@jentz/aws-rds-inventory-csv`.
+ * misconfigured AWS profile or account can never reach the RDS APIs.
  *
  * @module
  */
@@ -823,7 +821,7 @@ export async function runListClusters(
  */
 export const model = {
   type: "@jentz/aws-rds-inventory",
-  version: "2026.06.05.1",
+  version: "2026.06.07.1",
   globalArguments: GlobalArgsSchema,
   // The 2026.06.05.1 release changed only internals (server-side
   // DescribeDBInstances filtering) and docs — the globalArguments schema
@@ -833,6 +831,11 @@ export const model = {
   upgrades: [
     {
       toVersion: "2026.06.05.1",
+      description: "Version bump, no globalArguments schema changes",
+      upgradeAttributes: (old: Record<string, unknown>) => old,
+    },
+    {
+      toVersion: "2026.06.07.1",
       description: "Version bump, no globalArguments schema changes",
       upgradeAttributes: (old: Record<string, unknown>) => old,
     },
