@@ -94,7 +94,9 @@ const GlobalArgsSchema = z.object({
     "Regions to sweep per account. Required — RDS describe calls are " +
       "region-scoped and there is no enabled-region discovery here (an " +
       "SCP-denied region simply becomes a scan_error). Pass the org's " +
-      "approved regions.",
+      "approved regions. If empty or omitted, the sweep makes no AWS calls " +
+      "and writes a single 'no_regions' scan_error instead of zero rows, " +
+      "so the misconfiguration is visible rather than a silent empty result.",
   ),
   requiredProfileSuffix: z.string().default("").describe(
     "If set, every named profile must end with this suffix or it is refused " +
@@ -744,6 +746,28 @@ export async function runSweep(deps: SweepDeps): Promise<SweepResult> {
       ),
     );
   };
+
+  // Regions are required: RDS describe calls are region-scoped and there is no
+  // enabled-region discovery here. An empty list would otherwise resolve each
+  // account, never enter the per-region loop, and write zero rows — a silent
+  // "healthy empty" sweep the companion report cannot distinguish from a real
+  // zero-fleet result. Surface the misconfiguration as one scan_error and
+  // return before any AWS call (mirrors the profile_suffix_check refusal).
+  if (regions.length === 0) {
+    await writeError({
+      profile: "",
+      accountId: "",
+      region: "",
+      phase: "no_regions",
+      kind: "other",
+      message:
+        "No regions configured: 'regions' is empty, so no RDS instances or " +
+        "reservations were swept. Set the 'regions' global argument to your " +
+        "approved regions.",
+      scannedAt,
+    });
+    return { dataHandles: handles, instanceCount, reservedCount, errorCount };
+  }
 
   for (const target of targets) {
     const profileLabel = target.profile;

@@ -845,6 +845,54 @@ Deno.test("report.execute: a post-collect throw yields a coherent, all-empty deg
   assertStringIncludes(result.markdown, "_Report degraded:");
 });
 
+Deno.test("report.execute: a no_regions scan_error degrades the report, no healthy zero-buy render", async () => {
+  // The sweep refused to run (empty regions) and wrote a single no_regions
+  // scan_error with zero instances/reserved. Aggregating that produces a
+  // healthy-looking "Large-equivalents to buy: 0, fully covered" report. The
+  // report must treat it as degraded instead, so a JSON consumer never sees
+  // degraded=false + toBuy:0.
+  const noRegionsError: ModelScanError = {
+    profile: "",
+    accountId: "",
+    region: "",
+    phase: "no_regions",
+    kind: "other",
+    message:
+      "No regions configured: 'regions' is empty, so no RDS instances or " +
+      "reservations were swept. Set the 'regions' global argument.",
+    scannedAt: "2026-06-05T00:00:00.000Z",
+  };
+  const { context } = stubContext([
+    {
+      name: "err",
+      version: 1,
+      specName: SCAN_ERROR_SPEC,
+      json: noRegionsError,
+    },
+  ]);
+
+  const result = await report.execute({
+    ...(context as Record<string, unknown>),
+    workflowName: "nightly",
+  });
+
+  const j = result.json;
+  // The machine-readable signal: degraded, with the coherent-empty payload.
+  assertEquals(j.degraded, true);
+  assertEquals(j.instanceCount, 0);
+  assertEquals(j.reservedCount, 0);
+  assertEquals(j.largeEqToBuy, 0);
+  assertEquals(j.buckets, []);
+
+  // No healthy zero-buy headline; the markdown is the degraded notice.
+  assert(
+    !result.markdown.includes("Large-equivalents to buy: 0"),
+    "degraded no_regions report must not render the healthy zero-buy headline",
+  );
+  assertStringIncludes(result.markdown, "_Report degraded:");
+  assertStringIncludes(result.markdown, "regions");
+});
+
 // ---------------------------------------------------------------------------
 // D. Shared helpers — countAccountsRegions, gapLargeEq, accountColumns
 // ---------------------------------------------------------------------------

@@ -13,7 +13,10 @@ description: |
   `instance` resource per provisioned DB instance, one `reserved` resource per
   reservation, and one `scan_error` per (profile, region) phase that fails — an
   expired SSO token or an SCP-denied region is surfaced as a row, never
-  aborting the sweep.
+  aborting the sweep. `regions` is required: with an empty list the sweep makes
+  no AWS calls and writes a single `no_regions` `scan_error` (zero data rows),
+  which the companion report treats as degraded rather than a healthy empty
+  fleet.
 
   Pairs with the companion report `@jentz/aws-rds-reservation-coverage`, which
   normalizes these rows into size-flexible large-equivalent units and reports

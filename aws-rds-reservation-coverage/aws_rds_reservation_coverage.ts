@@ -2558,6 +2558,30 @@ export const report = {
       csvByAccount = renderCsvByAccount([]);
     }
 
+    // The sweep refuses to run when its `regions` argument is empty, writing a
+    // single `no_regions` scan_error (zero instance/reserved rows). Aggregating
+    // that would render a healthy-looking "0 large-equivalents to buy, fully
+    // covered" report, indistinguishable from a real zero-fleet result. Treat
+    // it as degraded and reset to the same coherent-empty payload the catch
+    // block uses, so the JSON consumer sees degraded=true rather than a
+    // misleading degraded=false + toBuy:0.
+    if (!degraded && collected.errors.some((e) => e.phase === "no_regions")) {
+      degraded = true;
+      tryLog(logger, "warn", "report degraded: {detail}", {
+        detail: "no regions configured for the sweep",
+      });
+      markdown =
+        "# RDS Large-Equivalent Reservation Gap\n\n_Report degraded: no " +
+        "regions were configured for the sweep; coverage cannot be computed. " +
+        "Set the regions argument._\n";
+      collected = emptyCollected();
+      agg = emptyAggregation();
+      rollup = [];
+      accountAgg = emptyAccountAggregation();
+      csv = renderCsv([]);
+      csvByAccount = renderCsvByAccount([]);
+    }
+
     const errorsByKind: Record<string, number> = {
       auth_expired: 0,
       access_denied: 0,
