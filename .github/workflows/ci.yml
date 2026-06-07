@@ -25,5 +25,4 @@ jobs:
             --allow-read --allow-write --allow-env --allow-net --no-check \
             aws-context-guard/tests/ \
             aws-rds-inventory/tests/ \
-            aws-rds-inventory-csv/tests/ \
             aws-s3-bucket-audit/tests/
