@@ -1812,12 +1812,33 @@ export async function collect(
         specName !== SCAN_ERROR_SPEC
       ) continue;
 
-      const bytes: Uint8Array | null = await context.dataRepository.getContent(
-        step.modelType,
-        step.modelId,
-        handle.name,
-        handle.version,
-      );
+      // A single read failure (transient storage error, one corrupt/missing
+      // blob) must skip just this artifact, not unwind the whole sweep. Guard
+      // getContent and this handle's decode/validate together so a rejection
+      // is treated exactly like a decode failure: increment skipped, continue.
+      let bytes: Uint8Array | null;
+      try {
+        bytes = await context.dataRepository.getContent(
+          step.modelType,
+          step.modelId,
+          handle.name,
+          handle.version,
+        );
+      } catch (err) {
+        skipped++;
+        tryLog(
+          logger,
+          "warn",
+          "Could not read {spec} artifact {handle}: {error}",
+          {
+            spec: specName,
+            handle: handle.name,
+            error: err instanceof Error ? err.message : String(err),
+          },
+        );
+        continue;
+      }
+
       const value = decodeJson(bytes);
       if (value === undefined) {
         skipped++;
@@ -1866,6 +1887,16 @@ export async function collect(
         const res = ScanErrorSchema.safeParse(value);
         if (!res.success) {
           skipped++;
+          tryLog(
+            logger,
+            "warn",
+            "scan_error row {handle} failed schema: {fields}",
+            {
+              handle: handle.name,
+              fields: res.error.issues.map((i) => i.path.join(".") || "<root>")
+                .join(", "),
+            },
+          );
           continue;
         }
         errors.push(res.data);
