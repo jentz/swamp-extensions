@@ -744,11 +744,19 @@ export interface SdkClient<C, R> {
   destroy(): void;
 }
 
-/** Constructs the per-region RDS client driving the describe paths. */
+/**
+ * Constructs the per-region RDS client driving the describe paths. The command
+ * accepted by `send` is opaque (`unknown`) at this seam boundary so the
+ * exported type stays free of private AWS SDK command classes; the concrete
+ * `DescribeDBInstancesCommand` / `DescribeReservedDBInstancesCommand` instances
+ * are constructed internally by the default factory in `sdkApi`. `SdkClient.send`
+ * is a method, so its parameter is checked bivariantly — both the real
+ * `RDSClient` and narrow test fakes remain assignable.
+ */
 export type RdsClientFactory = (
   region: string,
 ) => SdkClient<
-  DescribeDBInstancesCommand | DescribeReservedDBInstancesCommand,
+  unknown,
   {
     DBInstances?: AwsDBInstance[];
     ReservedDBInstances?: AwsReservedDBInstance[];
@@ -756,11 +764,13 @@ export type RdsClientFactory = (
   }
 >;
 
-/** Constructs the bootstrap STS client driving the account-id lookup. */
-export type StsClientFactory = () => SdkClient<
-  GetCallerIdentityCommand,
-  CallerIdentity
->;
+/**
+ * Constructs the bootstrap STS client driving the account-id lookup. The
+ * command accepted by `send` is opaque (`unknown`) at this seam boundary so the
+ * exported type stays free of the private `GetCallerIdentityCommand`; that
+ * command is constructed internally by the default factory in `sdkApi`.
+ */
+export type StsClientFactory = () => SdkClient<unknown, CallerIdentity>;
 
 /**
  * Call `client.destroy()` if present, swallowing and logging any failure at
