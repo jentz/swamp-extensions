@@ -241,6 +241,12 @@ Uses swamp Calendar Versioning (`YYYY.MM.DD.MICRO`). The `instance`, `reserved`,
 and `scan_error` resource schemas are the contract — adding fields additively is
 non-breaking; renaming or removing them is, and will bump the date.
 
+Model upgrades transform stored `globalArguments`, not already-collected
+resource rows. When a new resource field is added (for example
+`instance.licenseModel`), previously collected rows are not rewritten by the
+upgrade — they keep the field's schema default until you re-run `sweep`. Re-run
+a sweep to populate new resource fields with their real values.
+
 ## Issues, contributing, license
 
 - Bug reports and feature requests:
