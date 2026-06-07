@@ -223,7 +223,7 @@ swamp data get --workflow <workflow-name> \
 | `inactiveReserved` | Reservation rows skipped because they were not `active` (org-wide count; `accountInactiveReserved` splits it by account). |
 | `errorsByKind` | Scan errors counted by `auth_expired` / `access_denied` / `other`. |
 | `skipped` | Upstream artifacts that failed to decode, parse, or validate. |
-| `degraded` | `true` when the never-throws envelope absorbed an unexpected failure. |
+| `degraded` | `true` when the report could not be computed from healthy upstream data — a thrown failure, a missing upstream collector step, or a configuration error (e.g. no regions) was absorbed. |
 | `csv` | The per-bucket CSV body (header + rows + trailing newline). |
 
 ## Workflow usage

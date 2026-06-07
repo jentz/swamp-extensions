@@ -695,6 +695,8 @@ Deno.test("renderMarkdown: non-empty doc with expected section headers", () => {
     reserved: [],
     errors: [],
     skipped: 0,
+    matchingSteps: 0,
+    observedModelTypes: [],
   };
 
   const md = renderMarkdown(
@@ -752,6 +754,8 @@ Deno.test("renderMarkdown: a pipe in a table cell is escaped", () => {
     reserved: [],
     errors: [],
     skipped: 0,
+    matchingSteps: 0,
+    observedModelTypes: [],
   };
 
   const md = renderMarkdown(
@@ -893,6 +897,163 @@ Deno.test("report.execute: a no_regions scan_error degrades the report, no healt
   assertStringIncludes(result.markdown, "regions");
 });
 
+/** A logger that records levels + messages, like stubContext's. */
+function recordingLogger(): {
+  logger: Record<string, (m: string) => void>;
+  logs: Array<{ level: string; message: string }>;
+} {
+  const logs: Array<{ level: string; message: string }> = [];
+  const log = (level: string) => (message: string) =>
+    logs.push({ level, message });
+  return {
+    logger: {
+      info: log("info"),
+      debug: log("debug"),
+      warn: log("warn"),
+      error: log("error"),
+    },
+    logs,
+  };
+}
+
+Deno.test("report.execute: steps ran but none matched the reservations model degrades", async () => {
+  // A workflow wiring mistake — an upstream step exists, but none carries the
+  // @jentz/aws-rds-reservations modelType. The report has no input and must
+  // degrade rather than render a healthy "0 large-equivalents to buy" report.
+  const { logger } = recordingLogger();
+  const context = {
+    logger,
+    workflowName: "nightly",
+    stepExecutions: [
+      {
+        modelType: "@some/other-model",
+        modelId: "x",
+        dataHandles: [],
+      },
+      {
+        modelType: "@another/unrelated-model",
+        modelId: "y",
+        dataHandles: [],
+      },
+    ],
+    dataRepository: {
+      getContent: () => Promise.resolve(null),
+    },
+  };
+
+  const result = await report.execute(context);
+  const j = result.json;
+
+  assertEquals(j.degraded, true);
+  assertEquals(j.instanceCount, 0);
+  assertEquals(j.reservedCount, 0);
+  assertEquals(j.largeEqToBuy, 0);
+  assertEquals(j.buckets, []);
+
+  // The markdown is the degraded notice naming the missing collector and the
+  // observed (non-matching) model types, so an operator can fix the wiring.
+  assertStringIncludes(result.markdown, "_Report degraded:");
+  assertStringIncludes(result.markdown, RESERVATIONS_MODEL_TYPE);
+  assertStringIncludes(result.markdown, "@another/unrelated-model");
+  assertStringIncludes(result.markdown, "@some/other-model");
+  assert(
+    !result.markdown.includes("Large-equivalents to buy: 0"),
+    "missing-step report must not render the healthy zero-buy headline",
+  );
+});
+
+Deno.test("report.execute: empty or absent stepExecutions degrades", async () => {
+  // No upstream step ran at all. matchingSteps===0 covers this just as it
+  // covers steps-but-no-match. Observed model types render as "none".
+  for (const stepExecutions of [[], undefined]) {
+    const { logger } = recordingLogger();
+    const context = {
+      logger,
+      workflowName: "nightly",
+      stepExecutions,
+      dataRepository: { getContent: () => Promise.resolve(null) },
+    };
+
+    const result = await report.execute(context);
+    const j = result.json;
+
+    assertEquals(j.degraded, true);
+    assertEquals(j.instanceCount, 0);
+    assertEquals(j.largeEqToBuy, 0);
+    assertStringIncludes(result.markdown, "_Report degraded:");
+    assertStringIncludes(result.markdown, RESERVATIONS_MODEL_TYPE);
+    assertStringIncludes(result.markdown, "none");
+  }
+});
+
+Deno.test("report.execute: a matching step with rows renders a healthy report", async () => {
+  // Sanity that the missing-step trigger does not over-fire: a matching
+  // reservations step carrying real rows must produce a normal, non-degraded
+  // report.
+  const { context } = stubContext([
+    {
+      name: "inst",
+      version: 1,
+      specName: INSTANCE_SPEC,
+      json: instanceFixture,
+    },
+    {
+      name: "resv",
+      version: 1,
+      specName: RESERVED_SPEC,
+      json: reservedFixture,
+    },
+  ]);
+
+  const result = await report.execute({
+    ...(context as Record<string, unknown>),
+    workflowName: "nightly",
+  });
+  const j = result.json;
+
+  assertEquals(j.degraded, false);
+  assertEquals(j.instanceCount, 1);
+  assertEquals(j.reservedCount, 1);
+  assert(
+    !result.markdown.includes("_Report degraded:"),
+    "a healthy report must not carry the degraded notice",
+  );
+});
+
+Deno.test("report.execute: a matching step with zero rows stays healthy (empty fleet)", async () => {
+  // REGRESSION GUARD: the degraded signal is matchingSteps, NOT row count. A
+  // matching collector step that legitimately swept and found zero instances
+  // and zero reservations is a genuinely-empty healthy fleet. It MUST stay
+  // degraded=false — otherwise the trigger would conflate "no input" with "no
+  // capacity".
+  const { logger } = recordingLogger();
+  const context = {
+    logger,
+    workflowName: "nightly",
+    stepExecutions: [
+      {
+        modelType: RESERVATIONS_MODEL_TYPE,
+        modelId: "step-1",
+        dataHandles: [],
+      },
+    ],
+    dataRepository: { getContent: () => Promise.resolve(null) },
+  };
+
+  const result = await report.execute(context);
+  const j = result.json;
+
+  assertEquals(j.degraded, false);
+  assertEquals(j.instanceCount, 0);
+  assertEquals(j.reservedCount, 0);
+  assertEquals(j.largeEqToBuy, 0);
+  assertEquals(j.buckets, []);
+  assert(
+    !result.markdown.includes("_Report degraded:"),
+    "an empty healthy fleet must not be reported as degraded",
+  );
+});
+
 // ---------------------------------------------------------------------------
 // D. Shared helpers — countAccountsRegions, gapLargeEq, accountColumns
 // ---------------------------------------------------------------------------
@@ -908,6 +1069,8 @@ Deno.test("countAccountsRegions: unions accounts/regions across instances, reser
       { ...scanErrorFixture, accountId: "", region: "r3" },
     ],
     skipped: 0,
+    matchingSteps: 0,
+    observedModelTypes: [],
   };
   assertEquals(countAccountsRegions(collected), {
     accountCount: 3,
