@@ -87,14 +87,47 @@ export interface BucketState {
 
 const BucketPolicyStateSchema = z.object({
   Bucket: z.string(),
-  PolicyDocument: z.record(z.string(), z.unknown()).optional(),
+  // Upstream `@swamp/aws/s3/bucket-policy` `state` returns `PolicyDocument` as
+  // EITHER a parsed object OR a raw JSON string — AWS CloudControl emits the
+  // document as a string for `AWS::S3::BucketPolicy`, so a real `get`/`sync`
+  // commonly delivers a string. Accept both here and normalize to an object in
+  // {@link normalizePolicyDocument} so the rule predicates can stay
+  // object-only. (Matches upstream `StateSchema`'s `z.union([string, record])`.)
+  PolicyDocument: z.union([z.string(), z.record(z.string(), z.unknown())])
+    .optional(),
 }).passthrough();
+
+/**
+ * Coerce a raw `PolicyDocument` (string or object) into a parsed object, or
+ * `undefined` when it is absent or an unparseable string. A string that fails
+ * to parse is treated as "no usable policy" rather than throwing — the policy
+ * rules already render a missing `PolicyDocument` as a finding.
+ */
+export function normalizePolicyDocument(
+  raw: string | Record<string, unknown> | undefined,
+): Record<string, unknown> | undefined {
+  if (raw === undefined) return undefined;
+  if (typeof raw !== "string") return raw;
+  try {
+    const parsed = JSON.parse(raw);
+    return parsed !== null && typeof parsed === "object" &&
+        !Array.isArray(parsed)
+      ? parsed as Record<string, unknown>
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
 
 /** Shape of an `@swamp/aws/s3/bucket-policy.get` data record. */
 export interface BucketPolicyState {
   /** Bucket the policy is attached to. */
   Bucket: string;
-  /** Policy document as returned by CloudControl (always a parsed object). */
+  /**
+   * Policy document, normalized to a parsed object. Upstream may deliver it as
+   * a JSON string; {@link normalizePolicyDocument} parses it before this shape
+   * reaches the rule predicates.
+   */
   PolicyDocument?: Record<string, unknown>;
   /** Any additional CloudControl fields. */
   [key: string]: unknown;
@@ -214,7 +247,27 @@ async function collectBundles(context: any): Promise<BucketBundle[]> {
         }
         const policy = polRes.data;
         const b = upsert(policy.Bucket);
-        b.policy = policy;
+        const normalizedDoc = normalizePolicyDocument(policy.PolicyDocument);
+        b.policy = {
+          ...policy,
+          PolicyDocument: normalizedDoc,
+        };
+        // Distinguish "policy attached but unreadable" from "no policy". When
+        // the upstream `PolicyDocument` was a non-empty string but normalize
+        // returned `undefined`, the policy IS present — we just couldn't parse
+        // it. Record a policyError so the policy rules SKIP honestly ("couldn't
+        // evaluate") instead of treating it as "no policy attached" and
+        // emitting a misleading PASS for the overbroad-Allow rule. A genuinely
+        // absent PolicyDocument (undefined/null/empty) is left untouched and
+        // keeps its existing "no policy" behavior.
+        if (
+          typeof policy.PolicyDocument === "string" &&
+          policy.PolicyDocument.trim() !== "" &&
+          normalizedDoc === undefined
+        ) {
+          b.policyError =
+            "bucket-policy PolicyDocument was an unparseable string";
+        }
         if (step.status === "failed") {
           b.policyError = "bucket-policy lookup step failed";
         }
