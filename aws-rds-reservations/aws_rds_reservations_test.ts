@@ -41,6 +41,61 @@ Deno.test("model metadata: entrypoint stays in sync with manifest", async () => 
   assertEquals(Object.keys(model.methods), ["sweep"]);
 });
 
+Deno.test("model metadata: upgrades stay globalArguments-only, no resource migration", () => {
+  // swamp model upgrades transform stored globalArguments, never historical
+  // resource artifacts. Guard against the misleading resource-migration
+  // posture (claiming to backfill instance rows) and against leaking
+  // InstanceRecord-only fields like licenseModel into global arguments.
+  const upgrades = model.upgrades;
+  assertEquals(
+    Array.isArray(upgrades),
+    true,
+    "model.upgrades must be an array",
+  );
+  assertEquals(
+    upgrades.length > 0,
+    true,
+    "expected at least one upgrade entry to assert the invariant on",
+  );
+
+  // Resource-only keys that must never appear in upgraded global arguments.
+  const resourceOnlyKeys = [
+    "licenseModel",
+    "dbInstanceIdentifier",
+    "dbInstanceClass",
+    "engine",
+    "engineVersion",
+    "scannedAt",
+  ];
+
+  // A representative stored global-args object (the real GlobalArgsSchema
+  // shape): profiles, regions, requiredProfileSuffix.
+  const oldGlobalArgs: Record<string, unknown> = {
+    profiles: ["acme-readonly"],
+    regions: ["eu-west-1"],
+    requiredProfileSuffix: "-readonly",
+  };
+
+  for (const upgrade of upgrades) {
+    assertEquals(
+      /instance row|resource|backfill/i.test(upgrade.description),
+      false,
+      `upgrade ${upgrade.toVersion} description must not claim resource ` +
+        `migration: "${upgrade.description}"`,
+    );
+
+    const upgraded = upgrade.upgradeAttributes({ ...oldGlobalArgs });
+    for (const key of resourceOnlyKeys) {
+      assertEquals(
+        Object.prototype.hasOwnProperty.call(upgraded, key),
+        false,
+        `upgrade ${upgrade.toVersion} must not introduce resource-only ` +
+          `field "${key}" into global arguments`,
+      );
+    }
+  }
+});
+
 Deno.test("classifyError: maps an expired-SSO failure to auth_expired", () => {
   const expired = new Error(
     "The SSO session associated with this profile has expired",

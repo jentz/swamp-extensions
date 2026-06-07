@@ -1,6 +1,6 @@
 manifestVersion: 1
 name: "@jentz/aws-rds-reservations"
-version: "2026.06.06.2"
+version: "2026.06.07.1"
 description: |
   Lists every running RDS DB instance (Aurora cluster members AND standalone
   single-instance RDS, via DescribeDBInstances) and every reserved DB instance

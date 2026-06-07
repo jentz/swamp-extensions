@@ -979,25 +979,20 @@ export async function runSweep(deps: SweepDeps): Promise<SweepResult> {
  */
 export const model = {
   type: "@jentz/aws-rds-reservations",
-  version: "2026.06.06.2",
+  version: "2026.06.07.1",
   globalArguments: GlobalArgsSchema,
-  // Still pre-publish, but the upgrade chain is maintained from the start
-  // (matching the sibling @jentz/aws-rds-inventory convention) so existing
-  // instances advance their stored typeVersion cleanly.
+  // First publish. swamp model upgrades transform stored globalArguments, not
+  // historical resource artifacts, so there is nothing to migrate here: the
+  // globalArguments schema (profiles, regions, requiredProfileSuffix) is the
+  // initial shape. The no-op entry mirrors the sibling
+  // @jentz/aws-rds-inventory convention so any future schema-changing upgrade
+  // chains cleanly from this baseline. New resource fields such as
+  // instance.licenseModel are populated by re-sweeping, never by an upgrade.
   upgrades: [
     {
-      toVersion: "2026.06.06.2",
-      description:
-        "Add licenseModel to the instance resource (decisive for Oracle " +
-        "BYOL-vs-LI size-flex routing in the coverage report). Additive; " +
-        'existing instance rows backfill licenseModel to "". A re-sweep is ' +
-        "required to populate the real value on already-collected rows.",
-      upgradeAttributes: (old: Record<string, unknown>) => ({
-        ...old,
-        licenseModel: typeof old.licenseModel === "string"
-          ? old.licenseModel
-          : "",
-      }),
+      toVersion: "2026.06.07.1",
+      description: "Version bump, no globalArguments schema changes",
+      upgradeAttributes: (old: Record<string, unknown>) => old,
     },
   ] as Array<{
     toVersion: string;
