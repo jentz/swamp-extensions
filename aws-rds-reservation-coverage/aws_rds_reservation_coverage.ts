@@ -1384,7 +1384,14 @@ export interface AccountAggregation {
   inactiveReserved: AccountInactiveReserved[];
 }
 
-/** Stable order: account, region, family, engine, deployment. */
+/**
+ * Stable order: account name, region, family, engine, deployment, then
+ * accountId. Buckets are keyed by `accountId`, so two distinct accounts sharing
+ * a display name (blank labels, or two profiles both named `prod`) are separate
+ * rows whose first five keys can be identical; without the trailing `accountId`
+ * tie-break their order would fall to Map-insertion order (instance arrival
+ * across steps) and not be byte-stable across runs.
+ */
 export function compareAccountBuckets(
   a: AccountBucket,
   b: AccountBucket,
@@ -1395,7 +1402,10 @@ export function compareAccountBuckets(
   if (a.region !== b.region) return a.region < b.region ? -1 : 1;
   if (a.family !== b.family) return a.family < b.family ? -1 : 1;
   if (a.engine !== b.engine) return a.engine < b.engine ? -1 : 1;
-  return a.deployment < b.deployment ? -1 : a.deployment > b.deployment ? 1 : 0;
+  if (a.deployment !== b.deployment) {
+    return a.deployment < b.deployment ? -1 : 1;
+  }
+  return a.accountId < b.accountId ? -1 : a.accountId > b.accountId ? 1 : 0;
 }
 
 /**

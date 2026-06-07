@@ -550,6 +550,40 @@ Deno.test("aggregateByAccount: same family in two accounts stays split by owner"
   assertEquals(beta.reservedLargeEq, 0); // not covered when sharing is off
 });
 
+Deno.test("aggregateByAccount: same-named distinct accounts have a run-independent order", () => {
+  // Two distinct accounts sharing a blank display name and identical
+  // region/family/engine/deployment compare equal on every key except
+  // accountId. Without the accountId tie-break their relative order would fall
+  // to Map-insertion (instance arrival) order, so feeding the rows in opposite
+  // orders would yield opposite output orders — not byte-stable across runs.
+  const rowsA = inst({
+    accountId: "222222222222",
+    accountName: "",
+    dbInstanceClass: "db.r8g.large",
+    dbInstanceIdentifier: "a",
+  });
+  const rowsB = inst({
+    accountId: "111111111111",
+    accountName: "",
+    dbInstanceClass: "db.r8g.large",
+    dbInstanceIdentifier: "b",
+  });
+
+  const forward = aggregateByAccount([rowsA, rowsB], []).buckets;
+  const reverse = aggregateByAccount([rowsB, rowsA], []).buckets;
+
+  // Same output regardless of arrival order.
+  assertEquals(
+    forward.map((b) => b.accountId),
+    reverse.map((b) => b.accountId),
+  );
+  // And that order is the deterministic accountId tie-break (ascending).
+  assertEquals(
+    forward.map((b) => b.accountId),
+    ["111111111111", "222222222222"],
+  );
+});
+
 Deno.test("aggregateByAccount: surfaces burstable / serverless / inactive per account, like org-wide", () => {
   // Previously these classes were silently dropped on the per-account path. They
   // must now appear in the per-account carve-out structures, not vanish.
