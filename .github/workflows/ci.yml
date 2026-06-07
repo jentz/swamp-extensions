@@ -66,6 +66,29 @@ jobs:
             echo "Checking $manifest"
             swamp extension fmt "$manifest" --check
           done
+      - name: extension package gates
+        shell: bash
+        run: |
+          manifests=()
+          while IFS= read -r -d '' manifest; do
+            manifests+=("$manifest")
+          done < <(
+            find . -mindepth 2 -maxdepth 2 -name manifest.yaml \
+              -not -path './.swamp/*' \
+              -print0 \
+            | sort -z
+          )
+          if [ "${#manifests[@]}" -eq 0 ]; then
+            echo "No extension manifests found"
+            exit 1
+          fi
+
+          for manifest in "${manifests[@]}"; do
+            echo "Quality $manifest"
+            swamp extension quality "$manifest"
+            echo "Dry-run push $manifest"
+            swamp extension push "$manifest" --dry-run --yes
+          done
       - name: test
         run: |
           deno test \
