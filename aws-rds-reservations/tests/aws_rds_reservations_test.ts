@@ -38,6 +38,8 @@ import {
   type SdkClient,
   type SweepTarget,
   tagsFromAws,
+  validateDBInstance,
+  validateReservedDBInstance,
 } from "../aws_rds_reservations.ts";
 import { isThrottlingError, type RetryDeps, withRetry } from "../_lib/retry.ts";
 
@@ -921,4 +923,505 @@ Deno.test("sdkApi describeReservedDBInstances: destroys the RDS client once on t
     "AccessDenied",
   );
   assertEquals(rds.destroyCount, 1);
+});
+
+// ---------------------------------------------------------------------------
+// Raw-response validators (pure)
+// ---------------------------------------------------------------------------
+
+/** A raw AWS DB instance with every coverage-critical field populated. */
+function validRawInstance(): AwsDBInstance {
+  return {
+    DBInstanceIdentifier: "orders-db",
+    DBInstanceClass: "db.r7g.2xlarge",
+    Engine: "postgres",
+    DBInstanceStatus: "available",
+    MultiAZ: true,
+  };
+}
+
+/** A raw AWS reserved DB instance with every coverage-critical field populated. */
+function validRawReserved(): AwsReservedDBInstance {
+  return {
+    ReservedDBInstanceId: "ri-1",
+    DBInstanceClass: "db.r7g.large",
+    ProductDescription: "postgresql",
+    DBInstanceCount: 2,
+    State: "active",
+    MultiAZ: true,
+  };
+}
+
+Deno.test("validateDBInstance: accepts a fully populated row", () => {
+  const res = validateDBInstance(validRawInstance());
+  assertEquals(res.ok, true);
+});
+
+Deno.test("validateDBInstance: optional metadata may be absent", () => {
+  // EngineVersion / LicenseModel / StorageType / DBClusterIdentifier / TagList
+  // are intentionally optional and must not fail validation.
+  const res = validateDBInstance(validRawInstance());
+  assertEquals(res.ok, true);
+});
+
+Deno.test("validateDBInstance: missing DBInstanceIdentifier is reported", () => {
+  const db = validRawInstance();
+  delete db.DBInstanceIdentifier;
+  const res = validateDBInstance(db);
+  assertEquals(res.ok, false);
+  if (!res.ok) assertEquals(res.missing, ["DBInstanceIdentifier"]);
+});
+
+Deno.test("validateDBInstance: empty DBInstanceClass is reported", () => {
+  const db = validRawInstance();
+  db.DBInstanceClass = "";
+  const res = validateDBInstance(db);
+  assertEquals(res.ok, false);
+  if (!res.ok) assertEquals(res.missing, ["DBInstanceClass"]);
+});
+
+Deno.test("validateDBInstance: missing Engine is reported", () => {
+  const db = validRawInstance();
+  delete db.Engine;
+  const res = validateDBInstance(db);
+  assertEquals(res.ok, false);
+  if (!res.ok) assertEquals(res.missing, ["Engine"]);
+});
+
+Deno.test("validateDBInstance: missing DBInstanceStatus is reported", () => {
+  const db = validRawInstance();
+  delete db.DBInstanceStatus;
+  const res = validateDBInstance(db);
+  assertEquals(res.ok, false);
+  if (!res.ok) assertEquals(res.missing, ["DBInstanceStatus"]);
+});
+
+Deno.test("validateReservedDBInstance: accepts a fully populated row", () => {
+  const res = validateReservedDBInstance(validRawReserved());
+  assertEquals(res.ok, true);
+});
+
+Deno.test("validateReservedDBInstance: missing ReservedDBInstanceId is reported", () => {
+  const r = validRawReserved();
+  delete r.ReservedDBInstanceId;
+  const res = validateReservedDBInstance(r);
+  assertEquals(res.ok, false);
+  if (!res.ok) assertEquals(res.missing, ["ReservedDBInstanceId"]);
+});
+
+Deno.test("validateReservedDBInstance: missing ProductDescription is reported", () => {
+  const r = validRawReserved();
+  delete r.ProductDescription;
+  const res = validateReservedDBInstance(r);
+  assertEquals(res.ok, false);
+  if (!res.ok) assertEquals(res.missing, ["ProductDescription"]);
+});
+
+Deno.test("validateReservedDBInstance: DBInstanceCount of 0 is reported (understates coverage)", () => {
+  const r = validRawReserved();
+  r.DBInstanceCount = 0;
+  const res = validateReservedDBInstance(r);
+  assertEquals(res.ok, false);
+  if (!res.ok) assertEquals(res.missing, ["DBInstanceCount"]);
+});
+
+Deno.test("validateReservedDBInstance: missing DBInstanceCount is reported", () => {
+  const r = validRawReserved();
+  delete r.DBInstanceCount;
+  const res = validateReservedDBInstance(r);
+  assertEquals(res.ok, false);
+  if (!res.ok) assertEquals(res.missing, ["DBInstanceCount"]);
+});
+
+Deno.test("validateReservedDBInstance: empty State is reported (would vanish from coverage)", () => {
+  const r = validRawReserved();
+  r.State = "";
+  const res = validateReservedDBInstance(r);
+  assertEquals(res.ok, false);
+  if (!res.ok) assertEquals(res.missing, ["State"]);
+});
+
+Deno.test("validateReservedDBInstance: missing MultiAZ is reported", () => {
+  const r = validRawReserved();
+  delete r.MultiAZ;
+  const res = validateReservedDBInstance(r);
+  assertEquals(res.ok, false);
+  if (!res.ok) assertEquals(res.missing, ["MultiAZ"]);
+});
+
+// ---------------------------------------------------------------------------
+// runSweep — malformed rows become scan_error, never empty/zero resources
+// ---------------------------------------------------------------------------
+
+Deno.test("runSweep: instance missing DBInstanceIdentifier -> malformed_db_instance scan_error, no instance written", async () => {
+  const { context, getWrittenResources } = createModelTestContext({});
+  const result = await runSweep({
+    targets: [target("prod-readonly", {
+      accountId: "111122223333",
+      perRegion: {
+        "us-east-1": {
+          instances: [{
+            // no DBInstanceIdentifier
+            DBInstanceClass: "db.r7g.large",
+            Engine: "postgres",
+            DBInstanceStatus: "available",
+          }],
+        },
+      },
+    })],
+    regions: ["us-east-1"],
+    requiredProfileSuffix: "-readonly",
+    context,
+  });
+
+  assertEquals(result.instanceCount, 0);
+  assertEquals(result.errorCount, 1);
+  const written = getWrittenResources();
+  assertEquals(written.filter((w) => w.specName === "instance").length, 0);
+  const err = written.find((w) => w.specName === "scan_error")!
+    .data as Record<string, unknown>;
+  assertEquals(err.phase, "malformed_db_instance");
+  assertEquals(err.kind, "other");
+  assertStrictEquals(
+    (err.message as string).includes("DBInstanceIdentifier"),
+    true,
+  );
+});
+
+Deno.test("runSweep: instance missing DBInstanceClass -> malformed_db_instance scan_error, no instance written", async () => {
+  const { context, getWrittenResources } = createModelTestContext({});
+  const result = await runSweep({
+    targets: [target("prod-readonly", {
+      accountId: "111122223333",
+      perRegion: {
+        "us-east-1": {
+          instances: [{
+            DBInstanceIdentifier: "orders-db",
+            // no DBInstanceClass
+            Engine: "postgres",
+            DBInstanceStatus: "available",
+          }],
+        },
+      },
+    })],
+    regions: ["us-east-1"],
+    requiredProfileSuffix: "-readonly",
+    context,
+  });
+
+  assertEquals(result.instanceCount, 0);
+  assertEquals(result.errorCount, 1);
+  const written = getWrittenResources();
+  assertEquals(written.filter((w) => w.specName === "instance").length, 0);
+  const err = written.find((w) => w.specName === "scan_error")!
+    .data as Record<string, unknown>;
+  assertEquals(err.phase, "malformed_db_instance");
+  assertStrictEquals((err.message as string).includes("DBInstanceClass"), true);
+});
+
+Deno.test("runSweep: instance missing Engine -> malformed_db_instance scan_error, no instance written", async () => {
+  const { context, getWrittenResources } = createModelTestContext({});
+  const result = await runSweep({
+    targets: [target("prod-readonly", {
+      accountId: "111122223333",
+      perRegion: {
+        "us-east-1": {
+          instances: [{
+            DBInstanceIdentifier: "orders-db",
+            DBInstanceClass: "db.r7g.large",
+            // no Engine
+            DBInstanceStatus: "available",
+          }],
+        },
+      },
+    })],
+    regions: ["us-east-1"],
+    requiredProfileSuffix: "-readonly",
+    context,
+  });
+
+  assertEquals(result.instanceCount, 0);
+  assertEquals(result.errorCount, 1);
+  const written = getWrittenResources();
+  assertEquals(written.filter((w) => w.specName === "instance").length, 0);
+  const err = written.find((w) => w.specName === "scan_error")!
+    .data as Record<string, unknown>;
+  assertEquals(err.phase, "malformed_db_instance");
+  assertStrictEquals((err.message as string).includes("Engine"), true);
+});
+
+Deno.test("runSweep: reserved missing ReservedDBInstanceId -> malformed_reserved_db_instance scan_error, no reserved written", async () => {
+  const { context, getWrittenResources } = createModelTestContext({});
+  const result = await runSweep({
+    targets: [target("prod-readonly", {
+      accountId: "111122223333",
+      perRegion: {
+        "us-east-1": {
+          reserved: [{
+            // no ReservedDBInstanceId
+            DBInstanceClass: "db.r7g.large",
+            ProductDescription: "postgresql",
+            DBInstanceCount: 2,
+            State: "active",
+            MultiAZ: true,
+          }],
+        },
+      },
+    })],
+    regions: ["us-east-1"],
+    requiredProfileSuffix: "-readonly",
+    context,
+  });
+
+  assertEquals(result.reservedCount, 0);
+  assertEquals(result.errorCount, 1);
+  const written = getWrittenResources();
+  assertEquals(written.filter((w) => w.specName === "reserved").length, 0);
+  const err = written.find((w) => w.specName === "scan_error")!
+    .data as Record<string, unknown>;
+  assertEquals(err.phase, "malformed_reserved_db_instance");
+  assertEquals(err.kind, "other");
+  assertStrictEquals(
+    (err.message as string).includes("ReservedDBInstanceId"),
+    true,
+  );
+});
+
+Deno.test("runSweep: reserved missing DBInstanceCount -> malformed_reserved_db_instance scan_error, no reserved written", async () => {
+  const { context, getWrittenResources } = createModelTestContext({});
+  const result = await runSweep({
+    targets: [target("prod-readonly", {
+      accountId: "111122223333",
+      perRegion: {
+        "us-east-1": {
+          reserved: [{
+            ReservedDBInstanceId: "ri-1",
+            DBInstanceClass: "db.r7g.large",
+            ProductDescription: "postgresql",
+            // no DBInstanceCount
+            State: "active",
+            MultiAZ: true,
+          }],
+        },
+      },
+    })],
+    regions: ["us-east-1"],
+    requiredProfileSuffix: "-readonly",
+    context,
+  });
+
+  assertEquals(result.reservedCount, 0);
+  assertEquals(result.errorCount, 1);
+  const written = getWrittenResources();
+  assertEquals(written.filter((w) => w.specName === "reserved").length, 0);
+  const err = written.find((w) => w.specName === "scan_error")!
+    .data as Record<string, unknown>;
+  assertEquals(err.phase, "malformed_reserved_db_instance");
+  assertStrictEquals((err.message as string).includes("DBInstanceCount"), true);
+});
+
+Deno.test("runSweep: reserved missing ProductDescription -> malformed_reserved_db_instance scan_error, no reserved written", async () => {
+  const { context, getWrittenResources } = createModelTestContext({});
+  const result = await runSweep({
+    targets: [target("prod-readonly", {
+      accountId: "111122223333",
+      perRegion: {
+        "us-east-1": {
+          reserved: [{
+            ReservedDBInstanceId: "ri-1",
+            DBInstanceClass: "db.r7g.large",
+            // no ProductDescription
+            DBInstanceCount: 2,
+            State: "active",
+            MultiAZ: true,
+          }],
+        },
+      },
+    })],
+    regions: ["us-east-1"],
+    requiredProfileSuffix: "-readonly",
+    context,
+  });
+
+  assertEquals(result.reservedCount, 0);
+  assertEquals(result.errorCount, 1);
+  const written = getWrittenResources();
+  assertEquals(written.filter((w) => w.specName === "reserved").length, 0);
+  const err = written.find((w) => w.specName === "scan_error")!
+    .data as Record<string, unknown>;
+  assertEquals(err.phase, "malformed_reserved_db_instance");
+  assertStrictEquals(
+    (err.message as string).includes("ProductDescription"),
+    true,
+  );
+});
+
+Deno.test("runSweep: a malformed row does not abort sweeping its valid siblings", async () => {
+  const { context, getWrittenResources } = createModelTestContext({});
+  const result = await runSweep({
+    targets: [target("prod-readonly", {
+      accountId: "111122223333",
+      perRegion: {
+        "us-east-1": {
+          instances: [
+            {
+              DBInstanceClass: "db.r7g.large",
+              Engine: "postgres",
+              DBInstanceStatus: "available",
+            }, // malformed: no id
+            {
+              DBInstanceIdentifier: "good-db",
+              DBInstanceClass: "db.r7g.large",
+              Engine: "postgres",
+              DBInstanceStatus: "available",
+            },
+          ],
+        },
+      },
+    })],
+    regions: ["us-east-1"],
+    requiredProfileSuffix: "-readonly",
+    context,
+  });
+
+  assertEquals(result.instanceCount, 1);
+  assertEquals(result.errorCount, 1);
+  const written = getWrittenResources();
+  const instances = written.filter((w) => w.specName === "instance");
+  assertEquals(instances.length, 1);
+  assertEquals(
+    (instances[0].data as Record<string, unknown>).dbInstanceIdentifier,
+    "good-db",
+  );
+});
+
+// ---------------------------------------------------------------------------
+// Per-row malformed scan_error KEY uniqueness (regression: key collision).
+//
+// swamp's data store reconciles by (specName, key); the once-per-(profile,
+// region) phase key (`error--<profile>--<region>--<phase>`) is shared by every
+// malformed row in a region, so without a per-row discriminator N malformed
+// rows persist as a single stored scan_error (last-write-wins) even though
+// errorCount counts N. The test harness is a write-LOG, not a keyed store, so
+// these tests assert on the WRITTEN KEY (`name`) to prove each row gets a
+// distinct key. Against the old colliding key the keys are identical and the
+// assertions fail.
+// ---------------------------------------------------------------------------
+
+Deno.test("runSweep: two malformed instance rows (hyphenated ids) in same region -> distinct scan_error keys", async () => {
+  const { context, getWrittenResources } = createModelTestContext({});
+  const result = await runSweep({
+    targets: [target("prod-readonly", {
+      accountId: "111122223333",
+      perRegion: {
+        "us-east-1": {
+          instances: [
+            {
+              DBInstanceIdentifier: "orders-db", // hyphen in id
+              DBInstanceClass: "db.r7g.large",
+              // no Engine -> malformed
+              DBInstanceStatus: "available",
+            },
+            {
+              DBInstanceIdentifier: "billing-db", // hyphen in id
+              DBInstanceClass: "db.r7g.large",
+              // no Engine -> malformed
+              DBInstanceStatus: "available",
+            },
+          ],
+        },
+      },
+    })],
+    regions: ["us-east-1"],
+    requiredProfileSuffix: "-readonly",
+    context,
+  });
+
+  assertEquals(result.errorCount, 2);
+  const errs = getWrittenResources().filter((w) => w.specName === "scan_error");
+  assertEquals(errs.length, 2);
+  const keys = errs.map((w) => w.name);
+  // Distinct keys -> the keyed store would persist BOTH, not collapse to one.
+  assertEquals(new Set(keys).size, 2);
+  // Each key carries its row id behind the established `--` boundary.
+  assertStrictEquals(keys.some((k) => k.endsWith("--0-orders-db")), true);
+  assertStrictEquals(keys.some((k) => k.endsWith("--1-billing-db")), true);
+});
+
+Deno.test("runSweep: two malformed reserved rows in same region -> distinct scan_error keys", async () => {
+  const { context, getWrittenResources } = createModelTestContext({});
+  const result = await runSweep({
+    targets: [target("prod-readonly", {
+      accountId: "111122223333",
+      perRegion: {
+        "us-east-1": {
+          reserved: [
+            {
+              ReservedDBInstanceId: "ri-a",
+              DBInstanceClass: "db.r7g.large",
+              // no ProductDescription -> malformed
+              DBInstanceCount: 2,
+              State: "active",
+              MultiAZ: true,
+            },
+            {
+              ReservedDBInstanceId: "ri-b",
+              DBInstanceClass: "db.r7g.large",
+              // no ProductDescription -> malformed
+              DBInstanceCount: 2,
+              State: "active",
+              MultiAZ: true,
+            },
+          ],
+        },
+      },
+    })],
+    regions: ["us-east-1"],
+    requiredProfileSuffix: "-readonly",
+    context,
+  });
+
+  assertEquals(result.errorCount, 2);
+  const errs = getWrittenResources().filter((w) => w.specName === "scan_error");
+  assertEquals(errs.length, 2);
+  assertEquals(new Set(errs.map((w) => w.name)).size, 2);
+});
+
+Deno.test("runSweep: WORST CASE - two id-less malformed rows in same region -> distinct scan_error keys via ordinal fallback", async () => {
+  const { context, getWrittenResources } = createModelTestContext({});
+  const result = await runSweep({
+    targets: [target("prod-readonly", {
+      accountId: "111122223333",
+      perRegion: {
+        "us-east-1": {
+          instances: [
+            {
+              // no DBInstanceIdentifier -> malformed, no row id to discriminate
+              DBInstanceClass: "db.r7g.large",
+              Engine: "postgres",
+              DBInstanceStatus: "available",
+            },
+            {
+              // no DBInstanceIdentifier -> malformed, no row id to discriminate
+              DBInstanceClass: "db.r7g.large",
+              Engine: "postgres",
+              DBInstanceStatus: "available",
+            },
+          ],
+        },
+      },
+    })],
+    regions: ["us-east-1"],
+    requiredProfileSuffix: "-readonly",
+    context,
+  });
+
+  assertEquals(result.errorCount, 2);
+  const errs = getWrittenResources().filter((w) => w.specName === "scan_error");
+  assertEquals(errs.length, 2);
+  const keys = errs.map((w) => w.name);
+  // The ordinal fallback keeps two id-less rows distinct.
+  assertEquals(new Set(keys).size, 2);
+  assertStrictEquals(keys.some((k) => k.endsWith("--0-noid")), true);
+  assertStrictEquals(keys.some((k) => k.endsWith("--1-noid")), true);
 });

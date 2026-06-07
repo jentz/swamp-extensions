@@ -44,7 +44,9 @@ it writes:
 - one **`reserved`** resource per reservation, carrying the offered class,
   product description (engine), Multi-AZ flag, instance count, state, offering
   type, and term;
-- one **`scan_error`** resource per `(profile, region)` phase that fails.
+- **`scan_error`** resources for failures: at most one per `(profile, region)`
+  phase that fails, plus one per malformed row for the per-row malformed phases
+  (`malformed_db_instance` / `malformed_reserved_db_instance`).
 
 ### Failures become rows, never aborts
 
@@ -54,6 +56,21 @@ never blank out the rest of the fleet. Errors are classified into
 `auth_expired` (operator runs `aws sso login`), `access_denied` (IAM/SCP), and
 `other`, so the companion report can tell "needs login" apart from "genuinely
 denied".
+
+Individual malformed AWS rows are handled the same way. The public `instance`
+and `reserved` schemas treat every field as real data, so before a row is
+written the sweep validates the coverage-critical fields of the raw AWS
+response. A DB instance missing its identifier, class, engine, or status, or a
+reservation missing its id, class, product description, instance count (`> 0`),
+state, or Multi-AZ flag, is **not** written as a resource and is **not**
+silently dropped. Instead it becomes a `scan_error` (`malformed_db_instance` or
+`malformed_reserved_db_instance`) naming the account, region, and the
+missing/invalid fields. Unlike the once-per-`(profile, region)` phases, these
+per-row phases emit **one `scan_error` per malformed row**, each with a unique
+key — so when an API shift breaks every row in a region they are all reported,
+not collapsed into one. This keeps a malformed or API-shifted response from
+laundering into an apparently-valid resource with empty/zero placeholders that
+would understate reservation coverage.
 
 ## Installation
 
@@ -171,7 +188,7 @@ region literally named `ambient`/`account`.
 | `profile`   | `string`                                      | Profile being swept; `""` for ambient. |
 | `accountId` | `string`                                      | Account id if known by the time of failure; `""` otherwise. |
 | `region`    | `string`                                      | Region being swept; `""` for account-level failures. |
-| `phase`     | `string`                                      | `no_regions`, `profile_suffix_check`, `credentials`, `describe_db_instances`, `describe_reserved_db_instances`. `no_regions` is the single account-less row written when `regions` is empty (see the `regions` argument). |
+| `phase`     | `string`                                      | `no_regions`, `profile_suffix_check`, `credentials`, `describe_db_instances`, `describe_reserved_db_instances`, `malformed_db_instance`, `malformed_reserved_db_instance`. `no_regions` is the single account-less row written when `regions` is empty (see the `regions` argument). `malformed_db_instance` / `malformed_reserved_db_instance` are written per individual AWS row that is missing a coverage-critical field (the row is not emitted as an `instance`/`reserved` resource). |
 | `kind`      | `"auth_expired" \| "access_denied" \| "other"` | Coarse classification driving the operator's next action. |
 | `message`   | `string`                                      | Error detail. |
 | `scannedAt` | `string`                                      | ISO 8601 timestamp. |

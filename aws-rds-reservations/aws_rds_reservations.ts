@@ -232,7 +232,13 @@ export interface ReservedRecord {
   scannedAt: string;
 }
 
-/** A (profile, region) pair that could not be assessed. */
+/**
+ * A failure recorded during the sweep. Most phases describe a (profile, region)
+ * pair that could not be assessed and emit at most one `scan_error`; the per-row
+ * malformed phases (`malformed_db_instance`, `malformed_reserved_db_instance`)
+ * instead emit one `scan_error` per malformed row (keyed uniquely; see
+ * scanErrorKey).
+ */
 export interface ScanError {
   /** Profile being swept; `""` for ambient. */
   profile: string;
@@ -367,6 +373,12 @@ export function resolveBootstrapRegion(
 //     while region/phase stay closed-set — do not move a free field to the tail.
 //     Empty segments (not word-sentinels) mark the ambient chain / account-level
 //     failure, so a profile literally named `ambient` cannot impersonate them.
+//     Per-row malformed phases fire once PER ROW, so they append a trailing
+//     `--${ordinal}-${rowId}` discriminator. It is the new tail, so it too must
+//     stay `--`-free: `ordinal` is digits-only and `rowId` is an RDS identifier
+//     (no consecutive hyphens). Decode still reads right-to-left
+//     (discriminator, phase, region, profile). The `ordinal` prefix keeps two
+//     id-less rows in the same region distinct when there is no `rowId`.
 
 /** Build a stable storage key for an instance row (unique across account/region). */
 export function instanceKey(
@@ -386,13 +398,34 @@ export function reservedKey(
   return `reserved-${accountId}-${region}--${reservedDBInstanceId}`;
 }
 
-/** Build a stable storage key for a scan error. */
+/**
+ * Build a stable storage key for a scan error.
+ *
+ * Once-per-(profile, region) phases (credentials, describe_db_instances,
+ * no_regions, …) omit `rowDiscriminator`: the trailing `phase` is an internal
+ * constant (closed set, hyphen-free), so the key decodes unambiguously from the
+ * right regardless of a `--`-containing `profile`.
+ *
+ * Per-row malformed phases (malformed_db_instance,
+ * malformed_reserved_db_instance) fire ONCE PER ROW, so they MUST pass a
+ * `rowDiscriminator` to avoid colliding on the shared (profile, region, phase)
+ * triple. The discriminator is appended after `phase` with `--`, mirroring how
+ * `instanceKey`/`reservedKey` place their free identifier behind a `--`. The
+ * discriminator itself is `${ordinal}-${rowId}` where `ordinal` is digits-only
+ * (built by the caller) and `rowId` is an RDS identifier; RDS forbids
+ * consecutive hyphens, so the discriminator never contains `--` and the
+ * right-to-left decode (rowDiscriminator, then phase, then region, then
+ * profile) stays unambiguous. The leading `ordinal` also guarantees distinct
+ * keys for two id-less rows in the same region (see writeError caller).
+ */
 export function scanErrorKey(
   profileLabel: string,
   region: string,
   phase: string,
+  rowDiscriminator?: string,
 ): string {
-  return `error--${profileLabel}--${region}--${phase}`;
+  const base = `error--${profileLabel}--${region}--${phase}`;
+  return rowDiscriminator === undefined ? base : `${base}--${rowDiscriminator}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -443,6 +476,132 @@ export interface AwsReservedDBInstance {
   Duration?: number;
   /** Reservation start time. */
   StartTime?: Date;
+}
+
+// ---------------------------------------------------------------------------
+// Raw-response validators (exported for unit-test access)
+//
+// The companion coverage report (aws-rds-reservation-coverage) hand-mirrors the
+// public InstanceRecord / ReservedRecord schemas and treats every field as real
+// AWS data: an empty `dbInstanceClass` routes to the "unparseable" carve-out, an
+// empty `engine`/`productDescription` is coerced to "unknown", a reserved row
+// whose `state !== "active"` is silently dropped from coverage, and a
+// `dbInstanceCount` of 0 contributes zero reserved capacity. Writing placeholder
+// defaults for missing AWS fields therefore launders malformed / API-shifted
+// responses into apparently-valid resources and understates coverage before
+// publish. These validators reject the raw AWS shape BEFORE a record is built so
+// the sweep can emit a scan_error instead (see runSweep). The public record
+// schemas are intentionally left unchanged.
+// ---------------------------------------------------------------------------
+
+/** Outcome of validating a raw AWS row: the typed input, or the offending fields. */
+export type ValidationResult<T> =
+  | { ok: true; value: T }
+  | { ok: false; missing: string[] };
+
+/**
+ * Validate the coverage-critical fields of a raw {@link AwsDBInstance} before a
+ * record is built. Returns the same object narrowed when every required field is
+ * present and non-empty, or the list of missing/invalid field names otherwise.
+ *
+ * Required (each is real data the coverage report depends on):
+ *   - `DBInstanceIdentifier` — storage-key component and the row's identity.
+ *   - `DBInstanceClass` — an empty class routes coverage to "unparseable".
+ *   - `Engine` — an empty engine is coerced to "unknown", hiding the real fleet.
+ *   - `DBInstanceStatus` — surfaced as `status`; "" misrepresents lifecycle state.
+ *
+ * Intentionally optional (may stay `""`/`false` when AWS omits them — they are
+ * not coverage-critical, so a default does not launder a malformed response):
+ *   - `EngineVersion`, `LicenseModel`, `StorageType` — descriptive metadata; AWS
+ *     legitimately omits `LicenseModel` for Aurora / RDS Custom.
+ *   - `MultiAZ` — booleans have no "missing" sentinel; absent reads as `false`.
+ *   - `DBClusterIdentifier`, `TagList` — only present for cluster members / when
+ *     tags exist.
+ */
+export function validateDBInstance(
+  db: AwsDBInstance,
+): ValidationResult<AwsDBInstance> {
+  const missing: string[] = [];
+  if (
+    typeof db.DBInstanceIdentifier !== "string" ||
+    db.DBInstanceIdentifier.length === 0
+  ) {
+    missing.push("DBInstanceIdentifier");
+  }
+  if (
+    typeof db.DBInstanceClass !== "string" ||
+    db.DBInstanceClass.length === 0
+  ) {
+    missing.push("DBInstanceClass");
+  }
+  if (typeof db.Engine !== "string" || db.Engine.length === 0) {
+    missing.push("Engine");
+  }
+  if (
+    typeof db.DBInstanceStatus !== "string" ||
+    db.DBInstanceStatus.length === 0
+  ) {
+    missing.push("DBInstanceStatus");
+  }
+  return missing.length === 0
+    ? { ok: true, value: db }
+    : { ok: false, missing };
+}
+
+/**
+ * Validate the coverage-critical fields of a raw {@link AwsReservedDBInstance}
+ * before a record is built. Returns the same object narrowed when every required
+ * field is present and valid, or the list of missing/invalid field names.
+ *
+ * Required (each is real data the coverage report depends on):
+ *   - `ReservedDBInstanceId` — storage-key component and the row's identity.
+ *   - `DBInstanceClass` — empty class routes coverage to "unparseable".
+ *   - `ProductDescription` — empty value is coerced to "unknown".
+ *   - `DBInstanceCount` — must be present and > 0; a 0 contributes zero reserved
+ *     capacity and silently understates coverage.
+ *   - `State` — a row whose state is not `active` is dropped from coverage, so a
+ *     placeholder `""` makes the reservation vanish rather than count.
+ *   - `MultiAZ` — must be present (a boolean): netting size-flex capacity differs
+ *     for Multi-AZ reservations, so an assumed `false` would misstate coverage.
+ *
+ * Intentionally optional metadata (may stay `""`/`0` when AWS omits them):
+ *   - `OfferingType` — reporting/grouping label, not used to compute coverage.
+ *   - `Duration` — term length is informational; coverage nets active capacity
+ *     regardless of remaining term.
+ *   - `StartTime` — informational timestamp, not coverage-critical.
+ */
+export function validateReservedDBInstance(
+  r: AwsReservedDBInstance,
+): ValidationResult<AwsReservedDBInstance> {
+  const missing: string[] = [];
+  if (
+    typeof r.ReservedDBInstanceId !== "string" ||
+    r.ReservedDBInstanceId.length === 0
+  ) {
+    missing.push("ReservedDBInstanceId");
+  }
+  if (
+    typeof r.DBInstanceClass !== "string" ||
+    r.DBInstanceClass.length === 0
+  ) {
+    missing.push("DBInstanceClass");
+  }
+  if (
+    typeof r.ProductDescription !== "string" ||
+    r.ProductDescription.length === 0
+  ) {
+    missing.push("ProductDescription");
+  }
+  if (typeof r.DBInstanceCount !== "number" || !(r.DBInstanceCount > 0)) {
+    missing.push("DBInstanceCount");
+  }
+  if (typeof r.State !== "string" || r.State.length === 0) {
+    missing.push("State");
+  }
+  if (typeof r.MultiAZ !== "boolean") {
+    missing.push("MultiAZ");
+  }
+  return missing.length === 0 ? { ok: true, value: r } : { ok: false, missing };
 }
 
 /**
@@ -820,7 +979,12 @@ export interface SweepResult {
 /**
  * Core `sweep` logic. Iterates targets (accounts) × regions, writing one
  * `instance` resource per provisioned DB instance, one `reserved` resource per
- * reservation, and one `scan_error` per (profile, region) phase that fails.
+ * reservation, and `scan_error` rows for failures. The once-per-(profile,
+ * region) phases (credentials, describe_db_instances, …) emit at most one
+ * `scan_error` each; the per-row malformed phases (malformed_db_instance,
+ * malformed_reserved_db_instance) emit one `scan_error` PER malformed row, each
+ * with a unique key (see scanErrorKey) so co-located malformed rows are never
+ * collapsed into one stored error.
  * Per-target and per-region failures are caught and recorded — a single
  * expired SSO token or denied call never aborts the wider sweep.
  *
@@ -841,12 +1005,19 @@ export async function runSweep(deps: SweepDeps): Promise<SweepResult> {
   let errorCount = 0;
   const scannedAt = now().toISOString();
 
-  const writeError = async (e: ScanError): Promise<void> => {
+  // `rowDiscriminator` is supplied ONLY by per-row malformed phases, which fire
+  // once per malformed row and would otherwise collide on the shared
+  // (profile, region, phase) key. It is a key-only concern, so it stays out of
+  // the persisted ScanError resource shape.
+  const writeError = async (
+    e: ScanError,
+    rowDiscriminator?: string,
+  ): Promise<void> => {
     errorCount++;
     handles.push(
       await context.writeResource(
         "scan_error",
-        scanErrorKey(e.profile, e.region, e.phase),
+        scanErrorKey(e.profile, e.region, e.phase, rowDiscriminator),
         e,
       ),
     );
@@ -943,15 +1114,40 @@ export async function runSweep(deps: SweepDeps): Promise<SweepResult> {
       // Provisioned DB instances.
       try {
         const dbInstances = await target.api.describeDBInstances(region);
-        for (const db of dbInstances) {
-          const id = db.DBInstanceIdentifier ?? "";
-          if (id === "") {
+        for (const [index, db] of dbInstances.entries()) {
+          // Reject malformed rows BEFORE building a record: a placeholder
+          // default for a coverage-critical field would launder a malformed
+          // AWS response into an apparently-valid resource.
+          const valid = validateDBInstance(db);
+          if (!valid.ok) {
+            const hasId = typeof db.DBInstanceIdentifier === "string" &&
+              db.DBInstanceIdentifier.length > 0;
+            const label = hasId ? db.DBInstanceIdentifier! : "<unknown>";
             context.logger.warn(
-              "DB instance with no identifier in {region}; skipped",
-              { region },
+              "Malformed DB instance {id} in {region}; missing {fields}",
+              { id: label, region, fields: valid.missing.join(", ") },
             );
+            // Per-row key: the row id discriminates rows, but when the missing
+            // field IS the identifier there is no id, so the loop ordinal is a
+            // stable fallback that keeps two id-less rows distinct. The ordinal
+            // is digits-only and the id contains no `--` (RDS forbids
+            // consecutive hyphens), so the discriminator stays `--`-free and the
+            // right-to-left key decode is preserved.
+            await writeError({
+              profile: profileLabel,
+              accountId,
+              region,
+              phase: "malformed_db_instance",
+              kind: "other",
+              message: `Malformed DB instance in account ${accountId} region ` +
+                `${region} (id=${label}): missing or invalid required ` +
+                `field(s): ${valid.missing.join(", ")}. Row not written as a ` +
+                `resource to avoid laundering an empty/placeholder instance.`,
+              scannedAt,
+            }, `${index}-${hasId ? db.DBInstanceIdentifier! : "noid"}`);
             continue;
           }
+          const id = db.DBInstanceIdentifier ?? "";
           const row: InstanceRecord = {
             accountId,
             accountName,
@@ -998,15 +1194,38 @@ export async function runSweep(deps: SweepDeps): Promise<SweepResult> {
       // Reserved DB instances.
       try {
         const reserved = await target.api.describeReservedDBInstances(region);
-        for (const r of reserved) {
-          const rid = r.ReservedDBInstanceId ?? "";
-          if (rid === "") {
+        for (const [index, r] of reserved.entries()) {
+          // Reject malformed rows BEFORE building a record: a placeholder
+          // state:"" / dbInstanceCount:0 would make the reservation vanish from
+          // coverage or contribute zero capacity, silently understating it.
+          const valid = validateReservedDBInstance(r);
+          if (!valid.ok) {
+            const hasId = typeof r.ReservedDBInstanceId === "string" &&
+              r.ReservedDBInstanceId.length > 0;
+            const label = hasId ? r.ReservedDBInstanceId! : "<unknown>";
             context.logger.warn(
-              "Reserved DB instance with no id in {region}; skipped",
-              { region },
+              "Malformed reserved DB instance {id} in {region}; missing {fields}",
+              { id: label, region, fields: valid.missing.join(", ") },
             );
+            // Per-row key: see the provisioned-instance phase above. The id
+            // discriminates rows; the loop ordinal is the id-less fallback so
+            // two id-less reserved rows in the same region stay distinct.
+            await writeError({
+              profile: profileLabel,
+              accountId,
+              region,
+              phase: "malformed_reserved_db_instance",
+              kind: "other",
+              message:
+                `Malformed reserved DB instance in account ${accountId} ` +
+                `region ${region} (id=${label}): missing or invalid required ` +
+                `field(s): ${valid.missing.join(", ")}. Row not written as a ` +
+                `resource to avoid understating reservation coverage.`,
+              scannedAt,
+            }, `${index}-${hasId ? r.ReservedDBInstanceId! : "noid"}`);
             continue;
           }
+          const rid = r.ReservedDBInstanceId ?? "";
           const row: ReservedRecord = {
             accountId,
             accountName,
@@ -1079,8 +1298,10 @@ export async function runSweep(deps: SweepDeps): Promise<SweepResult> {
  *
  * Single method `sweep` inventories every provisioned DB instance and every
  * reserved DB instance across the configured `profiles × regions`, emitting one
- * `instance` row per DB instance, one `reserved` row per reservation, and one
- * `scan_error` per (profile, region) phase that could not be assessed.
+ * `instance` row per DB instance, one `reserved` row per reservation, and
+ * `scan_error` rows for failures — at most one per (profile, region) phase that
+ * could not be assessed, plus one per malformed row for the per-row malformed
+ * phases.
  */
 export const model = {
   type: "@jentz/aws-rds-reservations",
