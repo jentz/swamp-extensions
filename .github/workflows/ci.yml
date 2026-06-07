@@ -23,6 +23,8 @@ jobs:
         run: |
           deno test \
             --allow-read --allow-write --allow-env --allow-net --no-check \
-            aws-context-guard/tests/ \
-            aws-rds-inventory/tests/ \
-            aws-s3-bucket-audit/tests/
+            aws-context-guard/ \
+            aws-rds-inventory/ \
+            aws-s3-bucket-audit/ \
+            aws-rds-reservations/ \
+            aws-rds-reservation-coverage/
