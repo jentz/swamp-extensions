@@ -64,6 +64,11 @@ interface StubHandle {
   specName: string;
   /** Raw JSON the repository should return for this handle. */
   json: unknown;
+  /**
+   * When set, getContent REJECTS for this handle instead of returning bytes —
+   * simulating a transient storage error or one corrupt/missing blob.
+   */
+  rejectWith?: Error;
 }
 
 const enc = (v: unknown) => new TextEncoder().encode(JSON.stringify(v));
@@ -82,7 +87,10 @@ function stubContext(handles: StubHandle[]): {
     logs.push({ level, message });
 
   const byName = new Map<string, Uint8Array>(
-    handles.map((h) => [h.name, enc(h.json)]),
+    handles.filter((h) => !h.rejectWith).map((h) => [h.name, enc(h.json)]),
+  );
+  const rejectByName = new Map<string, Error>(
+    handles.filter((h) => h.rejectWith).map((h) => [h.name, h.rejectWith!]),
   );
 
   const context = {
@@ -109,8 +117,11 @@ function stubContext(handles: StubHandle[]): {
         _modelId: string,
         name: string,
         _version: number,
-      ): Promise<Uint8Array | null> =>
-        Promise.resolve(byName.get(name) ?? null),
+      ): Promise<Uint8Array | null> => {
+        const err = rejectByName.get(name);
+        if (err) return Promise.reject(err);
+        return Promise.resolve(byName.get(name) ?? null);
+      },
     },
   };
 
@@ -313,6 +324,216 @@ Deno.test("collect: a non-ISO scannedAt is rejected (the ISO datetime contract i
 
   assertEquals(collected.instances.length, 1);
   assertEquals(collected.skipped, 1);
+});
+
+Deno.test("collect: a getContent rejection skips one artifact, not the whole sweep", async () => {
+  // One handle's read REJECTS (transient storage error / corrupt blob) while
+  // sibling instance and reserved handles read fine. The rejection must be
+  // treated as a per-artifact skip — the surviving rows still land.
+  const { context, logs } = stubContext([
+    {
+      name: "instance-1",
+      version: 1,
+      specName: INSTANCE_SPEC,
+      json: instanceFixture,
+    },
+    {
+      name: "instance-broken-read",
+      version: 1,
+      specName: INSTANCE_SPEC,
+      json: instanceFixture,
+      rejectWith: new Error("transient storage error"),
+    },
+    {
+      name: "reserved-1",
+      version: 1,
+      specName: RESERVED_SPEC,
+      json: reservedFixture,
+    },
+  ]);
+
+  const collected = await collect(context);
+
+  // The surviving instance and reserved rows are not lost to the bad read.
+  assertEquals(collected.instances.length, 1);
+  assertEquals(collected.reserved.length, 1);
+  // The bad read is counted as a skip, exactly like a decode failure.
+  assertEquals(collected.skipped, 1);
+  // And it is observable: a warning names the failing handle.
+  const warned = logs.find(
+    (l) =>
+      l.level === "warn" && l.message.includes("Could not read") &&
+      l.message.includes("{handle}"),
+  );
+  assert(warned, "expected a warn log for the failed read");
+});
+
+Deno.test("collect: a getContent rejection for the only handle leaves an empty-but-not-thrown result", async () => {
+  // Even when the single artifact's read rejects, collect() must NOT throw —
+  // it degrades to an empty result with the skip counted.
+  const { context } = stubContext([
+    {
+      name: "instance-only",
+      version: 1,
+      specName: INSTANCE_SPEC,
+      json: instanceFixture,
+      rejectWith: new Error("blob gone"),
+    },
+  ]);
+
+  const collected = await collect(context);
+
+  assertEquals(collected.instances.length, 0);
+  assertEquals(collected.reserved.length, 0);
+  assertEquals(collected.errors.length, 0);
+  assertEquals(collected.skipped, 1);
+});
+
+Deno.test("collect: collect() never throws even when the logger itself throws", async () => {
+  // The logger is observability, not correctness: a throwing logger must not
+  // surface as a thrown collect(). Combine a rejecting read (which logs) and a
+  // schema failure (which also logs) against a logger that always throws.
+  const { multiAZ: _omit, ...broken } = instanceFixture;
+  const context = {
+    logger: {
+      info: () => {
+        throw new Error("logger down");
+      },
+      debug: () => {
+        throw new Error("logger down");
+      },
+      warn: () => {
+        throw new Error("logger down");
+      },
+      error: () => {
+        throw new Error("logger down");
+      },
+    },
+    stepExecutions: [
+      {
+        modelType: RESERVATIONS_MODEL_TYPE,
+        modelId: "step-1",
+        dataHandles: [
+          {
+            name: "bad-read",
+            version: 1,
+            metadata: { tags: { specName: INSTANCE_SPEC } },
+          },
+          {
+            name: "bad-schema",
+            version: 1,
+            metadata: { tags: { specName: INSTANCE_SPEC } },
+          },
+          {
+            name: "good",
+            version: 1,
+            metadata: { tags: { specName: INSTANCE_SPEC } },
+          },
+        ],
+      },
+    ],
+    dataRepository: {
+      getContent: (
+        _modelType: string,
+        _modelId: string,
+        name: string,
+        _version: number,
+      ): Promise<Uint8Array | null> => {
+        if (name === "bad-read") return Promise.reject(new Error("read fail"));
+        if (name === "bad-schema") return Promise.resolve(enc(broken));
+        return Promise.resolve(enc(instanceFixture));
+      },
+    },
+  };
+
+  const collected = await collect(context);
+
+  assertEquals(collected.instances.length, 1);
+  assertEquals(collected.skipped, 2);
+});
+
+Deno.test("collect: collect() never throws when getContent throws SYNCHRONOUSLY", async () => {
+  // A getContent that throws synchronously (rather than returning a rejected
+  // promise) must also be caught by the per-handle guard — await on a thrown
+  // synchronous call still routes through try/catch.
+  const context = {
+    logger: {
+      info: () => {},
+      debug: () => {},
+      warn: () => {},
+      error: () => {},
+    },
+    stepExecutions: [
+      {
+        modelType: RESERVATIONS_MODEL_TYPE,
+        modelId: "step-1",
+        dataHandles: [
+          {
+            name: "sync-throw",
+            version: 1,
+            metadata: { tags: { specName: INSTANCE_SPEC } },
+          },
+          {
+            name: "good",
+            version: 1,
+            metadata: { tags: { specName: INSTANCE_SPEC } },
+          },
+        ],
+      },
+    ],
+    dataRepository: {
+      getContent: (
+        _modelType: string,
+        _modelId: string,
+        name: string,
+        _version: number,
+      ): Promise<Uint8Array | null> => {
+        if (name === "sync-throw") throw new Error("synchronous boom");
+        return Promise.resolve(enc(instanceFixture));
+      },
+    },
+  };
+
+  const collected = await collect(context);
+
+  assertEquals(collected.instances.length, 1);
+  assertEquals(collected.skipped, 1);
+});
+
+Deno.test("collect: a malformed scan_error row logs a field-level warning (not dropped silently)", async () => {
+  // A malformed scan_error artifact means a real region-scan failure would
+  // vanish from errorsByKind. The branch must warn with the failing field
+  // paths, matching the instance/reserved branches.
+  const broken = { ...scanErrorFixture, kind: 42 as unknown as string };
+
+  const { context, logs } = stubContext([
+    {
+      name: "error-good",
+      version: 1,
+      specName: SCAN_ERROR_SPEC,
+      json: scanErrorFixture,
+    },
+    {
+      name: "error-bad",
+      version: 1,
+      specName: SCAN_ERROR_SPEC,
+      json: broken,
+    },
+  ]);
+
+  const collected = await collect(context);
+
+  assertEquals(collected.errors.length, 1);
+  assertEquals(collected.skipped, 1);
+  const warned = logs.find(
+    (l) =>
+      l.level === "warn" && l.message.includes("scan_error row") &&
+      l.message.includes("failed schema"),
+  );
+  assert(
+    warned,
+    "expected a field-level warn log for the malformed scan_error",
+  );
 });
 
 Deno.test("collect: ignores steps whose modelType is not the reservations model", async () => {
