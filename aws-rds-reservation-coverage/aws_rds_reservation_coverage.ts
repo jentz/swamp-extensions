@@ -311,6 +311,10 @@ export interface Collected {
   errors: ScanError[];
   /** Artifacts that failed to decode or validate. */
   skipped: number;
+  /** Number of upstream steps whose modelType matched the reservations type. */
+  matchingSteps: number;
+  /** Sorted, de-duplicated modelTypes of every upstream step seen. */
+  observedModelTypes: string[];
 }
 
 // ---------------------------------------------------------------------------
@@ -1817,7 +1821,14 @@ export async function collect(
     },
   );
 
-  return { instances, reserved, errors, skipped };
+  return {
+    instances,
+    reserved,
+    errors,
+    skipped,
+    matchingSteps,
+    observedModelTypes: [...observed].sort(),
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -2438,7 +2449,11 @@ export interface ReportJson {
   errorsByKind: Record<string, number>;
   /** Artifacts skipped during collection. */
   skipped: number;
-  /** True when the outer guard absorbed an unexpected failure. */
+  /**
+   * True when the report could not be computed from healthy upstream data — a
+   * thrown failure, a missing upstream collector step, or a configuration
+   * error (e.g. no regions) was absorbed.
+   */
   degraded: boolean;
   /** The CSV body (header + per-bucket rows + trailing newline). */
   csv: string;
@@ -2446,7 +2461,14 @@ export interface ReportJson {
 
 /** An empty {@link Collected} — no rows seen. */
 function emptyCollected(): Collected {
-  return { instances: [], reserved: [], errors: [], skipped: 0 };
+  return {
+    instances: [],
+    reserved: [],
+    errors: [],
+    skipped: 0,
+    matchingSteps: 0,
+    observedModelTypes: [],
+  };
 }
 
 /** An empty {@link Aggregation} — no buckets or carve-out lines. */
@@ -2517,6 +2539,33 @@ export const report = {
     let csv = renderCsv([]);
     let csvByAccount = renderCsvByAccount([]);
 
+    // Single degraded path. A report is degraded whenever it could not be
+    // computed from healthy upstream data — a thrown failure, a missing
+    // collector step, or a configuration error such as no regions. Every such
+    // case funnels through here so the payload is reset to one coherent-empty
+    // shape and the markdown carries an actionable reason.
+    //
+    // Resetting EVERY derived source together is deliberate. The count fields
+    // (instanceCount/reservedCount/accountCount/regionCount/errorsByKind) come
+    // from `collected`, while the totals/buckets/rollup come from
+    // `agg`/`accountAgg`; if a step after `collect` threw, a populated
+    // `collected` would otherwise pair with empty `agg`, emitting a payload
+    // that reads "N instances, 0 buckets, fully covered" with degraded=true —
+    // a consumer ignoring the flag would misread it as healthy. Zeroing all
+    // sources together makes a degraded payload unambiguously empty.
+    const degrade = (reason: string): void => {
+      degraded = true;
+      tryLog(logger, "warn", "report degraded: {detail}", { detail: reason });
+      markdown =
+        `# RDS Large-Equivalent Reservation Gap\n\n_Report degraded: ${reason}_\n`;
+      collected = emptyCollected();
+      agg = emptyAggregation();
+      rollup = [];
+      accountAgg = emptyAccountAggregation();
+      csv = renderCsv([]);
+      csvByAccount = renderCsvByAccount([]);
+    };
+
     try {
       generatedAt = new Date().toISOString();
       collected = await collect(context);
@@ -2537,49 +2586,36 @@ export const report = {
         workflowName,
       );
     } catch (err) {
-      degraded = true;
-      const detail = err instanceof Error ? err.message : String(err);
-      tryLog(logger, "warn", "report degraded: {detail}", { detail });
-      markdown =
-        `# RDS Large-Equivalent Reservation Gap\n\n_Report degraded: ${detail}_\n`;
-      // Reset EVERY derived field to a coherent empty state. The count fields
-      // (instanceCount/reservedCount/accountCount/regionCount/errorsByKind) are
-      // derived from `collected`, while the totals/buckets/rollup come from
-      // `agg`/`accountAgg`; if a step after `collect` threw, the populated
-      // `collected` would otherwise pair with empty `agg`, emitting a payload
-      // that reads "N instances, 0 buckets, fully covered" with degraded=true —
-      // a consumer ignoring the flag would misread it as healthy. Zeroing all
-      // sources together makes a degraded payload unambiguously empty.
-      collected = emptyCollected();
-      agg = emptyAggregation();
-      rollup = [];
-      accountAgg = emptyAccountAggregation();
-      csv = renderCsv([]);
-      csvByAccount = renderCsvByAccount([]);
+      degrade(err instanceof Error ? err.message : String(err));
+    }
+
+    // No upstream step carried the reservations modelType (steps ran but none
+    // matched, or there were no step executions at all). The report has no
+    // input to compute coverage from. Without this guard a wiring mistake
+    // renders a healthy-looking "0 large-equivalents to buy, fully covered"
+    // report. Key on matchingSteps, NOT row count: a matching collector that
+    // legitimately found zero rows is a genuinely-empty healthy fleet and must
+    // stay degraded=false.
+    if (!degraded && collected.matchingSteps === 0) {
+      degrade(
+        "no @jentz/aws-rds-reservations collector step ran upstream; " +
+          "coverage cannot be computed. Check the workflow wiring. " +
+          "Observed step model types: " +
+          (collected.observedModelTypes.join(", ") || "none"),
+      );
     }
 
     // The sweep refuses to run when its `regions` argument is empty, writing a
     // single `no_regions` scan_error (zero instance/reserved rows). Aggregating
     // that would render a healthy-looking "0 large-equivalents to buy, fully
     // covered" report, indistinguishable from a real zero-fleet result. Treat
-    // it as degraded and reset to the same coherent-empty payload the catch
-    // block uses, so the JSON consumer sees degraded=true rather than a
+    // it as degraded so the JSON consumer sees degraded=true rather than a
     // misleading degraded=false + toBuy:0.
     if (!degraded && collected.errors.some((e) => e.phase === "no_regions")) {
-      degraded = true;
-      tryLog(logger, "warn", "report degraded: {detail}", {
-        detail: "no regions configured for the sweep",
-      });
-      markdown =
-        "# RDS Large-Equivalent Reservation Gap\n\n_Report degraded: no " +
-        "regions were configured for the sweep; coverage cannot be computed. " +
-        "Set the regions argument._\n";
-      collected = emptyCollected();
-      agg = emptyAggregation();
-      rollup = [];
-      accountAgg = emptyAccountAggregation();
-      csv = renderCsv([]);
-      csvByAccount = renderCsvByAccount([]);
+      degrade(
+        "no regions were configured for the sweep; coverage cannot be " +
+          "computed. Set the regions argument.",
+      );
     }
 
     const errorsByKind: Record<string, number> = {
