@@ -1,12 +1,11 @@
 # @jentz/aws-rds-reservation-coverage
 
 Workflow-scope report that answers the RDS reserved-instance planning question:
-**how much running capacity, per family-generation, is not yet covered by a
-reservation?** It consumes the `instance`, `reserved`, and `scan_error`
-resources produced earlier in the workflow by
-[`@jentz/aws-rds-reservations`](../aws-rds-reservations/), normalizes running
-and reserved capacity into size-flexible **large-equivalent** units, and reports
-the running-minus-reserved coverage gap.
+**how many size-flexible large-equivalents do I still need to buy?** It consumes
+the `instance`, `reserved`, and `scan_error` resources produced earlier in the
+workflow by [`@jentz/aws-rds-reservations`](../aws-rds-reservations/), normalizes
+running and reserved capacity into size-flexible **large-equivalent** units, and
+sums the uncovered gap across each reservation pool (region × family × engine).
 
 Pure data shaping — no AWS API access, no mutation.
 
@@ -70,10 +69,15 @@ not model that spill, so when a Single-AZ RI exceeds Single-AZ demand one bucket
 can read over-reserved while another reads under. The **rollup total is
 unaffected** — spill only moves the gap between buckets, never the family total.
 
-A `region × family` **generation rollup** collapses engine and deployment for
-the headline "large equivalents per generation" view. Because Multi-AZ is folded
-in at 2×, Multi-AZ and Single-AZ large-equivalents are commensurable, so this
-sum is the authoritative cross-deployment coverage gap.
+A **reservation-pool rollup** groups buckets by `region × family × engine`,
+collapsing only the deployment dimension: Single-AZ and Multi-AZ net together
+because Multi-AZ folds in at 2× and the units are commensurable. Engine is
+**kept** — a postgres RI can never cover a mysql instance, so netting across
+engines would invent coverage AWS does not grant. The headline
+**`largeEqToBuy`** is the sum of the *positive* per-pool gaps: an over-reserved
+pool never offsets an under-reserved one across the hard engine / family /
+region boundary, so this is deliberately not a single running-minus-reserved
+net (which would silently understate the buy).
 
 > **Known limitation — Multi-AZ DB cluster (3-node).** The newer Multi-AZ DB
 > *cluster* (1 primary + 2 readable standbys) consumes 3× normalized units, but
@@ -188,7 +192,7 @@ The swamp report runtime persists two artifacts per report:
 
 | Data name                                  | Content type       | Body |
 | ------------------------------------------ | ------------------ | ---- |
-| `report-aws-rds-reservation-coverage`      | `text/markdown`    | The operator markdown report (summary, per-generation rollup, purchasable buckets, per-account purchase list with its own per-account carve-out tables, org-wide carve-outs, coverage-gap callouts). |
+| `report-aws-rds-reservation-coverage`      | `text/markdown`    | The operator markdown report (summary with the large-equivalents-to-buy headline, per reservation-pool coverage table, purchasable buckets, per-account purchase list with its own per-account carve-out tables, org-wide carve-outs, coverage-gap callouts). |
 | `report-aws-rds-reservation-coverage-json` | `application/json` | The full structured payload (see below), including per-bucket CSV in `csv` and per-account CSV in `csvByAccount`. |
 
 Retrieval:
@@ -210,8 +214,9 @@ swamp data get --workflow <workflow-name> \
 | `columns` | Per-bucket CSV column order. |
 | `accountCount`, `regionCount` | Distinct accounts and regions represented. |
 | `instanceCount`, `reservedCount` | Provisioned and reserved rows seen. |
-| `totalRunningLargeEq`, `totalReservedLargeEq`, `netGapLargeEq` | Org-wide totals and the net coverage gap. |
-| `generationRollup` | Per `region × family` rollup rows. |
+| `totalRunningLargeEq`, `totalReservedLargeEq` | Org-wide gross size-flex capacity totals. Informational only — **not** the buy figure (subtracting them would net across the hard engine boundary). |
+| `largeEqToBuy` | **The actionable headline:** size-flexible large-equivalents to purchase, summed from the positive per-pool gaps. |
+| `reservationPools` | Per `region × family × engine` rollup rows (deployment collapsed — the hard RI scope). Each carries `runningLargeEq`, `reservedLargeEq`, and `gapLargeEq` (positive = under-covered, negative = over-reserved). |
 | `buckets` | Per `region × family × engine × deployment` rows (the purchasable line items). |
 | `accountBuckets`, `csvByAccount` | Per-account buckets and their CSV (the RI-sharing-OFF purchase list). |
 | `accountBurstable`, `accountServerless`, `accountUnparseable`, `accountNonSizeFlex`, `accountInactiveReserved` | The per-account mirror of every org-wide carve-out, so the RI-sharing-OFF purchase list never silently drops an account that runs only burstable / serverless / non-size-flex commercial / unparseable capacity (or holds only inactive reservations). `accountServerless` counts running instances only; `accountNonSizeFlex` holds SQL Server / Oracle-LI / RDS Custom raw counts at `region × family × engine × size × deployment`. These are JSON arrays only — like the org-wide carve-outs, they are not part of any CSV, so `csvByAccount` and its columns are unchanged. |

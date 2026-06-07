@@ -15,8 +15,10 @@ description: |
   DB instance reservation, so Aurora is forced to Single-AZ and never doubled.
   Each bucket maps to a purchasable line item: running_large_eq −
   reserved_large_eq = the coverage gap (positive = buy more, negative =
-  over-reserved). Netting is bucket-local; the generation rollup sums the
-  now-commensurable units for the headline cross-deployment gap.
+  over-reserved). Netting is bucket-local; a reservation-pool rollup (region ×
+  family × engine, deployment collapsed) nets the commensurable units within
+  each hard RI scope, and the headline `largeEqToBuy` sums the positive pool
+  gaps — engine surpluses never offset deficits across engines.
 
   The engine token preserves edition and license for the commercial engines
   (oracle-ee-byol, oracle-se2-li, sqlserver-se-li), so a reservation only nets

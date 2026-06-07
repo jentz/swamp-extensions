@@ -38,7 +38,7 @@ import {
   report,
   RESERVATIONS_MODEL_TYPE,
   RESERVED_SPEC,
-  rollupByGeneration,
+  rollupByPool,
   SCAN_ERROR_SPEC,
 } from "../aws_rds_reservation_coverage.ts";
 
@@ -463,7 +463,7 @@ Deno.test("renderMarkdown: non-empty doc with expected section headers", () => {
     scannedAt: "2026-06-05T00:00:00.000Z",
   }];
   const agg = aggregate(instances, []);
-  const rollup = rollupByGeneration(agg.buckets);
+  const rollup = rollupByPool(agg.buckets);
   const collected: Collected = {
     instances,
     reserved: [],
@@ -490,7 +490,7 @@ Deno.test("renderMarkdown: non-empty doc with expected section headers", () => {
   assert(md.length > 0);
   assertStringIncludes(md, "# RDS Large-Equivalent Reservation Gap");
   assertStringIncludes(md, "## Summary");
-  assertStringIncludes(md, "## Large equivalents per generation");
+  assertStringIncludes(md, "## Coverage by reservation pool");
   assertStringIncludes(md, "## Purchasable buckets");
   assertStringIncludes(md, "rds-coverage-nightly");
   // The single running r7g 2xlarge = 4 large-eq shows up in the summary.
@@ -520,7 +520,7 @@ Deno.test("renderMarkdown: a pipe in a table cell is escaped", () => {
     scannedAt: "2026-06-05T00:00:00.000Z",
   }];
   const agg = aggregate(instances, []);
-  const rollup = rollupByGeneration(agg.buckets);
+  const rollup = rollupByPool(agg.buckets);
   const collected: Collected = {
     instances,
     reserved: [],

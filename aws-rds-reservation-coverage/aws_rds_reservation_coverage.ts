@@ -4,8 +4,9 @@
  * Consumes the `instance`, `reserved`, and `scan_error` resources produced
  * earlier in the workflow by `@jentz/aws-rds-reservations` and answers the
  * RDS reserved-instance planning question: **how many "large equivalents" of
- * capacity, per family-generation, are running but not yet covered by a
- * reservation?** Pure data shaping — no AWS API access.
+ * size-flexible capacity must I still buy?** — the uncovered gap summed across
+ * each reservation pool (region × family × engine). Pure data shaping — no AWS
+ * API access.
  *
  * ## Normalization
  *
@@ -45,10 +46,12 @@
  * one bucket can read over-reserved while another reads under — the **rollup
  * total is unaffected** (spill changes attribution, never the family total).
  *
- * A region × family **generation rollup** collapses engine and deployment for
- * the headline "large equivalents per generation" view. Because the units are
- * now commensurable (Multi-AZ folded in at 2×), this sum is meaningful and is
- * the authoritative cross-deployment gap.
+ * A **reservation-pool rollup** groups buckets by region × family × engine,
+ * collapsing only deployment (Single-AZ and Multi-AZ net together — Multi-AZ
+ * folds in at 2×, so the units are commensurable). Engine is kept, because a
+ * reservation cannot cover a different engine. The headline **large-equivalents
+ * to buy** is the sum of the positive pool gaps: over-reserved pools never
+ * offset under-reserved ones across the hard engine / family / region boundary.
  *
  * **Known limitation — Multi-AZ DB cluster (3-node):** the newer Multi-AZ DB
  * *cluster* deployment (1 primary + 2 readable standbys) consumes 3× normalized
@@ -1122,39 +1125,53 @@ export function aggregate(
   };
 }
 
-/** A region × family generation-rollup row (engine & deployment collapsed). */
-export interface GenerationRollup {
+/**
+ * One reservation-pool rollup row: region × family × engine-token, with the
+ * deployment dimension collapsed. This is the hard scope an RDS reservation
+ * buys into — size flexibility pools normalized units within a single engine,
+ * family, and region, and Single-AZ / Multi-AZ capacity is commensurable
+ * (Multi-AZ folds in at 2×), so the two deployments net together here. Engine
+ * is NOT collapsed: a postgres RI can never cover a mysql instance, so netting
+ * across engines would invent coverage AWS does not grant.
+ */
+export interface PoolRollup {
   /** AWS region. */
   region: string;
   /** Family / generation, e.g. `r7g`. */
   family: string;
   /** Generation, e.g. `7g`. */
   generation: string;
-  /** Total running large-equivalents. */
+  /** Bucket engine token (base engine, plus edition+license for commercial engines) — the hard RI boundary. */
+  engine: string;
+  /** Total running large-equivalents in this pool (both deployments). */
   runningLargeEq: number;
-  /** Total reserved (active) large-equivalents. */
+  /** Total reserved (active) large-equivalents in this pool. */
   reservedLargeEq: number;
-  /** Net gap: running − reserved (positive = buy this many large-eq). */
+  /** Net gap: running − reserved. Positive = under-covered; negative = over-reserved. */
   gapLargeEq: number;
 }
 
 /**
- * Roll buckets up to region × family, collapsing engine and deployment, for
- * the headline "large equivalents per generation" view.
+ * Roll buckets up to region × family × engine-token, collapsing only the
+ * deployment dimension (Single-AZ and Multi-AZ net together — they are
+ * commensurable because Multi-AZ folds in at 2×). Engine is kept: it is a hard
+ * reservation boundary, so netting across it would invent coverage AWS does not
+ * grant. Each row is one reservation pool.
  *
  * @param buckets The per-bucket aggregation.
- * @returns Sorted generation-rollup rows.
+ * @returns Sorted reservation-pool rows.
  */
-export function rollupByGeneration(buckets: Bucket[]): GenerationRollup[] {
-  const map = new Map<string, GenerationRollup>();
+export function rollupByPool(buckets: Bucket[]): PoolRollup[] {
+  const map = new Map<string, PoolRollup>();
   for (const b of buckets) {
-    const key = `${b.region} ${b.family}`;
+    const key = `${b.region} ${b.family} ${b.engine}`;
     let r = map.get(key);
     if (!r) {
       r = {
         region: b.region,
         family: b.family,
         generation: b.generation,
+        engine: b.engine,
         runningLargeEq: 0,
         reservedLargeEq: 0,
         gapLargeEq: 0,
@@ -1172,12 +1189,30 @@ export function rollupByGeneration(buckets: Bucket[]): GenerationRollup[] {
   return [...map.values()].sort((a, b) =>
     a.region !== b.region
       ? (a.region < b.region ? -1 : 1)
-      : a.family < b.family
+      : a.family !== b.family
+      ? (a.family < b.family ? -1 : 1)
+      : a.engine < b.engine
       ? -1
-      : a.family > b.family
+      : a.engine > b.engine
       ? 1
       : 0
   );
+}
+
+/**
+ * The actionable purchase figure: the positive coverage gap summed over
+ * reservation pools (region × family × engine, deployment collapsed). Pools
+ * that are over-reserved (negative gap) contribute zero — an over-reservation
+ * in one engine/family/region cannot cover an under-reservation in another,
+ * because a reservation is scoped to exactly one pool. This is why the headline
+ * is NOT a single net of all running minus all reserved: that would silently
+ * offset deficits with surpluses across hard boundaries and understate the buy.
+ *
+ * @param pools The reservation-pool rollup from {@link rollupByPool}.
+ * @returns Large-equivalents to purchase.
+ */
+export function largeEqToBuy(pools: PoolRollup[]): number {
+  return round2(pools.reduce((s, p) => s + Math.max(0, p.gapLargeEq), 0));
 }
 
 // ---------------------------------------------------------------------------
@@ -1932,7 +1967,7 @@ function mdTable(header: string[], rows: string[][]): string {
  *
  * @param collected Decoded rows from {@link collect}.
  * @param agg Aggregation from {@link aggregate}.
- * @param rollup Generation rollup from {@link rollupByGeneration}.
+ * @param rollup Reservation-pool rollup from {@link rollupByPool}.
  * @param generatedAt ISO timestamp for the header.
  * @param workflowName Originating workflow name.
  * @returns The full markdown document.
@@ -1940,7 +1975,7 @@ function mdTable(header: string[], rows: string[][]): string {
 export function renderMarkdown(
   collected: Collected,
   agg: Aggregation,
-  rollup: GenerationRollup[],
+  rollup: PoolRollup[],
   accountAgg: AccountAggregation,
   generatedAt: string,
   workflowName: string,
@@ -1965,7 +2000,7 @@ export function renderMarkdown(
   const totalReserved = round2(
     agg.buckets.reduce((s, b) => s + b.reservedLargeEq, 0),
   );
-  const totalGap = round2(totalRunning - totalReserved);
+  const toBuy = largeEqToBuy(rollup);
 
   const lines: string[] = [];
   lines.push("# RDS Large-Equivalent Reservation Gap");
@@ -1985,12 +2020,12 @@ export function renderMarkdown(
     `- Reserved (active) capacity: **${fmtNum(totalReserved)}** large-eq`,
   );
   lines.push(
-    `- **Net uncovered: ${fmtNum(totalGap)} large-eq** ` +
-      (totalGap > 0
-        ? "(buy reservations to cover)"
-        : totalGap < 0
-        ? "(over-reserved)"
-        : "(fully covered)"),
+    `- **Large-equivalents to buy: ${fmtNum(toBuy)}** ` +
+      (toBuy > 0
+        ? "(sum of the positive per-pool gaps below; over-reserved pools do " +
+          "not offset under-reserved ones across the engine boundary)"
+        : "(no pool is under-covered — nothing to buy; see the per-pool table " +
+          "below for any over-reserved pools)"),
   );
   if (agg.nonSizeFlex.length > 0) {
     const nsfRunning = agg.nonSizeFlex.reduce(
@@ -2003,7 +2038,7 @@ export function renderMarkdown(
     );
     lines.push(
       `- SQL Server / Oracle-LI / RDS Custom (not size-flexible, **excluded** ` +
-        `from the gap above): **${nsfRunning}** running, **${nsfReserved}** ` +
+        `from the figure above): **${nsfRunning}** running, **${nsfReserved}** ` +
         "reserved instance(s) — see the dedicated table below",
     );
   }
@@ -2021,21 +2056,23 @@ export function renderMarkdown(
   );
   lines.push("");
 
-  // Headline: per-generation rollup.
-  lines.push("## Large equivalents per generation (region × family)");
+  // Headline: per reservation-pool rollup (region × family × engine).
+  lines.push("## Coverage by reservation pool (region × family × engine)");
   lines.push("");
   lines.push(
-    "Headline view — engine and deployment collapsed. `gap = running − " +
-      "reserved`; a positive gap is capacity to cover.",
+    "Each row is a reservation pool — the hard scope an RI buys into. " +
+      "Single-AZ and Multi-AZ are netted together (Multi-AZ counted 2×); " +
+      "engine is kept distinct. `gap = running − reserved`; the **to buy** " +
+      "headline is the sum of the positive gaps.",
   );
   lines.push("");
   lines.push(
     mdTable(
-      ["region", "family", "gen", "running", "reserved", "gap (buy)"],
+      ["region", "family", "engine", "running", "reserved", "gap (buy)"],
       rollup.map((r) => [
         r.region,
         r.family,
-        r.generation,
+        r.engine,
         fmtNum(r.runningLargeEq),
         fmtNum(r.reservedLargeEq),
         fmtNum(r.gapLargeEq),
@@ -2359,14 +2396,20 @@ export interface ReportJson {
   instanceCount: number;
   /** Reserved rows seen. */
   reservedCount: number;
-  /** Total running large-equivalents in the size-flex buckets (excludes burstable, serverless, and the non-size-flex commercial carve-out). */
+  /** Total running large-equivalents in the size-flex buckets (excludes burstable, serverless, and the non-size-flex commercial carve-out). Gross capacity only — not the buy figure. */
   totalRunningLargeEq: number;
-  /** Total reserved (active) large-equivalents. */
+  /** Total reserved (active) large-equivalents. Gross capacity only — not the buy figure. */
   totalReservedLargeEq: number;
-  /** Net uncovered large-equivalents (running − reserved). */
-  netGapLargeEq: number;
-  /** Per-generation rollup rows. */
-  generationRollup: GenerationRollup[];
+  /**
+   * Large-equivalents to purchase: the sum of the positive per-pool gaps (see
+   * {@link largeEqToBuy}). The actionable headline. This is deliberately NOT
+   * `totalRunningLargeEq − totalReservedLargeEq`: an over-reservation in one
+   * pool cannot cover an under-reservation in another across the hard engine /
+   * family / region boundary, so a single net would understate the buy.
+   */
+  largeEqToBuy: number;
+  /** Per reservation-pool rows: region × family × engine, deployment collapsed (the hard RI scope). */
+  reservationPools: PoolRollup[];
   /** Per-bucket (purchasable) rows. */
   buckets: Bucket[];
   /** Per-account buckets (purchase list when RI sharing is off). */
@@ -2451,7 +2494,7 @@ export const report = {
       unparseable: [],
       inactiveReserved: 0,
     };
-    let rollup: GenerationRollup[] = [];
+    let rollup: PoolRollup[] = [];
     let accountAgg: AccountAggregation = {
       buckets: [],
       burstable: [],
@@ -2470,7 +2513,7 @@ export const report = {
       generatedAt = new Date().toISOString();
       collected = await collect(context);
       agg = aggregate(collected.instances, collected.reserved);
-      rollup = rollupByGeneration(agg.buckets);
+      rollup = rollupByPool(agg.buckets);
       accountAgg = aggregateByAccount(
         collected.instances,
         collected.reserved,
@@ -2529,8 +2572,8 @@ export const report = {
       reservedCount: collected.reserved.length,
       totalRunningLargeEq: totalRunning,
       totalReservedLargeEq: totalReserved,
-      netGapLargeEq: round2(totalRunning - totalReserved),
-      generationRollup: rollup,
+      largeEqToBuy: largeEqToBuy(rollup),
+      reservationPools: rollup,
       buckets: agg.buckets.map((b) => ({
         ...b,
         runningLargeEq: round2(b.runningLargeEq),
