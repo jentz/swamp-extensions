@@ -18,7 +18,7 @@ import { z } from "npm:zod@4";
 import {
   GetCallerIdentityCommand,
   STSClient,
-} from "npm:@aws-sdk/client-sts@3.1021.0";
+} from "npm:@aws-sdk/client-sts@3.1063.0";
 
 const GlobalArgsSchema = z.object({
   expectedAccountId: z.string().regex(/^\d{12}$/).describe(
@@ -51,7 +51,7 @@ const ContextSchema = z.object({
  */
 export const model = {
   type: "@jentz/aws-context-guard",
-  version: "2026.05.17.1",
+  version: "2026.06.07.1",
   globalArguments: GlobalArgsSchema,
   resources: {
     context: {
