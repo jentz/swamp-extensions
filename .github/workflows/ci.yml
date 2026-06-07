@@ -19,6 +19,31 @@ jobs:
           deno-version: v2.x
       - run: deno fmt --check
       - run: deno lint
+      - name: check
+        shell: bash
+        run: |
+          extension_dirs=()
+          while IFS= read -r -d '' manifest; do
+            extension_dirs+=("$(dirname "$manifest")")
+          done < <(
+            find . -mindepth 2 -maxdepth 2 -name manifest.yaml \
+              -not -path './.swamp/*' \
+              -print0 \
+            | sort -z
+          )
+          if [ "${#extension_dirs[@]}" -eq 0 ]; then
+            echo "No extension manifests found"
+            exit 1
+          fi
+
+          check_files="$(mktemp)"
+          find -- "${extension_dirs[@]}" -type f \( -name '*.ts' -o -name '*.tsx' \) \
+            -print0 > "$check_files"
+          if [ ! -s "$check_files" ]; then
+            echo "No TypeScript files found under extension manifests"
+            exit 1
+          fi
+          xargs -0 -n 50 deno check < "$check_files"
       - name: test
         run: |
           deno test \

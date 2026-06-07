@@ -258,7 +258,6 @@ Deno.test("globalArgs schema-parse failure — throws with field detail", async 
   await assertRejects(
     () =>
       runVerify({
-        // @ts-expect-error — deliberately wrong shape for the schema-parse test
         globalArgs: { expectedAccountId: "not-12-digits" },
       }),
     Error,
