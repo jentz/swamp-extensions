@@ -1,0 +1,42 @@
+/**
+ * Colocated publication-sanity tests for `@jentz/aws-rds-inventory`.
+ *
+ * The full unit and smoke suites live under `tests/`; this sibling file keeps
+ * the extension's entrypoint visibly paired with a test entrypoint for publish
+ * review tooling without duplicating that larger suite.
+ */
+
+import {
+  assertEquals,
+  assertThrows,
+} from "https://deno.land/std@0.224.0/assert/mod.ts";
+import { model, resolveRegion } from "./aws_rds_inventory.ts";
+
+function manifestScalar(manifest: string, key: string): string {
+  const match = manifest.match(
+    new RegExp(`^${key}:\\s*["']?([^"'\\n]+)["']?$`, "m"),
+  );
+  if (match === null) {
+    throw new Error(`manifest.yaml is missing scalar key ${key}`);
+  }
+  return match[1].trim();
+}
+
+Deno.test("model metadata: entrypoint stays in sync with manifest", async () => {
+  const manifest = await Deno.readTextFile(
+    new URL("./manifest.yaml", import.meta.url),
+  );
+
+  assertEquals(model.type, manifestScalar(manifest, "name"));
+  assertEquals(model.version, manifestScalar(manifest, "version"));
+  assertEquals(Object.keys(model.resources).sort(), ["cluster", "instance"]);
+  assertEquals(Object.keys(model.methods), ["list_clusters"]);
+});
+
+Deno.test("resolveRegion: fails closed when no region source is configured", () => {
+  assertThrows(
+    () => resolveRegion({}, () => undefined),
+    Error,
+    "no AWS region configured",
+  );
+});
