@@ -448,6 +448,14 @@ export function normalizedUnits(
  * `mpl`, or `""`. Single-license engines (open-source / Aurora) and unknown
  * tokens map to `""` so they never split a bucket.
  *
+ * Db2 is offered both BYOL and through AWS Marketplace, and an RDS Db2 RI is
+ * scoped to one of them (separate RIs per license model), so the two must NOT
+ * cross-net. The substring matches below cover both the running `LicenseModel`
+ * (`bring-your-own-license`, `marketplace-license`) and whatever license suffix
+ * AWS appends to a Db2 `ProductDescription` — short (`byol`, `mpl`) or worded
+ * (`marketplace`) — so a running and a reserved Db2 row for the same real
+ * license land on the same `mpl`/`byol` value.
+ *
  * @param raw The raw license string from either side.
  * @returns `byol`, `li`, `mpl`, or `""`.
  */
@@ -596,6 +604,21 @@ export function parseEngineIdentity(
   // `sqlserver` inference deliberately does NOT cover `custom-sqlserver` (RDS
   // Custom SQL Server is BYOL, not LI) — Custom is non-size-flex regardless, so
   // an unknown-license Custom row simply keeps a license-less token.
+  //
+  // Db2 (db2-ae / db2-se) is offered BOTH BYOL and via AWS Marketplace, and an
+  // RDS Db2 RI is scoped to one of them, so — unlike Oracle EE / SQL Server —
+  // the license CANNOT be inferred from the edition. We therefore rely on each
+  // side carrying its own license and resolving it identically through
+  // {@link normalizeLicense}: the running side via `LicenseModel`
+  // (`bring-your-own-license` -> byol, `marketplace-license` -> mpl) and the
+  // reserved side via the `ProductDescription` suffix that AWS appends for
+  // multi-license engines (assumed present, as for Oracle/SQL Server; the live
+  // Db2 suffix spelling is unconfirmed but `normalizeLicense` accepts both the
+  // short `(byol)`/`(mpl)` and worded `(marketplace)` forms). If a reserved Db2
+  // row ever arrives with no suffix it keeps a license-less token (`db2-ae`)
+  // and stays in its own conservative bucket rather than guessing byol-vs-mpl
+  // and risking a cross-license over-credit — the same conservative stance as
+  // unknown-license Oracle SE2.
   if (license === "") {
     if (engine === "oracle" && edition === "ee") license = "byol";
     else if (engine === "sqlserver") license = "li";
