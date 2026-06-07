@@ -24,7 +24,7 @@ import {
   DescribeDBClustersCommand,
   DescribeDBInstancesCommand,
   RDSClient,
-} from "npm:@aws-sdk/client-rds@3.1021.0";
+} from "npm:@aws-sdk/client-rds@3.1063.0";
 import { withRetry } from "./_lib/retry.ts";
 
 // ---------------------------------------------------------------------------
@@ -821,14 +821,14 @@ export async function runListClusters(
  */
 export const model = {
   type: "@jentz/aws-rds-inventory",
-  version: "2026.06.07.1",
+  version: "2026.06.07.2",
   globalArguments: GlobalArgsSchema,
-  // The 2026.06.05.1, 2026.06.06.1, and 2026.06.07.1 releases changed only
-  // internals (server-side DescribeDBInstances filtering) and docs/metadata —
-  // the globalArguments schema (region, selector) is unchanged from
-  // 2026.05.24.1. Each no-op upgrade still advances the stored typeVersion on
-  // existing instances so any future schema-changing upgrade chains cleanly
-  // from here instead of skipping them.
+  // The 2026.06.05.1, 2026.06.06.1, 2026.06.07.1, and 2026.06.07.2 releases
+  // changed only internals (server-side DescribeDBInstances filtering, AWS SDK
+  // bump) and docs/metadata — the globalArguments schema (region, selector) is
+  // unchanged from 2026.05.24.1. Each no-op upgrade still advances the stored
+  // typeVersion on existing instances so any future schema-changing upgrade
+  // chains cleanly from here instead of skipping them.
   upgrades: [
     {
       toVersion: "2026.06.05.1",
@@ -842,6 +842,11 @@ export const model = {
     },
     {
       toVersion: "2026.06.07.1",
+      description: "Version bump, no globalArguments schema changes",
+      upgradeAttributes: (old: Record<string, unknown>) => old,
+    },
+    {
+      toVersion: "2026.06.07.2",
       description: "Version bump, no globalArguments schema changes",
       upgradeAttributes: (old: Record<string, unknown>) => old,
     },
