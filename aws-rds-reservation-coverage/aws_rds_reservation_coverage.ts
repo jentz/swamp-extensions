@@ -902,85 +902,156 @@ export function compareBuckets(a: Bucket, b: Bucket): number {
 }
 
 /**
- * Aggregate decoded instance and reserved rows into large-equivalent buckets
- * plus the burstable / serverless / unparseable carve-outs.
- *
- * @param instances Decoded provisioned-instance rows.
- * @param reserved Decoded reserved-instance rows.
- * @returns The full aggregation.
+ * The owning-account dimension carried through the shared aggregation core.
+ * Both views accumulate account-tagged lines internally; the org-wide
+ * {@link aggregate} collapses every account into one entry (empty key prefix)
+ * and strips the tag in its projection, while {@link aggregateByAccount} keys by
+ * `accountId` and keeps it. Centralizing the tag here lets one routing routine
+ * serve both, so a new carve-out kind or key dimension is added once.
  */
-export function aggregate(
+interface AccountTag {
+  accountId: string;
+  accountName: string;
+}
+
+/** Account-tagged intermediate lines accumulated by {@link routeRows}. */
+interface CoreBucket extends AccountTag, Bucket {}
+interface CoreBurstable extends AccountTag, BurstableLine {}
+interface CoreServerless extends AccountTag {
+  region: string;
+  engine: string;
+  count: number;
+}
+interface CoreUnparseable extends AccountTag, UnparseableLine {}
+interface CoreNonSizeFlex extends AccountTag, NonSizeFlexLine {}
+
+/** The account-tagged maps the shared core fills. */
+interface CoreAggregation {
+  buckets: Map<string, CoreBucket>;
+  burstable: Map<string, CoreBurstable>;
+  serverless: Map<string, CoreServerless>;
+  unparseable: Map<string, CoreUnparseable>;
+  nonSizeFlex: Map<string, CoreNonSizeFlex>;
+  inactiveReserved: Map<string, AccountInactiveReserved>;
+}
+
+/**
+ * Route every running and reserved row through {@link classify} into
+ * account-tagged maps. `keyPrefix` selects the grouping: `""` collapses all
+ * accounts into one entry (org-wide), an `accountId` keeps them separate
+ * (per account). Every carve-out — the reserved-serverless drop, inactive
+ * tracking, and all five kinds — lives here once so the two public views can
+ * never drift.
+ */
+function routeRows(
   instances: InstanceRecord[],
   reserved: ReservedRecord[],
-): Aggregation {
-  const buckets = new Map<string, Bucket>();
-  const burstable = new Map<string, BurstableLine>();
-  const serverless = new Map<
-    string,
-    { region: string; engine: string; count: number }
-  >();
-  const unparseable = new Map<string, UnparseableLine>();
-  const nonSizeFlex = new Map<string, NonSizeFlexLine>();
-  let inactiveReserved = 0;
+  keyPrefix: (rec: AccountTag) => string,
+): CoreAggregation {
+  const core: CoreAggregation = {
+    buckets: new Map(),
+    burstable: new Map(),
+    serverless: new Map(),
+    unparseable: new Map(),
+    nonSizeFlex: new Map(),
+    inactiveReserved: new Map(),
+  };
+
+  // Prepend the (non-empty) account prefix so org-wide keys stay byte-identical
+  // to the un-prefixed originals.
+  const withPrefix = (prefix: string, base: string) =>
+    prefix ? `${prefix} ${base}` : base;
 
   const bumpBucket = (
+    tag: AccountTag,
     region: string,
     family: string,
     generation: string,
     engine: string,
     deployment: string,
     largeEq: number,
-    instances: number,
+    count: number,
     side: "running" | "reserved",
   ) => {
-    const key = bucketKey(region, family, engine, deployment);
-    let b = buckets.get(key);
+    const key = withPrefix(
+      keyPrefix(tag),
+      bucketKey(region, family, engine, deployment),
+    );
+    let b = core.buckets.get(key);
     if (!b) {
-      b = emptyBucket(region, family, generation, engine, deployment);
-      buckets.set(key, b);
+      b = {
+        ...tag,
+        ...emptyBucket(region, family, generation, engine, deployment),
+      };
+      core.buckets.set(key, b);
     }
     if (side === "running") {
       b.runningLargeEq += largeEq;
-      b.runningInstances += instances;
+      b.runningInstances += count;
     } else {
       b.reservedLargeEq += largeEq;
-      b.reservedInstances += instances;
+      b.reservedInstances += count;
     }
   };
 
   const bumpBurstable = (
+    tag: AccountTag,
     region: string,
     family: string,
     size: string,
     count: number,
     side: "running" | "reserved",
   ) => {
-    const key = `${region} ${family} ${size}`;
-    let l = burstable.get(key);
+    const key = withPrefix(keyPrefix(tag), `${region} ${family} ${size}`);
+    let l = core.burstable.get(key);
     if (!l) {
-      l = { region, family, size, runningInstances: 0, reservedInstances: 0 };
-      burstable.set(key, l);
+      l = {
+        ...tag,
+        region,
+        family,
+        size,
+        runningInstances: 0,
+        reservedInstances: 0,
+      };
+      core.burstable.set(key, l);
     }
     if (side === "running") l.runningInstances += count;
     else l.reservedInstances += count;
   };
 
+  const bumpServerless = (
+    tag: AccountTag,
+    region: string,
+    engine: string,
+  ) => {
+    const key = withPrefix(keyPrefix(tag), `${region} ${engine}`);
+    const l = core.serverless.get(key) ??
+      { ...tag, region, engine, count: 0 };
+    l.count += 1;
+    core.serverless.set(key, l);
+  };
+
   const bumpUnparseable = (
+    tag: AccountTag,
     region: string,
     dbInstanceClass: string,
     source: "instance" | "reserved",
     count: number,
   ) => {
-    const key = `${region} ${dbInstanceClass} ${source}`;
-    let l = unparseable.get(key);
+    const key = withPrefix(
+      keyPrefix(tag),
+      `${region} ${dbInstanceClass} ${source}`,
+    );
+    let l = core.unparseable.get(key);
     if (!l) {
-      l = { region, dbInstanceClass, source, count: 0 };
-      unparseable.set(key, l);
+      l = { ...tag, region, dbInstanceClass, source, count: 0 };
+      core.unparseable.set(key, l);
     }
     l.count += count;
   };
 
   const bumpNonSizeFlex = (
+    tag: AccountTag,
     region: string,
     family: string,
     engine: string,
@@ -989,10 +1060,14 @@ export function aggregate(
     count: number,
     side: "running" | "reserved",
   ) => {
-    const key = `${region} ${family} ${engine} ${size} ${deployment}`;
-    let l = nonSizeFlex.get(key);
+    const key = withPrefix(
+      keyPrefix(tag),
+      `${region} ${family} ${engine} ${size} ${deployment}`,
+    );
+    let l = core.nonSizeFlex.get(key);
     if (!l) {
       l = {
+        ...tag,
         region,
         family,
         engine,
@@ -1001,34 +1076,43 @@ export function aggregate(
         runningInstances: 0,
         reservedInstances: 0,
       };
-      nonSizeFlex.set(key, l);
+      core.nonSizeFlex.set(key, l);
     }
     if (side === "running") l.runningInstances += count;
     else l.reservedInstances += count;
   };
 
+  const bumpInactive = (tag: AccountTag, count: number) => {
+    // Inactive reservations are always tracked per account; the org-wide view
+    // sums these counts into a single number in its projection.
+    const key = tag.accountId;
+    const l = core.inactiveReserved.get(key) ?? { ...tag, count: 0 };
+    l.count += count;
+    core.inactiveReserved.set(key, l);
+  };
+
   for (const i of instances) {
+    const tag: AccountTag = {
+      accountId: i.accountId,
+      accountName: i.accountName,
+    };
     const id = parseEngineIdentity(i.engine, i.licenseModel);
     const c = classify(i.dbInstanceClass, id, i.multiAZ);
     switch (c.kind) {
-      case "serverless": {
-        const key = `${i.region} ${c.engine}`;
-        const s = serverless.get(key) ??
-          { region: i.region, engine: c.engine, count: 0 };
-        s.count += 1;
-        serverless.set(key, s);
+      case "serverless":
+        bumpServerless(tag, i.region, c.engine);
         break;
-      }
       case "burstable":
-        bumpBurstable(i.region, c.family, c.size, 1, "running");
+        bumpBurstable(tag, i.region, c.family, c.size, 1, "running");
         break;
       case "unparseable":
-        bumpUnparseable(i.region, c.dbInstanceClass, "instance", 1);
+        bumpUnparseable(tag, i.region, c.dbInstanceClass, "instance", 1);
         break;
       case "nonSizeFlex":
         // SQL Server, Oracle License-Included, RDS Custom: size flexibility does
         // not apply, so these are kept as raw counts, never folded into large-eq.
         bumpNonSizeFlex(
+          tag,
           i.region,
           c.family,
           c.engine,
@@ -1040,6 +1124,7 @@ export function aggregate(
         break;
       case "bucket":
         bumpBucket(
+          tag,
           i.region,
           c.family,
           c.generation,
@@ -1054,8 +1139,12 @@ export function aggregate(
   }
 
   for (const r of reserved) {
+    const tag: AccountTag = {
+      accountId: r.accountId,
+      accountName: r.accountName,
+    };
     if (r.state !== "active") {
-      inactiveReserved += 1;
+      bumpInactive(tag, 1);
       continue;
     }
     const id = parseEngineIdentity(r.productDescription);
@@ -1069,13 +1158,14 @@ export function aggregate(
         // (the previous behavior) just polluted it with empty rows.
         break;
       case "burstable":
-        bumpBurstable(r.region, c.family, c.size, count, "reserved");
+        bumpBurstable(tag, r.region, c.family, c.size, count, "reserved");
         break;
       case "unparseable":
-        bumpUnparseable(r.region, c.dbInstanceClass, "reserved", count);
+        bumpUnparseable(tag, r.region, c.dbInstanceClass, "reserved", count);
         break;
       case "nonSizeFlex":
         bumpNonSizeFlex(
+          tag,
           r.region,
           c.family,
           c.engine,
@@ -1087,6 +1177,7 @@ export function aggregate(
         break;
       case "bucket":
         bumpBucket(
+          tag,
           r.region,
           c.family,
           c.generation,
@@ -1100,51 +1191,82 @@ export function aggregate(
     }
   }
 
+  return core;
+}
+
+/**
+ * Aggregate decoded instance and reserved rows into large-equivalent buckets
+ * plus the burstable / serverless / unparseable carve-outs.
+ *
+ * A thin org-wide projection of {@link routeRows}: an empty key prefix collapses
+ * every account into one entry, and the account tag is dropped from each line.
+ *
+ * @param instances Decoded provisioned-instance rows.
+ * @param reserved Decoded reserved-instance rows.
+ * @returns The full aggregation.
+ */
+export function aggregate(
+  instances: InstanceRecord[],
+  reserved: ReservedRecord[],
+): Aggregation {
+  const core = routeRows(instances, reserved, () => "");
+
   return {
-    buckets: [...buckets.values()].sort(compareBuckets),
-    burstable: [...burstable.values()].sort((a, b) =>
-      a.region !== b.region
-        ? (a.region < b.region ? -1 : 1)
-        : a.family !== b.family
-        ? (a.family < b.family ? -1 : 1)
-        : a.size < b.size
-        ? -1
-        : a.size > b.size
-        ? 1
-        : 0
-    ),
-    serverless: [...serverless.values()].sort((a, b) =>
-      a.region !== b.region
-        ? (a.region < b.region ? -1 : 1)
-        : a.engine < b.engine
-        ? -1
-        : a.engine > b.engine
-        ? 1
-        : 0
-    ),
-    nonSizeFlex: [...nonSizeFlex.values()].sort((a, b) =>
-      a.region !== b.region
-        ? (a.region < b.region ? -1 : 1)
-        : a.family !== b.family
-        ? (a.family < b.family ? -1 : 1)
-        : a.engine !== b.engine
-        ? (a.engine < b.engine ? -1 : 1)
-        : a.size !== b.size
-        ? (a.size < b.size ? -1 : 1)
-        : a.deployment < b.deployment
-        ? -1
-        : a.deployment > b.deployment
-        ? 1
-        : 0
-    ),
-    unparseable: [...unparseable.values()].sort((a, b) =>
-      a.region !== b.region
-        ? (a.region < b.region ? -1 : 1)
-        : a.dbInstanceClass < b.dbInstanceClass
-        ? -1
-        : 1
-    ),
-    inactiveReserved,
+    buckets: [...core.buckets.values()]
+      .map(({ accountId: _id, accountName: _name, ...b }) => b)
+      .sort(compareBuckets),
+    burstable: [...core.burstable.values()]
+      .map(({ accountId: _id, accountName: _name, ...l }) => l)
+      .sort((a, b) =>
+        a.region !== b.region
+          ? (a.region < b.region ? -1 : 1)
+          : a.family !== b.family
+          ? (a.family < b.family ? -1 : 1)
+          : a.size < b.size
+          ? -1
+          : a.size > b.size
+          ? 1
+          : 0
+      ),
+    serverless: [...core.serverless.values()]
+      .map(({ accountId: _id, accountName: _name, ...s }) => s)
+      .sort((a, b) =>
+        a.region !== b.region
+          ? (a.region < b.region ? -1 : 1)
+          : a.engine < b.engine
+          ? -1
+          : a.engine > b.engine
+          ? 1
+          : 0
+      ),
+    nonSizeFlex: [...core.nonSizeFlex.values()]
+      .map(({ accountId: _id, accountName: _name, ...l }) => l)
+      .sort((a, b) =>
+        a.region !== b.region
+          ? (a.region < b.region ? -1 : 1)
+          : a.family !== b.family
+          ? (a.family < b.family ? -1 : 1)
+          : a.engine !== b.engine
+          ? (a.engine < b.engine ? -1 : 1)
+          : a.size !== b.size
+          ? (a.size < b.size ? -1 : 1)
+          : a.deployment < b.deployment
+          ? -1
+          : a.deployment > b.deployment
+          ? 1
+          : 0
+      ),
+    unparseable: [...core.unparseable.values()]
+      .map(({ accountId: _id, accountName: _name, ...l }) => l)
+      .sort((a, b) =>
+        a.region !== b.region
+          ? (a.region < b.region ? -1 : 1)
+          : a.dbInstanceClass < b.dbInstanceClass
+          ? -1
+          : 1
+      ),
+    inactiveReserved: [...core.inactiveReserved.values()]
+      .reduce((sum, l) => sum + l.count, 0),
   };
 }
 
@@ -1428,273 +1550,13 @@ export function aggregateByAccount(
   instances: InstanceRecord[],
   reserved: ReservedRecord[],
 ): AccountAggregation {
-  const buckets = new Map<string, AccountBucket>();
-  const burstable = new Map<string, AccountBurstableLine>();
-  const serverless = new Map<string, AccountServerlessLine>();
-  const unparseable = new Map<string, AccountUnparseableLine>();
-  const nonSizeFlex = new Map<string, AccountNonSizeFlexLine>();
-  const inactiveReserved = new Map<string, AccountInactiveReserved>();
-
-  const bumpBucket = (
-    accountId: string,
-    accountName: string,
-    region: string,
-    family: string,
-    generation: string,
-    engine: string,
-    deployment: string,
-    largeEq: number,
-    count: number,
-    side: "running" | "reserved",
-  ) => {
-    const key = `${accountId} ${region} ${family} ${engine} ${deployment}`;
-    let b = buckets.get(key);
-    if (!b) {
-      b = {
-        accountId,
-        accountName,
-        region,
-        family,
-        generation,
-        engine,
-        deployment,
-        runningLargeEq: 0,
-        reservedLargeEq: 0,
-        runningInstances: 0,
-        reservedInstances: 0,
-      };
-      buckets.set(key, b);
-    }
-    if (side === "running") {
-      b.runningLargeEq += largeEq;
-      b.runningInstances += count;
-    } else {
-      b.reservedLargeEq += largeEq;
-      b.reservedInstances += count;
-    }
-  };
-
-  const bumpBurstable = (
-    accountId: string,
-    accountName: string,
-    region: string,
-    family: string,
-    size: string,
-    count: number,
-    side: "running" | "reserved",
-  ) => {
-    const key = `${accountId} ${region} ${family} ${size}`;
-    let l = burstable.get(key);
-    if (!l) {
-      l = {
-        accountId,
-        accountName,
-        region,
-        family,
-        size,
-        runningInstances: 0,
-        reservedInstances: 0,
-      };
-      burstable.set(key, l);
-    }
-    if (side === "running") l.runningInstances += count;
-    else l.reservedInstances += count;
-  };
-
-  const bumpServerless = (
-    accountId: string,
-    accountName: string,
-    region: string,
-    engine: string,
-  ) => {
-    const key = `${accountId} ${region} ${engine}`;
-    const l = serverless.get(key) ??
-      { accountId, accountName, region, engine, count: 0 };
-    l.count += 1;
-    serverless.set(key, l);
-  };
-
-  const bumpUnparseable = (
-    accountId: string,
-    accountName: string,
-    region: string,
-    dbInstanceClass: string,
-    source: "instance" | "reserved",
-    count: number,
-  ) => {
-    const key = `${accountId} ${region} ${dbInstanceClass} ${source}`;
-    let l = unparseable.get(key);
-    if (!l) {
-      l = { accountId, accountName, region, dbInstanceClass, source, count: 0 };
-      unparseable.set(key, l);
-    }
-    l.count += count;
-  };
-
-  const bumpNonSizeFlex = (
-    accountId: string,
-    accountName: string,
-    region: string,
-    family: string,
-    engine: string,
-    size: string,
-    deployment: string,
-    count: number,
-    side: "running" | "reserved",
-  ) => {
-    const key =
-      `${accountId} ${region} ${family} ${engine} ${size} ${deployment}`;
-    let l = nonSizeFlex.get(key);
-    if (!l) {
-      l = {
-        accountId,
-        accountName,
-        region,
-        family,
-        engine,
-        size,
-        deployment,
-        runningInstances: 0,
-        reservedInstances: 0,
-      };
-      nonSizeFlex.set(key, l);
-    }
-    if (side === "running") l.runningInstances += count;
-    else l.reservedInstances += count;
-  };
-
-  const bumpInactive = (
-    accountId: string,
-    accountName: string,
-    count: number,
-  ) => {
-    const key = accountId;
-    const l = inactiveReserved.get(key) ??
-      { accountId, accountName, count: 0 };
-    l.count += count;
-    inactiveReserved.set(key, l);
-  };
-
-  for (const i of instances) {
-    const id = parseEngineIdentity(i.engine, i.licenseModel);
-    const c = classify(i.dbInstanceClass, id, i.multiAZ);
-    switch (c.kind) {
-      case "serverless":
-        bumpServerless(i.accountId, i.accountName, i.region, c.engine);
-        break;
-      case "burstable":
-        bumpBurstable(
-          i.accountId,
-          i.accountName,
-          i.region,
-          c.family,
-          c.size,
-          1,
-          "running",
-        );
-        break;
-      case "unparseable":
-        bumpUnparseable(
-          i.accountId,
-          i.accountName,
-          i.region,
-          c.dbInstanceClass,
-          "instance",
-          1,
-        );
-        break;
-      case "nonSizeFlex":
-        bumpNonSizeFlex(
-          i.accountId,
-          i.accountName,
-          i.region,
-          c.family,
-          c.engine,
-          c.size,
-          c.deployment,
-          1,
-          "running",
-        );
-        break;
-      case "bucket":
-        bumpBucket(
-          i.accountId,
-          i.accountName,
-          i.region,
-          c.family,
-          c.generation,
-          c.engine,
-          c.deployment,
-          c.units,
-          1,
-          "running",
-        );
-        break;
-    }
-  }
-
-  for (const r of reserved) {
-    if (r.state !== "active") {
-      bumpInactive(r.accountId, r.accountName, 1);
-      continue;
-    }
-    const id = parseEngineIdentity(r.productDescription);
-    const c = classify(r.dbInstanceClass, id, r.multiAZ);
-    const count = r.dbInstanceCount;
-    switch (c.kind) {
-      case "serverless":
-        // Reserved serverless dropped, mirroring the org-wide path.
-        break;
-      case "burstable":
-        bumpBurstable(
-          r.accountId,
-          r.accountName,
-          r.region,
-          c.family,
-          c.size,
-          count,
-          "reserved",
-        );
-        break;
-      case "unparseable":
-        bumpUnparseable(
-          r.accountId,
-          r.accountName,
-          r.region,
-          c.dbInstanceClass,
-          "reserved",
-          count,
-        );
-        break;
-      case "nonSizeFlex":
-        bumpNonSizeFlex(
-          r.accountId,
-          r.accountName,
-          r.region,
-          c.family,
-          c.engine,
-          c.size,
-          c.deployment,
-          count,
-          "reserved",
-        );
-        break;
-      case "bucket":
-        bumpBucket(
-          r.accountId,
-          r.accountName,
-          r.region,
-          c.family,
-          c.generation,
-          c.engine,
-          c.deployment,
-          c.units * count,
-          count,
-          "reserved",
-        );
-        break;
-    }
-  }
+  const core = routeRows(instances, reserved, (rec) => rec.accountId);
+  const buckets = core.buckets;
+  const burstable = core.burstable;
+  const serverless = core.serverless;
+  const unparseable = core.unparseable;
+  const nonSizeFlex = core.nonSizeFlex;
+  const inactiveReserved = core.inactiveReserved;
 
   const byAccountRegion = (a: { accountName: string; region: string }, b: {
     accountName: string;
