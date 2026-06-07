@@ -29,6 +29,20 @@ import {
 } from "../aws_rds_reservation_coverage.ts";
 
 // ---------------------------------------------------------------------------
+// Fake account identifiers. `accountId` is an opaque `z.string()` in the
+// producer schema, so these named placeholders replace 12-digit account-id-
+// shaped literals. The numeric SUFFIXES are deliberate: several tests assert
+// the ascending-accountId tie-break, and these constants sort in the SAME
+// lexicographic order (ACCOUNT_01 < ACCOUNT_02 < ACCOUNT_03 < ACCOUNT_04) so
+// those order assertions still hold.
+// ---------------------------------------------------------------------------
+
+const ACCOUNT_01 = "ACCT_01";
+const ACCOUNT_02 = "ACCT_02";
+const ACCOUNT_03 = "ACCT_03";
+const ACCOUNT_04 = "ACCT_04";
+
+// ---------------------------------------------------------------------------
 // parseInstanceClass
 // ---------------------------------------------------------------------------
 
@@ -557,13 +571,13 @@ Deno.test("aggregateByAccount: same-named distinct accounts have a run-independe
   // to Map-insertion (instance arrival) order, so feeding the rows in opposite
   // orders would yield opposite output orders — not byte-stable across runs.
   const rowsA = inst({
-    accountId: "222222222222",
+    accountId: ACCOUNT_02,
     accountName: "",
     dbInstanceClass: "db.r8g.large",
     dbInstanceIdentifier: "a",
   });
   const rowsB = inst({
-    accountId: "111111111111",
+    accountId: ACCOUNT_01,
     accountName: "",
     dbInstanceClass: "db.r8g.large",
     dbInstanceIdentifier: "b",
@@ -580,7 +594,7 @@ Deno.test("aggregateByAccount: same-named distinct accounts have a run-independe
   // And that order is the deterministic accountId tie-break (ascending).
   assertEquals(
     forward.map((b) => b.accountId),
-    ["111111111111", "222222222222"],
+    [ACCOUNT_01, ACCOUNT_02],
   );
 });
 
@@ -591,8 +605,8 @@ Deno.test("aggregateByAccount: carve-out tables order is run-independent for sam
   // (arrival) order. Each carve-out below has two such accounts that compare
   // equal on every display key; only the accountId tie-break makes the order
   // total and byte-stable.
-  const acctA = { accountId: "222222222222", accountName: "" };
-  const acctB = { accountId: "111111111111", accountName: "" };
+  const acctA = { accountId: ACCOUNT_02, accountName: "" };
+  const acctB = { accountId: ACCOUNT_01, accountName: "" };
 
   const rows = [
     // burstable
@@ -666,7 +680,7 @@ Deno.test("aggregateByAccount: carve-out tables order is run-independent for sam
     // Same order regardless of arrival order.
     assertEquals(fwd, reverse[k].map((l) => l.accountId), `${k} not stable`);
     // And it is the ascending accountId tie-break.
-    assertEquals(fwd, ["111111111111", "222222222222"], `${k} wrong order`);
+    assertEquals(fwd, [ACCOUNT_01, ACCOUNT_02], `${k} wrong order`);
   }
 });
 
@@ -714,28 +728,28 @@ Deno.test("aggregateByAccount: an all-burstable account and an all-serverless ac
   const acct = aggregateByAccount(
     [
       inst({
-        accountId: "111111111111",
+        accountId: ACCOUNT_01,
         accountName: "prod",
         dbInstanceClass: "db.r7g.2xlarge",
         engine: "postgres",
         dbInstanceIdentifier: "p1",
       }),
       inst({
-        accountId: "222222222222",
+        accountId: ACCOUNT_02,
         accountName: "burst",
         dbInstanceClass: "db.t4g.medium",
         engine: "mysql",
         dbInstanceIdentifier: "b1",
       }),
       inst({
-        accountId: "222222222222",
+        accountId: ACCOUNT_02,
         accountName: "burst",
         dbInstanceClass: "db.t4g.medium",
         engine: "mysql",
         dbInstanceIdentifier: "b2",
       }),
       inst({
-        accountId: "333333333333",
+        accountId: ACCOUNT_03,
         accountName: "server",
         dbInstanceClass: "db.serverless",
         engine: "aurora-postgresql",
@@ -1145,7 +1159,7 @@ Deno.test("aggregateByAccount: an all-SQL-Server account is not silently dropped
   const acct = aggregateByAccount(
     [
       inst({
-        accountId: "444444444444",
+        accountId: ACCOUNT_04,
         accountName: "winsql",
         dbInstanceClass: "db.r6i.xlarge",
         engine: "sqlserver-ee",
@@ -1155,7 +1169,7 @@ Deno.test("aggregateByAccount: an all-SQL-Server account is not silently dropped
     ],
     [
       ri({
-        accountId: "444444444444",
+        accountId: ACCOUNT_04,
         accountName: "winsql",
         dbInstanceClass: "db.r6i.xlarge",
         productDescription: "sqlserver-ee(li)",

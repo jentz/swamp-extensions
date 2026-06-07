@@ -33,6 +33,21 @@ import {
 } from "../aws_rds_reservations.ts";
 
 // ---------------------------------------------------------------------------
+// Fake account identifiers. `accountId` is an opaque `z.string()` in the
+// schema, so these named placeholders stand in for 12-digit AWS account ids
+// everywhere the value is only round-tripped through a storage key or asserted
+// back unchanged. The one place a 12-digit shape is genuinely under test (the
+// storage-key separator contract) keeps a documented numeric literal inline.
+// ---------------------------------------------------------------------------
+
+const ACCOUNT_ALPHA = "ACCT_ALPHA";
+const ACCOUNT_BETA = "ACCT_BETA";
+const ACCOUNT_GAMMA = "ACCT_GAMMA";
+const ACCOUNT_DELTA = "ACCT_DELTA";
+const ACCOUNT_EPSILON = "ACCT_EPSILON";
+const ACCOUNT_ADMIN = "ACCT_ADMIN";
+
+// ---------------------------------------------------------------------------
 // In-memory AwsApi replay
 // ---------------------------------------------------------------------------
 
@@ -55,7 +70,7 @@ function fakeApi(spec: FakeSpec): AwsApi {
     getAccountId: () =>
       spec.accountIdError
         ? Promise.reject(spec.accountIdError)
-        : Promise.resolve(spec.accountId ?? "000000000000"),
+        : Promise.resolve(spec.accountId ?? "ACCT_UNSET"),
     describeDBInstances: (region) => {
       const r = spec.perRegion?.[region];
       if (r?.instancesError) return Promise.reject(r.instancesError);
@@ -134,7 +149,7 @@ const ofSpec = (w: WrittenResource[], spec: string) =>
 
 Deno.test("smoke: two accounts × two regions sweep in one pass", async () => {
   const acctA: FakeSpec = {
-    accountId: "111122223333",
+    accountId: ACCOUNT_ALPHA,
     perRegion: {
       "us-east-1": {
         instances: [{
@@ -171,7 +186,7 @@ Deno.test("smoke: two accounts × two regions sweep in one pass", async () => {
     },
   };
   const acctB: FakeSpec = {
-    accountId: "444455556666",
+    accountId: ACCOUNT_BETA,
     perRegion: {
       "us-east-1": {
         instances: [{
@@ -208,7 +223,7 @@ Deno.test("smoke: two accounts × two regions sweep in one pass", async () => {
   const orders = instances.find((i) =>
     (i.data as InstanceRecord).dbInstanceIdentifier === "orders-db"
   )!;
-  assertEquals((orders.data as InstanceRecord).accountId, "111122223333");
+  assertEquals((orders.data as InstanceRecord).accountId, ACCOUNT_ALPHA);
   assertEquals((orders.data as InstanceRecord).accountName, "prod");
   assertEquals((orders.data as InstanceRecord).region, "us-east-1");
   // licenseModel is captured when AWS reports it, and backfills to "" when the
@@ -225,15 +240,15 @@ Deno.test("smoke: two accounts × two regions sweep in one pass", async () => {
   // Storage keys are unique per (account, region, id) — no cross-account clash.
   const keys = new Set(instances.map((i) => i.key));
   assertEquals(keys.size, 3);
-  assert(keys.has(instanceKey("111122223333", "us-east-1", "orders-db")));
-  assert(keys.has(instanceKey("111122223333", "us-west-2", "billing-db")));
-  assert(keys.has(instanceKey("444455556666", "us-east-1", "analytics-db")));
+  assert(keys.has(instanceKey(ACCOUNT_ALPHA, "us-east-1", "orders-db")));
+  assert(keys.has(instanceKey(ACCOUNT_ALPHA, "us-west-2", "billing-db")));
+  assert(keys.has(instanceKey(ACCOUNT_BETA, "us-east-1", "analytics-db")));
 
   const reserved = ofSpec(out.written, "reserved");
   assertEquals(reserved.length, 1);
   assertEquals(
     reserved[0].key,
-    reservedKey("111122223333", "us-east-1", "ri-a-east"),
+    reservedKey(ACCOUNT_ALPHA, "us-east-1", "ri-a-east"),
   );
   assertEquals((reserved[0].data as ReservedRecord).dbInstanceCount, 2);
 });
@@ -241,6 +256,9 @@ Deno.test("smoke: two accounts × two regions sweep in one pass", async () => {
 Deno.test("smoke: storage-key separator is locked to `--` (task-57 published contract)", () => {
   // The double-hyphen joins the hyphen-bearing identifier; account id and region
   // keep single hyphens since they are self-delimiting (12 digits / closed set).
+  // The 12-digit literals below are intentional and load-bearing: the property
+  // under test is that a fixed-width, all-digit account id is self-delimiting,
+  // so a named placeholder would no longer prove it. Documented exception.
   assertEquals(
     instanceKey("111122223333", "us-east-1", "orders-db"),
     "instance-111122223333-us-east-1--orders-db",
@@ -298,7 +316,7 @@ Deno.test("smoke: a denied region degrades to scan_error; the rest of the sweep 
 
   const out = await runWithTargets(
     [target("app-readonly", {
-      accountId: "123456789012",
+      accountId: ACCOUNT_ADMIN,
       perRegion: {
         "us-east-1": {
           instances: [{
@@ -342,7 +360,7 @@ Deno.test("smoke: a denied region degrades to scan_error; the rest of the sweep 
 Deno.test("smoke: ambient profile has no profile label and falls back to account id for accountName", async () => {
   const out = await runWithTargets(
     [target("", {
-      accountId: "222233334444",
+      accountId: ACCOUNT_GAMMA,
       perRegion: {
         "us-east-1": {
           instances: [{
@@ -361,7 +379,7 @@ Deno.test("smoke: ambient profile has no profile label and falls back to account
   const inst = ofSpec(out.written, "instance")[0].data as InstanceRecord;
   assertEquals(inst.profile, "");
   // Ambient chain has no profile to label, so accountName falls back to the id.
-  assertEquals(inst.accountName, "222233334444");
+  assertEquals(inst.accountName, ACCOUNT_GAMMA);
   // Standalone instance: no owning cluster.
   assertEquals(inst.clusterId, "");
 });
@@ -376,7 +394,7 @@ Deno.test("smoke: a credential failure skips the account but not its peers", asy
     [
       target("stale-readonly", { accountIdError: expired }),
       target("live-readonly", {
-        accountId: "333344445555",
+        accountId: ACCOUNT_DELTA,
         perRegion: {
           "us-east-1": {
             instances: [{
@@ -405,7 +423,7 @@ Deno.test("smoke: a credential failure skips the account but not its peers", asy
 Deno.test("smoke: empty fleet across every region writes nothing", async () => {
   const out = await runWithTargets(
     [target("empty-readonly", {
-      accountId: "555566667777",
+      accountId: ACCOUNT_EPSILON,
       perRegion: { "us-east-1": {}, "us-west-2": {} },
     })],
     ["us-east-1", "us-west-2"],

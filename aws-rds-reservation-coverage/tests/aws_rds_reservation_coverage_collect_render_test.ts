@@ -56,6 +56,21 @@ import type {
 } from "../../aws-rds-reservations/aws_rds_reservations.ts";
 
 // ---------------------------------------------------------------------------
+// Fake account identifiers. `accountId` is an opaque `z.string()`, so these
+// named placeholders stand in for 12-digit account-id-shaped literals in the
+// fixtures. The one test that asserts an exact CSV byte string keeps a
+// documented numeric literal inline, because the numeric (comma-free) cell is
+// the very thing under test there.
+// ---------------------------------------------------------------------------
+
+const ACCOUNT_ALPHA = "ACCT_ALPHA";
+const ACCOUNT_BETA = "ACCT_BETA";
+const ACCOUNT_GAMMA = "ACCT_GAMMA";
+const ACCOUNT_EPSILON = "ACCT_EPSILON";
+const ACCOUNT_ZETA = "ACCT_ZETA";
+const ACCOUNT_OMEGA = "ACCT_OMEGA";
+
+// ---------------------------------------------------------------------------
 // Stub context that mirrors what collect() reads:
 //   context.stepExecutions[].modelType / .modelId / .dataHandles[]
 //   handle.metadata.tags.specName, handle.name, handle.version
@@ -136,7 +151,7 @@ function stubContext(handles: StubHandle[]): {
 // Representative fixtures TYPED AS THE PRODUCER INTERFACES. A producer rename
 // (e.g. multiAZ -> multiAz) makes these object literals fail to compile.
 const instanceFixture: ModelInstanceRecord = {
-  accountId: "111122223333",
+  accountId: ACCOUNT_ALPHA,
   accountName: "prod",
   profile: "prod-readonly",
   region: "us-east-1",
@@ -154,7 +169,7 @@ const instanceFixture: ModelInstanceRecord = {
 };
 
 const reservedFixture: ModelReservedRecord = {
-  accountId: "111122223333",
+  accountId: ACCOUNT_ALPHA,
   accountName: "prod",
   profile: "prod-readonly",
   region: "us-east-1",
@@ -172,7 +187,7 @@ const reservedFixture: ModelReservedRecord = {
 
 const scanErrorFixture: ModelScanError = {
   profile: "stale-readonly",
-  accountId: "444455556666",
+  accountId: ACCOUNT_BETA,
   region: "ap-southeast-2",
   phase: "describe_db_instances",
   kind: "access_denied",
@@ -635,13 +650,13 @@ Deno.test("renderCsv: a field containing a comma is quoted in the cell", () => {
 Deno.test("report.execute: account and region counts include reserved and scan_error-only rows", async () => {
   const reservedOnly: ModelReservedRecord = {
     ...reservedFixture,
-    accountId: "222233334444",
+    accountId: ACCOUNT_GAMMA,
     accountName: "reserved-only",
     region: "eu-west-1",
   };
   const errorOnly: ModelScanError = {
     ...scanErrorFixture,
-    accountId: "555566667777",
+    accountId: ACCOUNT_EPSILON,
     region: "ap-southeast-2",
   };
   const { context } = stubContext([
@@ -672,7 +687,7 @@ Deno.test("report.execute: account and region counts include reserved and scan_e
 
 Deno.test("renderMarkdown: non-empty doc with expected section headers", () => {
   const instances: InstanceRecord[] = [{
-    accountId: "111122223333",
+    accountId: ACCOUNT_ALPHA,
     accountName: "prod",
     profile: "prod-readonly",
     region: "us-east-1",
@@ -789,7 +804,7 @@ Deno.test("report.execute: a post-collect throw yields a coherent, all-empty deg
   // read "N instances, 0 buckets, fully covered" with degraded=true.
   const reserved: ModelReservedRecord = {
     ...reservedFixture,
-    accountId: "999988887777",
+    accountId: ACCOUNT_ZETA,
     region: "eu-central-1",
   };
   const { context } = stubContext([
@@ -806,7 +821,7 @@ Deno.test("report.execute: a post-collect throw yields a coherent, all-empty deg
       specName: SCAN_ERROR_SPEC,
       json: {
         ...scanErrorFixture,
-        accountId: "111111111111",
+        accountId: ACCOUNT_OMEGA,
         region: "sa-east-1",
       },
     },
@@ -1081,7 +1096,7 @@ Deno.test("countAccountsRegions: unions accounts/regions across instances, reser
 Deno.test("countAccountsRegions: JSON counts equal the markdown summary (shared source)", async () => {
   const reservedOnly: ModelReservedRecord = {
     ...reservedFixture,
-    accountId: "222233334444",
+    accountId: ACCOUNT_GAMMA,
     accountName: "reserved-only",
     region: "eu-west-1",
   };
@@ -1111,6 +1126,10 @@ Deno.test("countAccountsRegions: JSON counts equal the markdown summary (shared 
 
 Deno.test("renderCsvByAccount: exact bytes — header, per-cell escaping, gap, trailing newline", () => {
   const bucket: AccountBucket = {
+    // Intentional 12-digit literal (documented exception): this test asserts
+    // exact CSV bytes, and the point is the numeric, comma-free account-id cell
+    // rendering UNQUOTED next to the quoted "team, alpha" cell. A non-numeric
+    // placeholder would weaken the unquoted-vs-quoted contrast under test.
     accountId: "111122223333",
     // A comma forces RFC4180 quoting in this cell only.
     accountName: "team, alpha",
