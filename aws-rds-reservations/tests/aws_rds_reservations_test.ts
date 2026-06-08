@@ -16,8 +16,10 @@
 
 import {
   assertEquals,
+  assertFalse,
   assertRejects,
   assertStrictEquals,
+  assertStringIncludes,
 } from "jsr:@std/assert@1";
 import { createModelTestContext } from "jsr:@systeminit/swamp-testing@0.20260525.18";
 import {
@@ -386,6 +388,45 @@ Deno.test("runSweep: profile failing required-suffix is skipped before any AWS c
   });
   assertEquals(result.instanceCount, 0);
   assertEquals(result.errorCount, 1);
+});
+
+Deno.test("runSweep: required-suffix skip renders a named profile in the scan_error message", async () => {
+  const { context, getWrittenResources } = createModelTestContext({});
+  const result = await runSweep({
+    targets: [target("admin-profile", { accountId: ACCOUNT_ADMIN })],
+    regions: ["us-east-1"],
+    requiredProfileSuffix: "-readonly",
+    context,
+  });
+  assertEquals(result.errorCount, 1);
+  const err = getWrittenResources().find((w) => w.specName === "scan_error")!
+    .data as Record<string, unknown>;
+  assertEquals(err.phase, "profile_suffix_check");
+  // Machine/keying field stays the literal profile.
+  assertEquals(err.profile, "admin-profile");
+  // Human-readable message names the profile.
+  assertStringIncludes(err.message as string, "Profile 'admin-profile'");
+});
+
+Deno.test("runSweep: required-suffix skip renders <ambient> for the empty profile in the scan_error message", async () => {
+  const { context, getWrittenResources } = createModelTestContext({});
+  const result = await runSweep({
+    // Ambient credential chain: empty profile string.
+    targets: [target("", { accountId: ACCOUNT_ADMIN })],
+    regions: ["us-east-1"],
+    requiredProfileSuffix: "-readonly",
+    context,
+  });
+  assertEquals(result.errorCount, 1);
+  const err = getWrittenResources().find((w) => w.specName === "scan_error")!
+    .data as Record<string, unknown>;
+  assertEquals(err.phase, "profile_suffix_check");
+  // AC#2: the machine/keying field stays the empty string for ambient creds.
+  assertStrictEquals(err.profile, "");
+  // AC#1: the human-readable message renders the ambient placeholder.
+  assertStringIncludes(err.message as string, "<ambient>");
+  // AC#3 guard: the message must never render an empty-quoted profile.
+  assertFalse((err.message as string).includes("Profile ''"));
 });
 
 Deno.test("runSweep: empty regions writes one no_regions scan_error and makes no AWS call", async () => {
