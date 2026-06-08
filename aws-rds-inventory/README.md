@@ -127,12 +127,12 @@ jobs:
 
 `expectedAccountId` is threaded through `inputs.*` so the auto-created model
 definition refreshes on each run (`swamp workflow run rds-3-node-inventory
---input expectedAccountId=111122223333`). Alternatively, pre-create the model
+--input expectedAccountId=AWS_ACCOUNT_ID`). Alternatively, pre-create the model
 instances once with the AWS context baked in:
 
 ```sh
 swamp model create @jentz/aws-context-guard rds-inventory-guard \
-  --global-arg expectedAccountId=111122223333
+  --global-arg expectedAccountId=AWS_ACCOUNT_ID
 
 swamp model create @jentz/aws-rds-inventory rds-inv \
   --global-arg region=eu-west-1
