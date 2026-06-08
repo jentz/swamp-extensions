@@ -11,7 +11,7 @@ import {
   assertRejects,
 } from "https://deno.land/std@0.224.0/assert/mod.ts";
 import { STSClient } from "npm:@aws-sdk/client-sts@3.1063.0";
-import { model } from "../aws_context_guard.ts";
+import { model } from "./aws_context_guard.ts";
 
 // ---------------------------------------------------------------------------
 // Helpers

@@ -28,7 +28,7 @@ what `swamp extension push` uses:
 
 ```sh
 ~/.swamp/deno/deno test --allow-read --allow-env --allow-net --no-check \
-  aws-context-guard/tests/ aws-s3-bucket-audit/tests/
+  aws-context-guard/ aws-s3-bucket-audit/tests/
 ```
 
 Each manifest opts in to `paths.base: manifest` so per-extension subdirectories
