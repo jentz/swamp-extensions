@@ -45,7 +45,7 @@ Create the model instance once, with the expected account ID baked in:
 
 ```sh
 swamp model create @jentz/aws-context-guard aws-guard \
-  --global expectedAccountId=AWS_ACCOUNT_ID
+  --global-arg expectedAccountId=AWS_ACCOUNT_ID
 ```
 
 Reference it as the first job in any AWS-touching workflow:
@@ -80,8 +80,8 @@ and `do-aws-work` never starts because its `dependsOn` condition isn't met.
 | `expectedAccountId`     | string (12 digits) | (required)  | The AWS account ID the workflow expects. Workflow aborts if `sts:GetCallerIdentity` returns a different account. |
 | `requiredProfileSuffix` | string             | `-readonly` | `AWS_PROFILE` must end with this suffix. Set to `""` to disable.                                                 |
 
-Set at model-instance creation time via `--global <key>=<value>`. The `verify`
-method takes no per-call arguments.
+Set at model-instance creation time via `--global-arg <key>=<value>`. The
+`verify` method takes no per-call arguments.
 
 ## Methods
 

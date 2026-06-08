@@ -117,15 +117,15 @@ inputs:
   properties:
     expectedAccountId:
       type: string
-      # Replace with your own AWS account ID. The placeholder below is NOT a
-      # usable default — you must supply your expected account ID at run time.
-      default: "AWS_ACCOUNT_ID"
+      # Your 12-digit AWS account ID. Required, with no default: supply it at
+      # run time, e.g. --input expectedAccountId=AWS_ACCOUNT_ID.
     bucketNames:
       type: array
       items: { type: string }
       minItems: 1
       default:
         - my-iac-state-bucket
+  required: ["expectedAccountId"]
 jobs:
   - name: guard
     steps:
