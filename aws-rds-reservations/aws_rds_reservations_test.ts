@@ -58,6 +58,16 @@ Deno.test("model metadata: upgrades stay globalArguments-only, no resource migra
     "expected at least one upgrade entry to assert the invariant on",
   );
 
+  // swamp registry/host loading rejects a model whose final upgrades entry
+  // toVersion drifts from model.version. Guard the invariant locally so an
+  // SDK-bump batch that advances model.version without appending the matching
+  // no-op upgrade fails here instead of at publish time.
+  assertEquals(
+    upgrades.at(-1)?.toVersion,
+    model.version,
+    "final upgrades entry toVersion must equal model.version",
+  );
+
   // Resource-only keys that must never appear in upgraded global arguments.
   const resourceOnlyKeys = [
     "licenseModel",

@@ -33,6 +33,29 @@ Deno.test("model metadata: entrypoint stays in sync with manifest", async () => 
   assertEquals(Object.keys(model.methods), ["list_clusters"]);
 });
 
+Deno.test("model metadata: upgrade chain ends at model.version", () => {
+  // swamp registry/host loading rejects a model whose final upgrades entry
+  // toVersion drifts from model.version. Guard the invariant locally so an
+  // SDK-bump batch that advances model.version without appending the matching
+  // no-op upgrade fails here instead of at publish time.
+  const upgrades = model.upgrades;
+  assertEquals(
+    Array.isArray(upgrades),
+    true,
+    "model.upgrades must be an array",
+  );
+  assertEquals(
+    upgrades.length > 0,
+    true,
+    "expected at least one upgrade entry to assert the invariant on",
+  );
+  assertEquals(
+    upgrades.at(-1)?.toVersion,
+    model.version,
+    "final upgrades entry toVersion must equal model.version",
+  );
+});
+
 Deno.test("resolveRegion: fails closed when no region source is configured", () => {
   assertThrows(
     () => resolveRegion({}, () => undefined),
