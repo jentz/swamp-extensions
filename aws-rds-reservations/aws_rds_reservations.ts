@@ -1077,7 +1077,9 @@ export async function runSweep(deps: SweepDeps): Promise<SweepResult> {
         phase: "profile_suffix_check",
         kind: "other",
         message:
-          `Profile '${profileLabel}' does not end with required suffix ` +
+          `Profile '${
+            profileLabel || "<ambient>"
+          }' does not end with required suffix ` +
           `'${requiredProfileSuffix}'; skipped before any AWS call.`,
         scannedAt,
       });
@@ -1315,7 +1317,7 @@ export async function runSweep(deps: SweepDeps): Promise<SweepResult> {
  */
 export const model = {
   type: "@jentz/aws-rds-reservations",
-  version: "2026.06.07.2",
+  version: "2026.06.08.1",
   globalArguments: GlobalArgsSchema,
   // First publish. swamp model upgrades transform stored globalArguments, not
   // historical resource artifacts, so there is nothing to migrate here: the
@@ -1332,6 +1334,11 @@ export const model = {
     },
     {
       toVersion: "2026.06.07.2",
+      description: "Version bump, no globalArguments schema changes",
+      upgradeAttributes: (old: Record<string, unknown>) => old,
+    },
+    {
+      toVersion: "2026.06.08.1",
       description: "Version bump, no globalArguments schema changes",
       upgradeAttributes: (old: Record<string, unknown>) => old,
     },
