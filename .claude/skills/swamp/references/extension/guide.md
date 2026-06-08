@@ -72,6 +72,8 @@ const GlobalArgsSchema = z.object({
   message: z.string(),
 });
 
+type GlobalArgs = z.infer<typeof GlobalArgsSchema>;
+
 const OutputSchema = z.object({
   id: z.uuid(),
   message: z.string(),
@@ -95,7 +97,17 @@ export const model = {
     run: {
       description: "Process the input message",
       arguments: z.object({}),
-      execute: async (args, context) => {
+      execute: async (
+        _args: Record<string, never>,
+        context: {
+          globalArgs: GlobalArgs;
+          writeResource: (
+            specName: string,
+            name: string,
+            data: Record<string, unknown>,
+          ) => Promise<{ name: string }>;
+        },
+      ) => {
         const handle = await context.writeResource("result", "main", {
           id: crypto.randomUUID(),
           message: context.globalArgs.message.toUpperCase(),
@@ -410,6 +422,30 @@ behavior is unchanged — omit it and paths resolve relative to the configured
 `extensions/<type>/` directory. Set `paths.base: manifest` for
 per-extension-subdir layouts. See
 [extension-publish references/publishing.md](../extension-publish/references/publishing.md#path-resolution--pathsbase).
+
+## Binaries
+
+Extensions can include executable host helpers (CLI tools, compiled binaries)
+via the `binaries` manifest field. Files listed in `binaries` are:
+
+- **Exempt from the file-extension allowlist** — unlike `additionalFiles` (which
+  only allows `.ts`, `.json`, `.md`, `.yaml`, `.yml`, `.txt`), binaries can have
+  any extension or no extension at all.
+- **Mode-bit preserved** — executable permissions survive the publish/pull cycle
+  on POSIX systems.
+- **Warned at pull time** — `swamp extension pull` alerts users to inspect
+  binaries before use.
+
+```yaml
+# manifest.yaml
+binaries:
+  - bin/my-helper
+  - bin/another-tool
+```
+
+Paths resolve the same way as `additionalFiles` (relative to the manifest
+directory, or following `paths.base`). Use `binaries` for executables and
+`additionalFiles` for non-code text files (README, LICENSE, config templates).
 
 ## CalVer Versioning
 
