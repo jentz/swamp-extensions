@@ -45,7 +45,7 @@ Create the model instance once, with the expected account ID baked in:
 
 ```sh
 swamp model create @jentz/aws-context-guard aws-guard \
-  --global expectedAccountId=123456789012
+  --global expectedAccountId=AWS_ACCOUNT_ID
 ```
 
 Reference it as the first job in any AWS-touching workflow:

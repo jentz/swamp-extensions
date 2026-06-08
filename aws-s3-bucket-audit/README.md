@@ -117,7 +117,9 @@ inputs:
   properties:
     expectedAccountId:
       type: string
-      default: "123456789012"
+      # Replace with your own AWS account ID. The placeholder below is NOT a
+      # usable default — you must supply your expected account ID at run time.
+      default: "AWS_ACCOUNT_ID"
     bucketNames:
       type: array
       items: { type: string }

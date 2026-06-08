@@ -821,7 +821,7 @@ export async function runListClusters(
  */
 export const model = {
   type: "@jentz/aws-rds-inventory",
-  version: "2026.06.07.2",
+  version: "2026.06.08.1",
   globalArguments: GlobalArgsSchema,
   // The 2026.06.05.1, 2026.06.06.1, 2026.06.07.1, and 2026.06.07.2 releases
   // changed only internals (server-side DescribeDBInstances filtering, AWS SDK
@@ -848,6 +848,12 @@ export const model = {
     {
       toVersion: "2026.06.07.2",
       description: "Version bump, no globalArguments schema changes",
+      upgradeAttributes: (old: Record<string, unknown>) => old,
+    },
+    {
+      toVersion: "2026.06.08.1",
+      description:
+        "Docs-only release (account-id placeholder scrub); no schema changes",
       upgradeAttributes: (old: Record<string, unknown>) => old,
     },
   ],
