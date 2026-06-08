@@ -51,7 +51,7 @@ const ContextSchema = z.object({
  */
 export const model = {
   type: "@jentz/aws-context-guard",
-  version: "2026.06.07.1",
+  version: "2026.06.08.1",
   globalArguments: GlobalArgsSchema,
   resources: {
     context: {
