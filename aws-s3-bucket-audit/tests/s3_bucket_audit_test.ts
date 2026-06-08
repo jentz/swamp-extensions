@@ -2165,6 +2165,76 @@ Deno.test(
 );
 
 Deno.test(
+  "BucketPolicyStateSchema rejects PolicyDocument: null (null is not an accepted value)",
+  async () => {
+    // Pins current behavior: the accepted shapes for `PolicyDocument` are
+    // string | object | undefined (`z.union([string, record]).optional()`).
+    // `null` is NOT a recognized "absent" value — `.optional()` accepts
+    // `undefined`, not `null`, and `null` is in neither arm of the union.
+    // A `PolicyDocument: null` payload must therefore FAIL schema validation
+    // and take the schema-mismatch path (recordUnknown -> policyError), NOT
+    // the genuinely-absent "no policy" path (which would PASS
+    // bucket-no-overbroad-allow, as the unparseable-string sibling test notes).
+    // BucketPolicyStateSchema is not exported, so we exercise it through
+    // collectBundles via report.execute.
+    const stateJson = JSON.stringify({ BucketName: "null-policy-bucket" });
+    const policyJson = JSON.stringify({
+      Bucket: "null-policy-bucket",
+      PolicyDocument: null,
+    });
+    const out = await runReport(
+      [
+        ["@swamp/aws/s3/bucket", "audit-state", "default", 1, stateJson],
+        [
+          "@swamp/aws/s3/bucket-policy",
+          "audit-policy",
+          "default",
+          1,
+          policyJson,
+        ],
+      ],
+      [
+        {
+          jobName: "lookup",
+          stepName: "bucket-state",
+          modelType: "@swamp/aws/s3/bucket",
+          modelId: "audit-state",
+          status: "succeeded",
+          methodArgs: { identifier: "null-policy-bucket" },
+          dataHandles: [{ name: "default", version: 1 }],
+        },
+        {
+          jobName: "lookup",
+          stepName: "bucket-policy",
+          modelType: "@swamp/aws/s3/bucket-policy",
+          modelId: "audit-policy",
+          status: "succeeded",
+          methodArgs: { identifier: "null-policy-bucket" },
+          dataHandles: [{ name: "default", version: 1 }],
+        },
+      ],
+    );
+    const j = out.json;
+    assertEquals(j.summary.buckets, 1);
+    assertEquals(j.buckets[0].name, "null-policy-bucket");
+    const noOverbroad = j.findings.find((f) =>
+      f.id === "bucket-no-overbroad-allow"
+    );
+    assertExists(noOverbroad);
+    // Schema mismatch => recordUnknown sets a policyError, so the policy rule
+    // SKIPs ("couldn't evaluate"). It must NOT PASS: a PASS would mean null was
+    // treated as a genuinely-absent policy, which the schema never accepts.
+    assertEquals(noOverbroad.status, "skip");
+    // The schema-mismatch reason is carried as the policyError on `actual`.
+    // Its presence proves the schema-mismatch (recordUnknown) path ran rather
+    // than the genuinely-absent path, which sets no error.
+    const actual = noOverbroad.actual as { error?: string };
+    assertExists(actual.error);
+    assert(actual.error.includes("did not match expected shape"));
+  },
+);
+
+Deno.test(
   "report.execute: valid string-form PolicyDocument (CloudControl shape) is parsed and evaluated",
   async () => {
     // AWS CloudControl returns `@swamp/aws/s3/bucket-policy` `state.PolicyDocument`
