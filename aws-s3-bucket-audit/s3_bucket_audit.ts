@@ -258,8 +258,9 @@ async function collectBundles(context: any): Promise<BucketBundle[]> {
         // it. Record a policyError so the policy rules SKIP honestly ("couldn't
         // evaluate") instead of treating it as "no policy attached" and
         // emitting a misleading PASS for the overbroad-Allow rule. A genuinely
-        // absent PolicyDocument (undefined/null/empty) is left untouched and
-        // keeps its existing "no policy" behavior.
+        // absent PolicyDocument (undefined, or an empty or whitespace-only
+        // string) is left untouched and keeps its existing "no policy"
+        // behavior.
         if (
           typeof policy.PolicyDocument === "string" &&
           policy.PolicyDocument.trim() !== "" &&
