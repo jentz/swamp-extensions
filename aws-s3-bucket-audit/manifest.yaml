@@ -1,6 +1,6 @@
 manifestVersion: 1
 name: "@jentz/aws-s3-bucket-audit"
-version: "2026.06.08.1"
+version: "2026.06.09.1"
 description: |
   Workflow-scope report that audits S3 buckets against standard security
   best practices. Operates on bucket state and bucket-policy data produced
