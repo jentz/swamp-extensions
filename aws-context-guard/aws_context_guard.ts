@@ -42,6 +42,32 @@ const ContextSchema = z.object({
 });
 
 /**
+ * Call `client.destroy()` if present, swallowing and logging any failure at
+ * `debug`. SDK `destroy()` is synchronous and best-effort cleanup: a failure
+ * here must never mask the operation's original outcome — neither turning a
+ * successful verify into a failure nor replacing a real thrown error. Lives
+ * in the verify method's `finally` so it is the last thing to run on both the
+ * success and error paths. Inlined (rather than imported across extension
+ * boundaries) to keep this model self-contained, mirroring the sibling
+ * `@jentz/aws-rds-reservations` helper.
+ */
+export function safeDestroy(
+  client: { destroy?: () => void } | undefined,
+  // deno-lint-ignore no-explicit-any
+  logger?: any,
+): void {
+  try {
+    client?.destroy?.();
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    logger?.debug?.(
+      "Ignoring AWS SDK client destroy() failure during cleanup: {message}",
+      { message },
+    );
+  }
+}
+
+/**
  * The `@jentz/aws-context-guard` model.
  *
  * Provides a single `verify` method that checks `AWS_PROFILE` suffix and
@@ -51,8 +77,42 @@ const ContextSchema = z.object({
  */
 export const model = {
   type: "@jentz/aws-context-guard",
-  version: "2026.06.08.2",
+  version: "2026.06.09.1",
   globalArguments: GlobalArgsSchema,
+  // swamp model upgrades transform stored globalArguments, not the per-run
+  // derived context resource. The guard's globalArguments shape
+  // (expectedAccountId, requiredProfileSuffix) has been unchanged since the
+  // 2026.05.17.1 baseline, so every entry is a no-op. Each one still advances
+  // the stored typeVersion on existing instances so any future
+  // schema-changing upgrade chains cleanly instead of skipping releases. The
+  // chain mirrors the sibling @jentz/aws-rds-inventory / aws-rds-reservations
+  // convention: one entry per published release after the baseline, ending at
+  // the current model.version. (The 2026.06.08.2 entry is intentionally
+  // absent — it was committed but never published, so no stored instance ever
+  // carried it.)
+  upgrades: [
+    {
+      toVersion: "2026.06.07.1",
+      description: "Version bump, no globalArguments schema changes",
+      upgradeAttributes: (old: Record<string, unknown>) => old,
+    },
+    {
+      toVersion: "2026.06.08.1",
+      description: "Version bump, no globalArguments schema changes",
+      upgradeAttributes: (old: Record<string, unknown>) => old,
+    },
+    {
+      toVersion: "2026.06.09.1",
+      description: "Version bump, no globalArguments schema changes",
+      upgradeAttributes: (old: Record<string, unknown>) => old,
+    },
+  ] as Array<{
+    toVersion: string;
+    description: string;
+    upgradeAttributes: (
+      old: Record<string, unknown>,
+    ) => Record<string, unknown>;
+  }>,
   resources: {
     context: {
       description: "Verified AWS caller-identity context",
@@ -110,7 +170,15 @@ export const model = {
 
         context.logger.debug("Calling sts:GetCallerIdentity");
         const client = new STSClient({ region: region || "us-east-1" });
-        const resp = await client.send(new GetCallerIdentityCommand({}));
+        let resp;
+        try {
+          resp = await client.send(new GetCallerIdentityCommand({}));
+        } finally {
+          // Free the STS client's socket pool on both the success and error
+          // paths. safeDestroy never throws, so it cannot mask the original
+          // send() outcome.
+          safeDestroy(client, context.logger);
+        }
         const accountId = resp.Account ?? "";
         const arn = resp.Arn ?? "";
         const userId = resp.UserId ?? "";
