@@ -252,15 +252,15 @@ async function collectBundles(context: any): Promise<BucketBundle[]> {
           ...policy,
           PolicyDocument: normalizedDoc,
         };
-        // Distinguish "policy attached but unreadable" from "no policy". When
-        // the upstream `PolicyDocument` was a non-empty string but normalize
-        // returned `undefined`, the policy IS present — we just couldn't parse
-        // it. Record a policyError so the policy rules SKIP honestly ("couldn't
-        // evaluate") instead of treating it as "no policy attached" and
-        // emitting a misleading PASS for the overbroad-Allow rule. A genuinely
-        // absent PolicyDocument (undefined, or an empty or whitespace-only
-        // string) is left untouched and keeps its existing "no policy"
-        // behavior.
+        // Distinguish the policy-attached-but-unreadable case from the
+        // no-policy case. When the upstream `PolicyDocument` was a non-empty
+        // string but normalize returned `undefined`, the policy IS present —
+        // we just couldn't parse it. Record a policyError so the policy rules
+        // SKIP honestly (could not evaluate) instead of treating it as
+        // no-policy-attached and emitting a misleading PASS for the
+        // overbroad-Allow rule. A genuinely absent PolicyDocument (undefined,
+        // or an empty or whitespace-only string) is left untouched and keeps
+        // its existing no-policy behavior.
         if (
           typeof policy.PolicyDocument === "string" &&
           policy.PolicyDocument.trim() !== "" &&
