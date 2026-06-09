@@ -1,0 +1,82 @@
+{
+  "extension": "@jentz/aws-context-guard",
+  "version": "2026.06.08.2",
+  "reviewedAt": "2026-06-09T11:55:48Z",
+  "dimensions": [
+    {
+      "id": "credentials-secrets",
+      "verdict": "pass",
+      "note": "No secrets stored. Uses ambient AWS credential chain (AWS_PROFILE) plus sts:GetCallerIdentity; expectedAccountId/requiredProfileSuffix are non-secret config. Nothing vaulted, nothing sensitive logged."
+    },
+    {
+      "id": "logging-quality",
+      "verdict": "pass",
+      "note": "info on entry (verifying context) and completion (context verified); debug before the STS call. Structured placeholders throughout; no secret values logged (account id and ARN are non-secret identifiers)."
+    },
+    {
+      "id": "error-handling",
+      "verdict": "pass",
+      "note": "Fails closed: throws on unset/mismatched profile, missing/mismatched account, empty STS Account, and invalid globalArgs. All throws occur before writeResource, so no partial state. Messages name the offending value and the refusal."
+    },
+    {
+      "id": "testing-completeness",
+      "verdict": "pass",
+      "note": "aws_context_guard_test.ts covers suffix mismatch/match/bypass, account mismatch, full-success writeResource assertion, STS error propagation, unset profile, empty Account, and globalArgs parse failure. STS mocked via prototype.send; env saved/restored in finally."
+    },
+    {
+      "id": "idempotency-resilience",
+      "verdict": "pass",
+      "note": "Read-only verification with a single writeResource('context','current') keyed by a fixed instance name, so re-runs overwrite rather than duplicate. No created cloud resources to orphan."
+    },
+    {
+      "id": "api-contracts",
+      "verdict": "pass",
+      "note": "Single sts:GetCallerIdentity call; response fields (Account/Arn/UserId) defensively defaulted and validated (empty Account throws). No pagination needed for this API."
+    },
+    {
+      "id": "resource-management",
+      "verdict": "pass",
+      "note": "STSClient is short-lived and used for one call; no file handles, sockets, or temp files to clean up. No created resources to track."
+    },
+    {
+      "id": "published-surface-hygiene",
+      "verdict": "pass",
+      "note": "README/tests use placeholder identifiers (123456789012 account id, example ARNs, generic profile names). No real IPs, hostnames, account ids, or topology."
+    },
+    {
+      "id": "schema-strictness",
+      "verdict": "pass",
+      "note": "ContextSchema and GlobalArgsSchema are plain z.object with no .passthrough(); expectedAccountId is regex-validated to 12 digits, verifiedAt is z.iso.datetime()."
+    },
+    {
+      "id": "lifetime-gc",
+      "verdict": "pass",
+      "note": "context resource declares lifetime: 'infinite' and garbageCollection: 10, matching the sibling extensions' convention."
+    },
+    {
+      "id": "crud-completeness",
+      "verdict": "na",
+      "note": "Not a CRUD lifecycle model. It is a workflow-safety primitive whose only method (verify) asserts identity and records a derived context snapshot; there is no managed cloud resource to create/update/delete/sync."
+    },
+    {
+      "id": "preflight-checks",
+      "verdict": "na",
+      "note": "verify performs no mutating AWS calls (sts:GetCallerIdentity is read-only), so there is no destructive action that a policy/live preflight label would gate."
+    },
+    {
+      "id": "instance-names",
+      "verdict": "pass",
+      "note": "Single spec 'context' written with the fixed key 'current' from the single method; no cross-spec or cross-method name collisions possible."
+    },
+    {
+      "id": "data-access",
+      "verdict": "na",
+      "note": "verify never reads back stored state — it derives the context fresh from env + STS each run. No update/delete/sync path that would need readResource."
+    },
+    {
+      "id": "version-upgrades",
+      "verdict": "na",
+      "note": "No upgrades entry. globalArguments schema (expectedAccountId, requiredProfileSuffix) is unchanged across releases and the context resource is a fresh per-run derivation, so there is no stored globalArguments shape to migrate. Differs from the sibling RDS models which carry no-op upgrade chains; acceptable here as the guard stores no migratable state, but worth a no-op chain on the next bump for consistency."
+    }
+  ]
+}
