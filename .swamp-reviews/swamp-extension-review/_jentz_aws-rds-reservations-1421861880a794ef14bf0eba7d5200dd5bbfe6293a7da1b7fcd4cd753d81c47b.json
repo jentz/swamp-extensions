@@ -1,0 +1,82 @@
+{
+  "extension": "@jentz/aws-rds-reservations",
+  "version": "2026.06.08.1",
+  "reviewedAt": "2026-06-09T11:55:48Z",
+  "dimensions": [
+    {
+      "id": "credentials-secrets",
+      "verdict": "pass",
+      "note": "No secrets stored. Per-profile credentials are sourced from the AWS profile/credential chain (fromIni-style provider keyed by named profile), never vaulted or logged. profiles/regions/requiredProfileSuffix are non-secret config. Account ids and ARNs are non-secret identifiers."
+    },
+    {
+      "id": "logging-quality",
+      "verdict": "pass",
+      "note": "info on sweep start per account and overall progress; warn on profile-suffix skip, credential failure, malformed rows, and describe failures; debug for retry and client-destroy cleanup. Structured placeholders throughout; no credential material logged."
+    },
+    {
+      "id": "error-handling",
+      "verdict": "pass",
+      "note": "classifyError maps failures into auth_expired/access_denied/other and records a scan_error per (profile, region) phase rather than aborting the whole sweep — a deliberate resilience choice for a multi-account audit. Empty regions and failed suffix checks fail closed before any AWS call, emitting an explicit scan_error so the misconfiguration is visible rather than a silent empty result."
+    },
+    {
+      "id": "testing-completeness",
+      "verdict": "pass",
+      "note": "tests/ has unit and smoke suites; the smoke test drives runSweep with injected AwsApi facades and a fake context. Covers credential failure, suffix skip, no-regions guard, malformed-row rejection, and successful instance/reserved writes."
+    },
+    {
+      "id": "idempotency-resilience",
+      "verdict": "pass",
+      "note": "Read-only sweep with deterministic spec-prefixed keys (instanceKey/reservedKey/scanErrorKey including a per-row discriminator for malformed phases), so re-runs overwrite rather than duplicate. Per-(profile,region) failures are isolated; a partial sweep still produces coherent rows plus scan_errors. No created cloud resources to orphan."
+    },
+    {
+      "id": "api-contracts",
+      "verdict": "pass",
+      "note": "DescribeDBInstances and DescribeReservedDBInstances paginated to exhaustion via a generic paginate() helper; throttling retried with backoff (CLIENT_RETRY plus withRetry). sts:GetCallerIdentity used to resolve account id. AWS-optional fields defaulted; malformed rows validated and rejected before record-building."
+    },
+    {
+      "id": "resource-management",
+      "verdict": "pass",
+      "note": "Mechanical check: every RDS/STS client created in sdkApi is destroyed in a finally block via safeDestroy (which swallows destroy() failures at debug level). No leaked clients on success or error paths; no temp files or sockets otherwise."
+    },
+    {
+      "id": "published-surface-hygiene",
+      "verdict": "pass",
+      "note": "README and tests use placeholder profiles, regions, and synthetic identifiers. No real IPs, internal hostnames, account ids, or topology. The recent releases were version/SDK bumps with no real-infra leakage."
+    },
+    {
+      "id": "schema-strictness",
+      "verdict": "pass",
+      "note": "InstanceRecordSchema, ReservedRecordSchema, and ScanErrorSchema are plain z.object (no .passthrough()); tags use z.record(string,string); scan_error.kind is a z.enum; timestamps are z.iso.datetime()."
+    },
+    {
+      "id": "lifetime-gc",
+      "verdict": "pass",
+      "note": "instance, reserved, and scan_error specs each declare lifetime: 'infinite' and garbageCollection: 10."
+    },
+    {
+      "id": "crud-completeness",
+      "verdict": "na",
+      "note": "Inventory/sweep model, not a CRUD lifecycle. sweep is a factory that re-derives instance/reserved/scan_error rows each run; the model owns no AWS resource to create/update/delete. Re-running the sweep is the refresh mechanism, so no separate sync method is needed."
+    },
+    {
+      "id": "preflight-checks",
+      "verdict": "na",
+      "note": "sweep performs only read-only Describe/GetCallerIdentity calls; there is no mutating action a policy/live preflight label would gate."
+    },
+    {
+      "id": "instance-names",
+      "verdict": "pass",
+      "note": "Mechanical check: each spec is written by exactly one code path with one schema shape. Keys embed (accountId, region, id) per spec so identical bare identifiers across accounts/regions never collide; malformed phases add a row discriminator so per-row scan_errors stay distinct."
+    },
+    {
+      "id": "data-access",
+      "verdict": "na",
+      "note": "Single-pass factory writer; sweep never reads back previously stored swamp state (no update/delete/sync method), so the readResource-vs-dataRepository concern does not arise."
+    },
+    {
+      "id": "version-upgrades",
+      "verdict": "pass",
+      "note": "model.upgrades carries a no-op chain ending at model.version (2026.06.08.1) with identity upgradeAttributes; the globalArguments shape (profiles, regions, requiredProfileSuffix) is unchanged across the chain. New resource fields like instance.licenseModel are populated by re-sweeping, not by an attribute upgrade, which is correct since upgrades transform stored globalArguments, not historical artifacts."
+    }
+  ]
+}

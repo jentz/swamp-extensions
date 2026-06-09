@@ -1,0 +1,82 @@
+{
+  "extension": "@jentz/aws-rds-inventory",
+  "version": "2026.06.08.1",
+  "reviewedAt": "2026-06-09T11:55:48Z",
+  "dimensions": [
+    {
+      "id": "credentials-secrets",
+      "verdict": "pass",
+      "note": "No secrets handled or stored. Uses ambient AWS credential chain via RDSClient default config; region is non-secret config. Nothing vaulted, nothing sensitive logged."
+    },
+    {
+      "id": "logging-quality",
+      "verdict": "pass",
+      "note": "info on start, fetched-count, dropped-non-RDS, match count, and write totals; debug retry events via retryDeps; warn on a cluster missing an identifier. Structured placeholders throughout; no secrets logged."
+    },
+    {
+      "id": "error-handling",
+      "verdict": "pass",
+      "note": "Selector compiled and region resolved before any AWS call, so bad config fails closed with no API spend; evaluateSelector throws a typed message on non-boolean predicates. All throws precede writeResource. Region resolution names every adjustable source."
+    },
+    {
+      "id": "testing-completeness",
+      "verdict": "pass",
+      "note": "tests/ holds CEL, smoke (fixture replay through the RdsApi facade), and unit suites plus fixtures (aurora 2/3-node, multi-AZ cluster, shared-endpoint mixed engines, empty region). Colocated test pins manifest/version sync and the upgrade-chain invariant. Failure paths (no region, non-boolean selector) covered."
+    },
+    {
+      "id": "idempotency-resilience",
+      "verdict": "pass",
+      "note": "Read-only list with deterministic spec-prefixed instance keys (clusterKey/instanceKey), so re-runs overwrite the same instances rather than duplicating. withRetry handles throttling with full-jitter backoff; no created cloud resources to orphan."
+    },
+    {
+      "id": "api-contracts",
+      "verdict": "pass",
+      "note": "DescribeDBClusters and DescribeDBInstances both paginated to exhaustion via Marker; instances narrowed server-side by db-cluster-id filter and chunked at MAX_CLUSTER_IDS_PER_FILTER (200) to avoid oversized requests. AWS shapes treated as all-optional and defaulted before use. Throttling retried."
+    },
+    {
+      "id": "resource-management",
+      "verdict": "pass",
+      "note": "RDSClient is created once per run and used only for read calls; no file handles, sockets, or temp files. No created resources to track for cleanup."
+    },
+    {
+      "id": "published-surface-hygiene",
+      "verdict": "pass",
+      "note": "README selector examples use generic field/value placeholders; fixtures use synthetic cluster/instance identifiers. The 2026.06.08.1 release was an account-id placeholder scrub (per the upgrades note). No real IPs, hostnames, or account ids."
+    },
+    {
+      "id": "schema-strictness",
+      "verdict": "pass",
+      "note": "ClusterSchema and InstanceSchema are plain z.object (no .passthrough()); tags use z.record(string,string). Role is a z.enum. Public resource shapes are declared as explicit interfaces (not z.infer) so deno doc --lint stays clean."
+    },
+    {
+      "id": "lifetime-gc",
+      "verdict": "pass",
+      "note": "Both cluster and instance specs declare lifetime: 'infinite' and garbageCollection: 10."
+    },
+    {
+      "id": "crud-completeness",
+      "verdict": "na",
+      "note": "Inventory/discovery model, not a CRUD lifecycle. list_clusters is a factory that re-derives cluster + member resources each run; there is no AWS resource this model owns to create/update/delete. Re-running list_clusters is the drift-detection mechanism, so a separate sync method is unnecessary."
+    },
+    {
+      "id": "preflight-checks",
+      "verdict": "na",
+      "note": "list_clusters performs only read-only Describe calls; there is no mutating action a policy/live preflight label would gate."
+    },
+    {
+      "id": "instance-names",
+      "verdict": "pass",
+      "note": "Mechanical check: cluster keys are 'cluster-<id>' and instance keys are 'instance-<clusterId>--<instanceId>', so the two specs cannot collide even when an AWS cluster and instance share a bare name. Each spec is written by only the one method, with a consistent schema shape."
+    },
+    {
+      "id": "data-access",
+      "verdict": "na",
+      "note": "Single-pass factory writer; it never reads back previously stored swamp state (no update/delete/sync method), so the readResource-vs-dataRepository concern does not arise."
+    },
+    {
+      "id": "version-upgrades",
+      "verdict": "pass",
+      "note": "model.upgrades carries a no-op chain whose final toVersion equals model.version (2026.06.08.1); the colocated test asserts that invariant. globalArguments (region, selector) are unchanged across the chain, so the identity upgradeAttributes are correct."
+    }
+  ]
+}

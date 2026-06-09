@@ -57,6 +57,8 @@ jobs:
     needs: detect-changes
     if: needs.detect-changes.outputs.extensions != '[]'
     runs-on: ubuntu-latest
+    env:
+      SWAMP_EXTENSION_REVIEW_DIR: ${{ github.workspace }}/.swamp-reviews
     strategy:
       fail-fast: false
       matrix:

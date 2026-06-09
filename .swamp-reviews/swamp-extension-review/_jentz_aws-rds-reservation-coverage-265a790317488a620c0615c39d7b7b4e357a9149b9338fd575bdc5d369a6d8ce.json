@@ -1,0 +1,47 @@
+{
+  "extension": "@jentz/aws-rds-reservation-coverage",
+  "version": "2026.06.07.1",
+  "reviewedAt": "2026-06-09T11:55:48Z",
+  "dimensions": [
+    {
+      "id": "credentials-secrets",
+      "verdict": "na",
+      "note": "Workflow-scope report. It consumes @jentz/aws-rds-reservations rows already persisted in swamp and makes no AWS calls of its own, so it handles no credentials or secrets."
+    },
+    {
+      "id": "logging-quality",
+      "verdict": "pass",
+      "note": "info on run start; warn on every degraded path (thrown failure, missing collector step, no-regions) and on per-artifact read/decode/schema skips, each naming spec/handle. All logging goes through tryLog, which tolerates a missing logger; structured placeholders throughout."
+    },
+    {
+      "id": "error-handling",
+      "verdict": "pass",
+      "note": "Single coherent degraded path: any thrown computation, a missing collector step, or a no-regions sweep funnels through degrade(), which resets every derived source together so a degraded payload is unambiguously empty (never a misleading '0 to buy, fully covered'). Per-artifact read/decode/schema failures skip just that handle. The report itself never throws."
+    },
+    {
+      "id": "testing-completeness",
+      "verdict": "pass",
+      "note": "93 Deno.test cases across tests/ (collect+render and the main aggregation suite) plus a colocated sanity test. Covers degraded paths (thrown, no matching step, no_regions), per-artifact skip on read/decode/schema failure, size-flex netting, non-size-flex carve-outs, and per-account aggregation."
+    },
+    {
+      "id": "idempotency-resilience",
+      "verdict": "pass",
+      "note": "Pure read-and-render with no persisted resources and no external mutation; re-running over the same upstream data yields the same report. Resilient to partial/corrupt upstream artifacts (skips them) and to degraded upstream sweeps (degraded=true)."
+    },
+    {
+      "id": "api-contracts",
+      "verdict": "na",
+      "note": "Makes no external HTTP/AWS calls. Its only 'contract' is the @jentz/aws-rds-reservations resource schemas, which it re-validates with Zod safeParse per row (InstanceRecordSchema/ReservedRecordSchema/ScanErrorSchema) before use."
+    },
+    {
+      "id": "resource-management",
+      "verdict": "na",
+      "note": "Creates no cloud resources, network connections, file handles, or temp files. Reads stored bytes via context.dataRepository.getContent and returns markdown + JSON; nothing to clean up or track."
+    },
+    {
+      "id": "published-surface-hygiene",
+      "verdict": "pass",
+      "note": "README examples and rendered output use placeholder workflow names, regions, and synthetic account labels. No real IPs, internal hostnames, account ids, or topology in the published surface."
+    }
+  ]
+}
