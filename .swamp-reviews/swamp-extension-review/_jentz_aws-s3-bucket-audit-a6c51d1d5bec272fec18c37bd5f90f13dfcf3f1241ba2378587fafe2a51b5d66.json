@@ -1,7 +1,7 @@
 {
   "extension": "@jentz/aws-s3-bucket-audit",
-  "version": "2026.06.08.1",
-  "reviewedAt": "2026-06-09T11:55:48Z",
+  "version": "2026.06.09.1",
+  "reviewedAt": "2026-06-09T16:33:51Z",
   "dimensions": [
     {
       "id": "credentials-secrets",
@@ -21,7 +21,7 @@
     {
       "id": "testing-completeness",
       "verdict": "pass",
-      "note": "117 Deno.test cases in tests/ covering each rule (versioning, encryption, public-access block, ownership, TLS-only policy condition parsing, lifecycle, logging, tags), the skip/unparseable paths, policy-document normalization edge cases, gate-tripper selection, and markdown/JSON rendering. NOTE: swamp's push gate emits a separate testing-completeness warning here because the suite lives only under tests/ with no test file colocated beside the entrypoint; that is a structural heuristic, not a coverage gap, and is out of scope for this review."
+      "note": "A colocated s3_bucket_audit_test.ts sits beside the entrypoint and exercises a representative pass/fail/skip triad: checkVersioning and checkEncryption PASS on a compliant bucket and FAIL on a noncompliant one, and report.execute returns markdown + JSON with skip findings (never throws) for both an empty workflow and a bucket whose policy lookup never ran. The exhaustive 133-case matrix in tests/ continues to cover every rule, the skip/unparseable paths, policy-document normalization edge cases, gate-tripper selection, and markdown/JSON rendering."
     },
     {
       "id": "idempotency-resilience",
@@ -41,7 +41,7 @@
     {
       "id": "published-surface-hygiene",
       "verdict": "pass",
-      "note": "README examples and the rendered report use placeholder bucket names and workflow names; no real IPs, internal hostnames, account ids, or bucket ARNs tied to real infrastructure. The recent release reworded a comment to satisfy the package scorer, with no infra leakage."
+      "note": "README examples and the rendered report use placeholder bucket names and workflow names; the new colocated test uses synthetic names (compliant-bucket, noncompliant-bucket, skip-policy-bucket). No real IPs, internal hostnames, account ids, or bucket ARNs tied to real infrastructure."
     }
   ]
 }
