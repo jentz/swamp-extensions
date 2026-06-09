@@ -11,7 +11,7 @@ import {
   assertRejects,
 } from "https://deno.land/std@0.224.0/assert/mod.ts";
 import { STSClient } from "npm:@aws-sdk/client-sts@3.1063.0";
-import { model } from "./aws_context_guard.ts";
+import { model, safeDestroy } from "./aws_context_guard.ts";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -87,8 +87,10 @@ async function runVerify(opts: RunVerifyOptions = {}) {
   const prevProfile = Deno.env.get("AWS_PROFILE");
   const prevRegion = Deno.env.get("AWS_REGION");
 
-  // Save STS send.
+  // Save STS send + destroy.
   const originalSend = STSClient.prototype.send;
+  const originalDestroy = STSClient.prototype.destroy;
+  let destroyCount = 0;
 
   try {
     // Set env.
@@ -99,17 +101,20 @@ async function runVerify(opts: RunVerifyOptions = {}) {
       Deno.env.delete("AWS_REGION");
     }
 
-    // Install STS mock.
+    // Install STS mocks.
     STSClient.prototype.send = function () {
       if (stsResponse instanceof Error) {
         return Promise.reject(stsResponse);
       }
       return Promise.resolve(stsResponse);
     } as typeof originalSend;
+    STSClient.prototype.destroy = function () {
+      destroyCount++;
+    } as typeof originalDestroy;
 
     const { context, getLastWrite } = makeContext(mergedArgs);
     const result = await model.methods.verify.execute({} as never, context);
-    return { result, lastWrite: getLastWrite() };
+    return { result, lastWrite: getLastWrite(), destroyCount };
   } finally {
     // Restore env.
     if (prevProfile !== undefined) {
@@ -125,6 +130,7 @@ async function runVerify(opts: RunVerifyOptions = {}) {
 
     // Restore STS.
     STSClient.prototype.send = originalSend;
+    STSClient.prototype.destroy = originalDestroy;
   }
 }
 
@@ -249,6 +255,89 @@ Deno.test("STS returns empty Account — throws", async () => {
     Error,
     "returned no Account",
   );
+});
+
+Deno.test("verify destroys the STS client once on the success path", async () => {
+  const { destroyCount } = await runVerify({
+    profile: "prod-readonly",
+    globalArgs: { expectedAccountId: "123456789012" },
+  });
+  assertEquals(destroyCount, 1);
+});
+
+Deno.test("verify destroys the STS client once on the STS error path", async () => {
+  // The finally in verify must free the client even when send() rejects.
+  const originalSend = STSClient.prototype.send;
+  const originalDestroy = STSClient.prototype.destroy;
+  const prevProfile = Deno.env.get("AWS_PROFILE");
+  const prevRegion = Deno.env.get("AWS_REGION");
+  let destroyCount = 0;
+  try {
+    Deno.env.set("AWS_PROFILE", "prod-readonly");
+    Deno.env.set("AWS_REGION", "eu-west-1");
+    STSClient.prototype.send = function () {
+      return Promise.reject(new Error("boom: sts unreachable"));
+    } as typeof originalSend;
+    STSClient.prototype.destroy = function () {
+      destroyCount++;
+    } as typeof originalDestroy;
+
+    const { context } = makeContext({
+      expectedAccountId: "123456789012",
+      requiredProfileSuffix: "-readonly",
+    });
+    await assertRejects(
+      () => model.methods.verify.execute({} as never, context),
+      Error,
+      "boom: sts unreachable",
+    );
+    assertEquals(destroyCount, 1);
+  } finally {
+    if (prevProfile !== undefined) {
+      Deno.env.set("AWS_PROFILE", prevProfile);
+    } else {
+      Deno.env.delete("AWS_PROFILE");
+    }
+    if (prevRegion !== undefined) {
+      Deno.env.set("AWS_REGION", prevRegion);
+    } else {
+      Deno.env.delete("AWS_REGION");
+    }
+    STSClient.prototype.send = originalSend;
+    STSClient.prototype.destroy = originalDestroy;
+  }
+});
+
+Deno.test("safeDestroy invokes destroy once, swallows failures, tolerates absence", () => {
+  // Invokes destroy exactly once.
+  let destroyed = 0;
+  safeDestroy({
+    destroy() {
+      destroyed++;
+    },
+  });
+  assertEquals(destroyed, 1);
+
+  // A throwing destroy must not propagate; the debug logger is invoked.
+  const logs: string[] = [];
+  safeDestroy(
+    {
+      destroy() {
+        throw new Error("socket already closed");
+      },
+    },
+    { debug: (msg: string) => logs.push(msg) },
+  );
+  assertEquals(logs.length, 1);
+
+  // Tolerates a missing client, a missing destroy, and a missing logger.
+  safeDestroy(undefined);
+  safeDestroy({});
+  safeDestroy({
+    destroy() {
+      throw new Error("no logger present");
+    },
+  });
 });
 
 Deno.test("globalArgs schema-parse failure — throws with field detail", async () => {
