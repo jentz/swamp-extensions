@@ -1,0 +1,43 @@
+manifestVersion: 1
+name: "@jentz/aws-vpc-inventory"
+version: "2026.06.13.0"
+description: |
+  Fleet-wide VPC inventory across `profiles × regions`. A single read-only
+  `scan` method fans out over every configured AWS profile and region in one
+  execution, emitting one `vpc` resource per VPC (account id, derived account
+  name, region, VPC id and Name tag, default-VPC flag, owner account id,
+  shared-in-via-RAM flag, all IPv4 CIDR blocks, and the full tag map).
+
+  Each (profile, region) that cannot be assessed — expired SSO token, an
+  SCP-denied region, a malformed response — becomes one `scan_error` row
+  instead of aborting the sweep.
+
+  Read-only: only `Describe*` and `sts:GetCallerIdentity` are called. Pairs
+  with the companion report `@jentz/aws-vpc-inventory-report` for an
+  operator-friendly markdown + JSON summary.
+repository: "https://github.com/jentz/swamp-extensions"
+homepage: "https://github.com/jentz/swamp-extensions/tree/main/aws-vpc-inventory"
+paths:
+  base: manifest
+models:
+  - aws_vpc_inventory.ts
+workflows: []
+vaults: []
+drivers: []
+datastores: []
+reports: []
+additionalFiles:
+  - README.md
+  - LICENSE.md
+platforms:
+  - linux-x86_64
+  - linux-aarch64
+  - darwin-x86_64
+  - darwin-aarch64
+labels:
+  - aws
+  - vpc
+  - inventory
+  - audit
+  - cloud
+dependencies: []
