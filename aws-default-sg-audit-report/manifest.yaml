@@ -1,0 +1,48 @@
+manifestVersion: 1
+name: "@jentz/aws-default-sg-audit-report"
+version: "2026.06.13.0"
+description: |
+  Workflow-scope report that renders an operator worklist for AWS Security Hub
+  control EC2.2 from the `finding` and `scan_error` rows produced earlier in the
+  workflow by `@jentz/aws-default-sg-audit`. Pure data shaping — no AWS API
+  access.
+
+  Emits a markdown body (summary with accounts / default-SG / compliant /
+  non-compliant counts, a "safe to remediate now" table of zero-ENI
+  non-compliant default SGs, an "in use — migrate first" table of
+  ENI-referenced non-compliant default SGs, and coverage-gap sections grouping
+  failures into needs-aws-sso-login / blocked-by-SCP-IAM) and a JSON payload
+  carrying findingCount, per-verdict and per-error-kind counts, the
+  skipped-artifact count, and a `degraded` flag — matching the markdown + JSON
+  pattern of `@jentz/aws-s3-bucket-audit`.
+
+  The report never throws: unparseable or schema-mismatched artifacts are
+  counted and skipped, and an unexpected failure degrades to a still-valid
+  report with the `degraded` flag set.
+repository: "https://github.com/jentz/swamp-extensions"
+homepage: "https://github.com/jentz/swamp-extensions/tree/main/aws-default-sg-audit-report"
+paths:
+  base: manifest
+models: []
+workflows: []
+vaults: []
+drivers: []
+datastores: []
+reports:
+  - aws_default_sg_audit_report.ts
+additionalFiles:
+  - README.md
+  - LICENSE.md
+platforms:
+  - linux-x86_64
+  - linux-aarch64
+  - darwin-x86_64
+  - darwin-aarch64
+labels:
+  - aws
+  - ec2
+  - security-group
+  - audit
+  - report
+  - cloud
+dependencies: []
