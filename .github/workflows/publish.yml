@@ -11,7 +11,7 @@ permissions:
 
 jobs:
   detect-changes:
-    name: Detect changed extension manifests
+    name: Detect extensions to publish
     runs-on: ubuntu-latest
     if: ${{ github.event.workflow_run.conclusion == 'success' }}
     outputs:
@@ -19,28 +19,44 @@ jobs:
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
-          fetch-depth: 2
           ref: ${{ github.event.workflow_run.head_sha }}
+      - uses: systeminit/setup-swamp@8764f3226a675af5b78708adfdee4e13eaa19aac # v0.1.0
+        with:
+          api-key: ${{ secrets.SWAMP_API_KEY }}
       - id: changes
-        name: Find changed source manifests
+        name: Find extensions whose manifest version is not yet published
         shell: bash
         run: |
-          if git rev-parse HEAD^ >/dev/null 2>&1; then
-            changed_files="$(git diff --name-only HEAD^ HEAD)"
-          else
-            changed_files="$(git ls-tree --name-only -r HEAD)"
-          fi
-
-          echo "Changed files:"
-          echo "$changed_files"
-
+          # The manifest `version` is the release signal: publish any extension
+          # whose declared version differs from the version currently in the
+          # registry. This compares each manifest against the registry rather
+          # than a git diff of the last commit, so it is robust to merge
+          # strategy — a squash, a merge commit, AND a rebase merge all publish
+          # correctly (a rebase merge that lands the manifest bump below the top
+          # commit previously published nothing), and it self-heals any manifest
+          # that was bumped but never reached the registry. Re-runs are
+          # idempotent: an already-published version is skipped.
           extensions="[]"
           while IFS= read -r -d '' manifest; do
             manifest="${manifest#./}"
             dir="$(dirname "$manifest")"
-            if grep -Fxq "$manifest" <<< "$changed_files"; then
+            manifest_version="$(
+              grep -E '^version:' "$manifest" | head -1 \
+                | sed -E 's/^version:[[:space:]]*"?([^"[:space:]]+)"?.*/\1/'
+            )"
+            if [ -z "$manifest_version" ]; then
+              echo "::warning file=$manifest::no version scalar found; skipping"
+              continue
+            fi
+            published="$(
+              swamp extension version --manifest "$manifest" --json \
+                | jq -r '.currentPublished // ""'
+            )"
+            if [ "$manifest_version" != "$published" ]; then
               extensions="$(jq -c --arg dir "$dir" '. + [$dir]' <<< "$extensions")"
-              echo "Extension manifest changed: $manifest"
+              echo "Will publish: $dir (manifest=$manifest_version, published=${published:-<none>})"
+            else
+              echo "Up to date: $dir ($published)"
             fi
           done < <(
             find . -mindepth 2 -maxdepth 2 -name manifest.yaml \
