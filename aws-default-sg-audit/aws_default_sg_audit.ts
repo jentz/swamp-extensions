@@ -298,8 +298,10 @@ export function classifyError(err: unknown): {
     haystack.includes("access denied") ||
     haystack.includes("explicit deny") ||
     haystack.includes("forbidden");
-  if (isAuthExpired) return { kind: "auth_expired", message };
+  // Access-denied wins: an AccessDenied/SCP message can embed an SSO role ARN,
+  // and the operator action differs (fix permissions, not `aws sso login`).
   if (isAccessDenied) return { kind: "access_denied", message };
+  if (isAuthExpired) return { kind: "auth_expired", message };
   return { kind: "other", message };
 }
 
