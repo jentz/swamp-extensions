@@ -127,11 +127,13 @@ steps:
 ## Querying the output
 
 The `operation` resource is written with infinite lifetime (the last 10
-retained). Reference it from a downstream model or report via CEL:
+retained), keyed by its operation id. Because that key is generated at run time,
+reference the operations by spec from a downstream model or report — `findBySpec`
+returns the recorded operation rows, each carrying `status`, `statusReason`,
+`action`, and the timestamps:
 
 ```text
-data.latest("<detect-name>", "operation").attributes.status
-data.latest("<detect-name>", "operation").attributes.statusReason
+data.findBySpec("<detect-name>", "operation")
 ```
 
 ## Out of scope
