@@ -153,6 +153,7 @@ Deno.test("smoke: fan-out across two accounts × two regions in one execution", 
     ],
     configuredRegions: ["eu-west-1", "eu-north-1"],
     requiredProfileSuffix: "-readonly",
+    ambientProfile: "",
     context,
   });
 
@@ -209,6 +210,7 @@ Deno.test("smoke: one expired account does not abort the rest of the fleet", asy
     ],
     configuredRegions: ["eu-west-1", "eu-north-1"],
     requiredProfileSuffix: "-readonly",
+    ambientProfile: "",
     context,
   });
 
@@ -256,6 +258,7 @@ Deno.test("smoke: per-account region discovery when no regions are configured", 
     ],
     configuredRegions: [], // forces per-account ec2:DescribeRegions discovery
     requiredProfileSuffix: "-readonly",
+    ambientProfile: "",
     context,
   });
 
@@ -291,6 +294,7 @@ Deno.test("smoke: a profile failing the required-suffix gate never reaches the A
     targets: [{ profile: "acct-admin-write", api: trippedApi }],
     configuredRegions: ["eu-west-1"],
     requiredProfileSuffix: "-readonly",
+    ambientProfile: "",
     context,
   });
 
@@ -324,6 +328,7 @@ Deno.test("smoke: data handle count equals vpc rows plus scan errors", async () 
     ],
     configuredRegions: ["eu-west-1", "eu-north-1"],
     requiredProfileSuffix: "-readonly",
+    ambientProfile: "",
     context,
   });
 

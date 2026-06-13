@@ -311,6 +311,15 @@ export const model = {
           instances.bad + summaries.bad + roles.bad + iamErrors.bad;
 
         if (instances.ok.length === 0 && roles.ok.length === 0) {
+          if (skipped > 0) {
+            throw new Error(
+              `No usable stackset instance or IAM role data found for the ` +
+                `configured source models — all ${skipped} upstream artifact(s) ` +
+                `were skipped (decode / schema-validation failures). Check that ` +
+                `the upstream models produced valid output and that their types ` +
+                `match the configured stacksetModelType / iamModelType.`,
+            );
+          }
           throw new Error(
             "No stackset instance or IAM role data found for the configured " +
               "source models — run the stackset-audit and iam-role-audit methods " +

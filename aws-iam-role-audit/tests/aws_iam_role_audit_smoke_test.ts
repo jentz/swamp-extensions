@@ -174,6 +174,7 @@ Deno.test("smoke: one role row per (account x role); present vs missing", async 
       spec({ roleName: "Absent", required: true }),
     ],
     requiredProfileSuffix: "",
+    ambientProfile: "",
     context,
   });
 
@@ -214,6 +215,7 @@ Deno.test("smoke: a manual role (no owning stack) classifies as 'manual'", async
     }],
     roles: [spec({ roleName: "HandMade" })],
     requiredProfileSuffix: "",
+    ambientProfile: "",
     context,
   });
   const row = written.find((w) => w.key === "role-222222222222-HandMade")!;
@@ -248,6 +250,7 @@ Deno.test("smoke: credentials failure emits a scan_error and the sweep continues
     targets: [bad, good],
     roles: [spec()],
     requiredProfileSuffix: "",
+    ambientProfile: "",
     context,
   });
 
@@ -281,6 +284,7 @@ Deno.test("smoke: a per-role read failure emits a scan_error and other roles sti
     }],
     roles: [spec({ roleName: "Locked" }), spec({ roleName: "Good" })],
     requiredProfileSuffix: "",
+    ambientProfile: "",
     context,
   });
 
@@ -314,6 +318,7 @@ Deno.test("smoke: required-profile-suffix refusal records a scan_error before an
     targets: [{ profile: "prod-admin", api: tripwire }],
     roles: [spec()],
     requiredProfileSuffix: "-readonly",
+    ambientProfile: "",
     context,
   });
 
@@ -321,6 +326,81 @@ Deno.test("smoke: required-profile-suffix refusal records a scan_error before an
   assertEquals(errors.length, 1);
   assertEquals(errors[0].data.phase, "profile_suffix_check");
   assertEquals(errors[0].data.kind, "other");
+  assertEquals(written.filter((w) => w.spec === "role").length, 0);
+  assertEquals(result.roleCount, 0);
+});
+
+Deno.test("smoke: ambient target whose AWS_PROFILE matches the suffix is NOT refused", async () => {
+  const { context, written } = makeContext();
+
+  // Ambient target (profile ""). The suffix gate falls back to ambientProfile,
+  // which ends with the suffix, so the audit proceeds and reads the role.
+  const ambient: ScanTarget = {
+    profile: "",
+    api: fakeApi({
+      accountId: "111111111111",
+      roles: {
+        Present: {
+          role: {
+            Arn: "arn:aws:iam::111111111111:role/Present",
+            Path: "/",
+            CreateDate: new Date("2026-01-01T00:00:00.000Z"),
+            AssumeRolePolicyDocument: encodeURIComponent(TRUST),
+            Tags: [],
+          },
+        },
+      },
+    }),
+  };
+
+  const result = await runAudit({
+    targets: [ambient],
+    roles: [spec({ roleName: "Present" })],
+    requiredProfileSuffix: "-readonly",
+    ambientProfile: "prod-platform-readonly",
+    context,
+  });
+
+  // No suffix refusal — the sweep ran and wrote the role row.
+  const suffixErrs = written.filter((w) =>
+    w.spec === "scan_error" && w.data.phase === "profile_suffix_check"
+  );
+  assertEquals(suffixErrs.length, 0);
+  assertEquals(result.roleCount, 1);
+  const roleRows = written.filter((w) => w.spec === "role");
+  assertEquals(roleRows.length, 1);
+  // AWS_PROFILE is used only for the gate, never written into the row.
+  assertEquals(roleRows[0].data.profile, "");
+});
+
+Deno.test("smoke: ambient target with no AWS_PROFILE is refused (fail-closed) when a suffix is required", async () => {
+  const { context, written } = makeContext();
+
+  // Facade that explodes if touched — the suffix check must precede any call.
+  const tripwire: IamApi = {
+    getAccountId: () => Promise.reject(new Error("must not be called")),
+    getRole: () => Promise.reject(new Error("must not be called")),
+    listAttachedPolicyArns: () =>
+      Promise.reject(new Error("must not be called")),
+    listInlinePolicyNames: () =>
+      Promise.reject(new Error("must not be called")),
+    findManagingStack: () => Promise.reject(new Error("must not be called")),
+  };
+
+  const result = await runAudit({
+    targets: [{ profile: "", api: tripwire }],
+    roles: [spec()],
+    requiredProfileSuffix: "-readonly",
+    ambientProfile: "", // AWS_PROFILE unset
+    context,
+  });
+
+  const errors = written.filter((w) => w.spec === "scan_error");
+  assertEquals(errors.length, 1);
+  assertEquals(errors[0].data.phase, "profile_suffix_check");
+  assertEquals(errors[0].data.kind, "other");
+  // AWS_PROFILE is not leaked into the resource; profile stays the ambient "".
+  assertEquals(errors[0].data.profile, "");
   assertEquals(written.filter((w) => w.spec === "role").length, 0);
   assertEquals(result.roleCount, 0);
 });

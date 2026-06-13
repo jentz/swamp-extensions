@@ -278,6 +278,46 @@ Deno.test("coalesce: throws a run-the-audits-first error when BOTH upstreams are
   );
 });
 
+Deno.test("coalesce: throws a 'no usable data' error naming the skipped count when all upstream rows are schema-invalid", async () => {
+  // Both upstream models DID produce artifacts, but every one fails schema
+  // validation (so ok is empty while skipped > 0). The error must distinguish
+  // this from 'never run' and name how many artifacts were dropped.
+  const { repo } = fakeRepo({
+    [STACKSET_TYPE]: {
+      "ss-1": [
+        // A malformed instance row: missing required `account`.
+        {
+          name: "instance-bad",
+          version: 1,
+          specName: "instance",
+          json: { stackSetName: STACKSET, region: "us-east-1" },
+        },
+      ],
+    },
+    [IAM_TYPE]: {
+      "iam-1": [
+        // A malformed role row: missing required accountId/exists.
+        {
+          name: "role-bad",
+          version: 1,
+          specName: "role",
+          json: { roleName: "Readonly" },
+        },
+      ],
+    },
+  });
+  const { context } = fakeContext(repo, {
+    stacksetModelId: "ss-1",
+    iamModelId: "iam-1",
+  });
+  const err = await assertRejects(() => run(context), Error);
+  // Names the 'no usable data' case and the skipped count (2 dropped rows).
+  assert(err.message.includes("No usable"));
+  assert(err.message.includes("2 upstream artifact"));
+  // It must NOT be the misleading 'never run' message.
+  assert(!err.message.includes("run the stackset-audit and iam-role-audit"));
+});
+
 Deno.test("coalesce: produces a matrix when only the IAM lens has data", async () => {
   const { repo } = fakeRepo({
     [IAM_TYPE]: {

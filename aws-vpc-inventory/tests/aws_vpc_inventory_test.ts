@@ -342,6 +342,7 @@ Deno.test("runScan: writes one vpc row per VPC, derives account name, collects a
     })],
     configuredRegions: ["eu-west-1"],
     requiredProfileSuffix: "-readonly",
+    ambientProfile: "",
     context,
   });
 
@@ -391,6 +392,7 @@ Deno.test("runScan: shared-in VPC (OwnerId != accountId) is flagged isSharedIn=t
     })],
     configuredRegions: ["eu-west-1"],
     requiredProfileSuffix: "-readonly",
+    ambientProfile: "",
     context,
   });
   const row = getWrittenResources()[0].data as Record<string, unknown>;
@@ -419,6 +421,7 @@ Deno.test("runScan: VPC with no VpcId is skipped (logged warning, not an error r
     })],
     configuredRegions: ["eu-west-1"],
     requiredProfileSuffix: "",
+    ambientProfile: "",
     context,
   });
   assertEquals(result.vpcCount, 1);
@@ -440,6 +443,7 @@ Deno.test("runScan: region with no VPCs writes nothing", async () => {
     })],
     configuredRegions: ["eu-west-1"],
     requiredProfileSuffix: "",
+    ambientProfile: "",
     context,
   });
   assertEquals(result.vpcCount, 0);
@@ -457,6 +461,7 @@ Deno.test("runScan: profile that fails the required-suffix check is skipped with
     })],
     configuredRegions: ["eu-west-1"],
     requiredProfileSuffix: "-readonly",
+    ambientProfile: "",
     context,
   });
   assertEquals(result.vpcCount, 0);
@@ -466,6 +471,53 @@ Deno.test("runScan: profile that fails the required-suffix check is skipped with
   const err = written[0].data as Record<string, unknown>;
   assertEquals(err.phase, "profile_suffix_check");
   assertEquals(err.profile, "admin-write-access");
+});
+
+Deno.test("runScan: ambient target whose AWS_PROFILE matches the suffix is NOT refused", async () => {
+  const { context, getWrittenResources } = createModelTestContext({});
+  const result = await runScan({
+    // Ambient target — no profile label. The suffix gate falls back to the
+    // ambient AWS_PROFILE, which DOES end with the suffix, so the sweep runs.
+    targets: [target("", {
+      accountId: "111111111111",
+      perRegion: { "eu-west-1": { vpcs: [] } },
+    })],
+    configuredRegions: ["eu-west-1"],
+    requiredProfileSuffix: "-readonly",
+    ambientProfile: "prod-platform-readonly",
+    context,
+  });
+  assertEquals(result.vpcCount, 0);
+  // No profile_suffix_check error: the ambient run proceeded.
+  const suffixErrs = getWrittenResources().filter((w) =>
+    w.specName === "scan_error" &&
+    (w.data as Record<string, unknown>).phase === "profile_suffix_check"
+  );
+  assertEquals(suffixErrs.length, 0);
+  assertEquals(result.errorCount, 0);
+});
+
+Deno.test("runScan: ambient target with no AWS_PROFILE is refused (fail-closed) when a suffix is required", async () => {
+  const { context, getWrittenResources } = createModelTestContext({});
+  const result = await runScan({
+    targets: [target("", {
+      accountId: "111111111111",
+      perRegion: { "eu-west-1": { vpcs: [] } },
+    })],
+    configuredRegions: ["eu-west-1"],
+    requiredProfileSuffix: "-readonly",
+    ambientProfile: "", // AWS_PROFILE unset
+    context,
+  });
+  assertEquals(result.vpcCount, 0);
+  assertEquals(result.errorCount, 1);
+  const written = getWrittenResources();
+  assertEquals(written.length, 1);
+  const err = written[0].data as Record<string, unknown>;
+  assertEquals(err.phase, "profile_suffix_check");
+  // The written resource profile stays the ambient "" — AWS_PROFILE is not
+  // leaked into the resource, only used for the gate.
+  assertEquals(err.profile, "");
 });
 
 Deno.test("runScan: credential failure writes one scan_error and skips the account", async () => {
@@ -485,6 +537,7 @@ Deno.test("runScan: credential failure writes one scan_error and skips the accou
     ],
     configuredRegions: ["eu-west-1"],
     requiredProfileSuffix: "-readonly",
+    ambientProfile: "",
     context,
   });
 
@@ -522,6 +575,7 @@ Deno.test("runScan: per-region access_denied is recorded but other regions still
     })],
     configuredRegions: ["eu-west-1", "eu-north-1"],
     requiredProfileSuffix: "-readonly",
+    ambientProfile: "",
     context,
   });
 
@@ -548,6 +602,7 @@ Deno.test("runScan: describe_regions failure surfaces and the account is skipped
     })],
     configuredRegions: [], // forces per-account discovery
     requiredProfileSuffix: "-readonly",
+    ambientProfile: "",
     context,
   });
   assertEquals(result.vpcCount, 0);
