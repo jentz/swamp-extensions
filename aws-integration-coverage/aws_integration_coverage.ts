@@ -132,8 +132,10 @@ function lifecycleOf(d: StoredData): string | undefined {
  * @param modelType Upstream model type to read.
  * @param modelId Upstream model instance id to read.
  * @param specName The resource spec name to keep.
- * @returns Raw JSON values, one per latest-active artifact, undecodable bytes
- *   silently dropped.
+ * @returns The decoded raw JSON values (one per latest-active artifact) plus a
+ *   `decodeSkipped` count of artifacts dropped because their stored bytes were
+ *   missing or failed to JSON-parse, so the caller can fold them into the
+ *   reported `skipped` total.
  */
 export async function readSpec(
   // deno-lint-ignore no-explicit-any
@@ -141,7 +143,7 @@ export async function readSpec(
   modelType: string,
   modelId: string,
   specName: string,
-): Promise<unknown[]> {
+): Promise<{ values: unknown[]; decodeSkipped: number }> {
   const all: StoredData[] =
     (await dataRepo.findAllForModel(modelType, modelId)) ??
       [];
@@ -158,6 +160,7 @@ export async function readSpec(
   }
   const decoder = new TextDecoder();
   const out: unknown[] = [];
+  let decodeSkipped = 0;
   for (const { name, version } of latest.values()) {
     const bytes: Uint8Array | null = await dataRepo.getContent(
       modelType,
@@ -165,12 +168,18 @@ export async function readSpec(
       name,
       version,
     );
-    if (!bytes) continue;
+    if (!bytes) {
+      decodeSkipped++;
+      continue;
+    }
     try {
       out.push(JSON.parse(decoder.decode(bytes)));
-    } catch { /* skip undecodable */ }
+    } catch {
+      // Tolerant: an undecodable artifact is counted, never thrown.
+      decodeSkipped++;
+    }
   }
-  return out;
+  return { values: out, decodeSkipped };
 }
 
 /** Validation outcome for a batch of raw values. */
@@ -287,12 +296,16 @@ export const model = {
           IAM_ERROR_SPEC,
         );
 
-        const instances = parseAll(instRaw, InstanceSchema);
-        const summaries = parseAll(sumRaw, SummarySchema);
-        const roles = parseAll(roleRaw, RoleSchema);
-        const iamErrors = parseAll(errRaw, IamErrorSchema);
-        const skipped = instances.bad + summaries.bad + roles.bad +
-          iamErrors.bad;
+        const instances = parseAll(instRaw.values, InstanceSchema);
+        const summaries = parseAll(sumRaw.values, SummarySchema);
+        const roles = parseAll(roleRaw.values, RoleSchema);
+        const iamErrors = parseAll(errRaw.values, IamErrorSchema);
+        // skipped folds both decode failures (missing/undecodable bytes) and
+        // schema-validation rejects, so the count reflects every tolerantly
+        // dropped artifact — matching the report's collect path and the README.
+        const skipped = instRaw.decodeSkipped + sumRaw.decodeSkipped +
+          roleRaw.decodeSkipped + errRaw.decodeSkipped +
+          instances.bad + summaries.bad + roles.bad + iamErrors.bad;
 
         if (instances.ok.length === 0 && roles.ok.length === 0) {
           throw new Error(

@@ -189,12 +189,18 @@ Deno.test("readSpec: keeps the latest version per data name and drops `deleted` 
     },
   });
 
-  const rows = await readSpec(repo, STACKSET_TYPE, "ss-1", "instance");
+  const { values: rows, decodeSkipped } = await readSpec(
+    repo,
+    STACKSET_TYPE,
+    "ss-1",
+    "instance",
+  );
   assertEquals(rows.length, 1);
+  assertEquals(decodeSkipped, 0);
   assertEquals((rows[0] as { overallStatus: string }).overallStatus, "CURRENT");
 });
 
-Deno.test("readSpec: a null-bytes artifact is silently skipped", async () => {
+Deno.test("readSpec: a null-bytes artifact is counted as decodeSkipped", async () => {
   const { repo } = fakeRepo({
     [STACKSET_TYPE]: {
       "ss-1": [
@@ -203,8 +209,15 @@ Deno.test("readSpec: a null-bytes artifact is silently skipped", async () => {
       ],
     },
   });
-  const rows = await readSpec(repo, STACKSET_TYPE, "ss-1", "instance");
+  const { values: rows, decodeSkipped } = await readSpec(
+    repo,
+    STACKSET_TYPE,
+    "ss-1",
+    "instance",
+  );
   assertEquals(rows.length, 1);
+  // The undecodable artifact is counted, not silently dropped.
+  assertEquals(decodeSkipped, 1);
 });
 
 // ---------------------------------------------------------------------------
@@ -282,6 +295,10 @@ Deno.test("smoke: coalesce writes one coverage-<accountId> per account + one sum
           specName: "instance",
           json: { stackSetName: STACKSET, region: "us-east-1" },
         },
+        // an undecodable instance artifact (null bytes) => also skipped
+        instanceItem("instance-nullbytes", ACCT_B, "CURRENT", {
+          noBytes: true,
+        }),
       ],
     },
     [IAM_TYPE]: {
@@ -316,14 +333,15 @@ Deno.test("smoke: coalesce writes one coverage-<accountId> per account + one sum
   assertEquals(aRow.coverage, "covered-noncompliant");
   assertEquals(aRow.requiredTotal, 2);
 
-  // Exactly one summary, and it counts the malformed instance into sources.skipped.
+  // Exactly one summary; sources.skipped folds BOTH the schema-rejected row and
+  // the undecodable artifact (1 + 1), matching the report's collect path.
   assertEquals(summaryWrites.length, 1);
   const summary = summaryWrites[0].data;
   assertEquals(summary.totalAccounts, 2);
   assertEquals(summary.stackSetName, STACKSET);
   assertEquals(summary.sources.stacksetModelId, "ss-1");
   assertEquals(summary.sources.iamModelId, "iam-1");
-  assertEquals(summary.sources.skipped, 1);
+  assertEquals(summary.sources.skipped, 2);
   assert(Array.isArray(summary.byRole));
 
   // Provenance: the dataHandles array equals every write (coverage rows + summary).
