@@ -40,9 +40,11 @@ jobs:
           while IFS= read -r -d '' manifest; do
             manifest="${manifest#./}"
             dir="$(dirname "$manifest")"
+            # awk exits 0 even when no version line matches (yielding an empty
+            # string, handled just below), so this survives bash `-e -o
+            # pipefail`; tr strips either single- or double-quoted YAML values.
             manifest_version="$(
-              grep -E '^version:' "$manifest" | head -1 \
-                | sed -E 's/^version:[[:space:]]*"?([^"[:space:]]+)"?.*/\1/'
+              awk '/^version:/ { print $2; exit }' "$manifest" | tr -d "\"'"
             )"
             if [ -z "$manifest_version" ]; then
               echo "::warning file=$manifest::no version scalar found; skipping"
