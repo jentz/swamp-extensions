@@ -99,4 +99,12 @@ jobs:
             aws-rds-inventory/ \
             aws-s3-bucket-audit/ \
             aws-rds-reservations/ \
-            aws-rds-reservation-coverage/
+            aws-rds-reservation-coverage/ \
+            aws-vpc-inventory/ \
+            aws-vpc-inventory-report/ \
+            aws-default-sg-audit/ \
+            aws-default-sg-audit-report/ \
+            aws-stackset-audit/ \
+            aws-stackset-drift-detect/ \
+            aws-iam-role-audit/ \
+            aws-integration-coverage/
