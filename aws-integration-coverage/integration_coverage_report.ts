@@ -284,11 +284,10 @@ export function renderMarkdown(
   if (res.unresolvedProfiles.length > 0) {
     lines.push("## 🔑 Profiles that could not be assessed");
     lines.push("");
-    for (
-      const p of res.unresolvedProfiles.sort((a, b) =>
-        a.profile < b.profile ? -1 : 1
-      )
-    ) {
+    const unresolved = [...res.unresolvedProfiles].sort((a, b) =>
+      a.profile.localeCompare(b.profile)
+    );
+    for (const p of unresolved) {
       lines.push(`- \`${p.profile}\` — ${p.kind} (run \`aws sso login\`)`);
     }
     lines.push("");
