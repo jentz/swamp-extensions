@@ -200,6 +200,22 @@ export async function collect(
 // ---------------------------------------------------------------------------
 
 /**
+ * Operator next-step for an unresolved profile, keyed by the upstream IAM
+ * `scan_error.kind`. Telling an operator to re-login when the failure was an
+ * authorization denial (or something else) is misleading.
+ */
+function remediationForKind(kind: string): string {
+  switch (kind) {
+    case "auth_expired":
+      return "run `aws sso login`";
+    case "access_denied":
+      return "check the role's IAM permissions / SCPs";
+    default:
+      return "investigate the upstream scan error";
+  }
+}
+
+/**
  * Render the operator markdown for the coalesced coverage matrix.
  *
  * @param res The coalesce result.
@@ -311,7 +327,9 @@ export function renderMarkdown(
       a.profile.localeCompare(b.profile)
     );
     for (const p of unresolved) {
-      lines.push(`- \`${p.profile}\` — ${p.kind} (run \`aws sso login\`)`);
+      lines.push(
+        `- \`${p.profile}\` — ${p.kind} (${remediationForKind(p.kind)})`,
+      );
     }
     lines.push("");
   }
