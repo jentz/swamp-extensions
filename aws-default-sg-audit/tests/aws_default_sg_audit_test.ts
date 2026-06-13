@@ -104,6 +104,21 @@ Deno.test("classifyError: SSO role ARN in unrelated AccessDenied does NOT trip a
   assertEquals(classifyError(err).kind, "access_denied");
 });
 
+Deno.test("classifyError: access_denied wins when a message matches BOTH access-denied and expiry signals (precedence regression)", () => {
+  // Trips BOTH predicates at once: the name yields "accessdenied" and the
+  // message carries "not authorized" (access-denied) while also containing
+  // "sso session" and "token has expired" (auth-expired). Access-denied must
+  // win. If the returns are reordered to auth-expired first, this flips to
+  // "auth_expired" and the test goes red — pinning the precedence with teeth.
+  const err = Object.assign(
+    new Error(
+      "User is not authorized to perform ec2:DescribeSecurityGroups; the sso session token has expired",
+    ),
+    { name: "AccessDeniedException" },
+  );
+  assertEquals(classifyError(err).kind, "access_denied");
+});
+
 Deno.test("classifyError: real expired-token signals are auth_expired", () => {
   const expired = new Error(
     "The security token included in the request is expired",

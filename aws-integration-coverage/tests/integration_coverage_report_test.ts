@@ -39,6 +39,8 @@ interface StubHandle {
   json: unknown;
   /** When true, getContent returns null for this handle (undecodable). */
   noBytes?: boolean;
+  /** When true, getContent rejects for this handle (storage read failure). */
+  failRead?: boolean;
 }
 
 interface StubStep {
@@ -50,11 +52,12 @@ interface StubStep {
 /** Build a collect()-compatible context from steps. */
 function stubContext(steps: StubStep[], workflowName = "wf"): unknown {
   const byKey = new Map<string, Uint8Array>();
+  const failKeys = new Set<string>();
   for (const s of steps) {
     for (const h of s.handles) {
-      if (!h.noBytes) {
-        byKey.set(`${s.modelId}/${h.name}/${h.version}`, enc(h.json));
-      }
+      const key = `${s.modelId}/${h.name}/${h.version}`;
+      if (h.failRead) failKeys.add(key);
+      else if (!h.noBytes) byKey.set(key, enc(h.json));
     }
   }
   return {
@@ -80,8 +83,13 @@ function stubContext(steps: StubStep[], workflowName = "wf"): unknown {
         modelId: string,
         name: string,
         version: number,
-      ): Promise<Uint8Array | null> =>
-        Promise.resolve(byKey.get(`${modelId}/${name}/${version}`) ?? null),
+      ): Promise<Uint8Array | null> => {
+        const key = `${modelId}/${name}/${version}`;
+        if (failKeys.has(key)) {
+          return Promise.reject(new Error("storage read failed"));
+        }
+        return Promise.resolve(byKey.get(key) ?? null);
+      },
     },
   };
 }
@@ -240,6 +248,37 @@ Deno.test("collect: undecodable bytes and schema-mismatched rows are counted as 
   assertEquals(c.roles.length, 1);
   // null-bytes + schema-invalid instance.
   assertEquals(c.skipped, 2);
+});
+
+Deno.test("collect: a getContent read failure is a per-handle skip, not a whole-report throw", async () => {
+  const ctx = stubContext([
+    {
+      modelType: STACKSET_TYPE,
+      modelId: "ss-1",
+      handles: [
+        // one handle whose stored bytes fail to read (storage error)
+        {
+          name: "instance-fail",
+          version: 1,
+          specName: "instance",
+          json: {},
+          failRead: true,
+        },
+        // a healthy instance alongside it
+        {
+          name: "instance-ok",
+          version: 1,
+          specName: "instance",
+          json: instanceJson(ACCT_B, "CURRENT"),
+        },
+      ],
+    },
+  ]);
+  // collect must NOT throw on a read failure; the bad read is counted as one
+  // skip and the healthy row is still collected.
+  const c = await collect(ctx);
+  assertEquals(c.skipped, 1);
+  assertEquals(c.instances.length, 1);
 });
 
 // ---------------------------------------------------------------------------
