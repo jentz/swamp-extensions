@@ -1,0 +1,45 @@
+manifestVersion: 1
+name: "@jentz/aws-default-sg-audit"
+version: "2026.06.13.0"
+description: |
+  Fleet audit for AWS Security Hub control EC2.2 ("VPC default security groups
+  should not allow inbound or outbound traffic"), with a remediation-safety
+  verdict per default security group. A single read-only `scan` method fans out
+  over `profiles × regions` in one execution, emitting one `finding` per VPC
+  default security group (rule counts, referencing ENIs, and a verdict of
+  compliant / safe_to_remediate / in_use_needs_migration).
+
+  Each `(profile, region)` that cannot be assessed — an expired SSO token, an
+  SCP-denied region, a malformed response — becomes one `scan_error` row instead
+  of aborting the sweep.
+
+  Read-only: only `Describe*` and `sts:GetCallerIdentity` are called. Pairs with
+  the companion report `@jentz/aws-default-sg-audit-report` for an operator
+  worklist (safe-to-strip vs needs-migration, plus coverage gaps).
+repository: "https://github.com/jentz/swamp-extensions"
+homepage: "https://github.com/jentz/swamp-extensions/tree/main/aws-default-sg-audit"
+paths:
+  base: manifest
+models:
+  - aws_default_sg_audit.ts
+workflows: []
+vaults: []
+drivers: []
+datastores: []
+reports: []
+additionalFiles:
+  - README.md
+  - LICENSE.md
+platforms:
+  - linux-x86_64
+  - linux-aarch64
+  - darwin-x86_64
+  - darwin-aarch64
+labels:
+  - aws
+  - ec2
+  - security-group
+  - audit
+  - security
+  - cloud
+dependencies: []
