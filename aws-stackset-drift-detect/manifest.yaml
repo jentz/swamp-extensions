@@ -1,0 +1,49 @@
+manifestVersion: 1
+name: "@jentz/aws-stackset-drift-detect"
+version: "2026.06.13.0"
+description: |
+  Trigger CloudFormation StackSet drift detection and record its outcome — the
+  write-side sibling of `@jentz/aws-stackset-audit`. A single mutating `detect`
+  method calls `DetectStackSetDrift` for the configured stackset, polls
+  `DescribeStackSetOperation` to a terminal state (bounded by `pollSeconds` /
+  `maxPolls`), and writes one `operation` resource capturing the operation id,
+  action, terminal status, timestamps, and status reason.
+
+  It performs no instance audit and writes no summary/instance resources — that
+  is the read-only `@jentz/aws-stackset-audit`. Compose the two in a swamp
+  workflow: run this `detect` step first, then the audit step with
+  `dependsOn: succeeded`, so the audit reads the refreshed per-instance drift
+  status straight from AWS.
+
+  Mutating: it needs `cloudformation:DetectStackSetDrift` plus the stackset
+  admin role, so a `*-readonly` profile deliberately cannot run it. The
+  global-args shape (`stackSetName`, `callAs`, `region`, `profile`) is identical
+  to the audit sibling so a workflow wires the same inputs into both steps. Only
+  StackSet drift is in scope; stack-level `DetectStackDrift` is not.
+repository: "https://github.com/jentz/swamp-extensions"
+homepage: "https://github.com/jentz/swamp-extensions/tree/main/aws-stackset-drift-detect"
+paths:
+  base: manifest
+models:
+  - aws_stackset_drift_detect.ts
+workflows: []
+vaults: []
+drivers: []
+datastores: []
+reports: []
+additionalFiles:
+  - README.md
+  - LICENSE.md
+platforms:
+  - linux-x86_64
+  - linux-aarch64
+  - darwin-x86_64
+  - darwin-aarch64
+labels:
+  - aws
+  - cloudformation
+  - stackset
+  - drift
+  - mutator
+  - write
+dependencies: []
