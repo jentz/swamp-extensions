@@ -296,7 +296,10 @@ export async function runDetect(deps: DetectDeps): Promise<DetectResult> {
       "Drift operation {op} is {status} (poll {poll}/{max})",
       { op: operationId, status, poll: poll + 1, max: maxPolls },
     );
-    await sleep(pollSeconds * 1000, signal);
+    // Don't wait after the final allowed poll — there is no next poll to wait
+    // for, and we'd only delay the timeout. The budget is maxPolls polls with
+    // at most maxPolls-1 inter-poll waits.
+    if (poll < maxPolls - 1) await sleep(pollSeconds * 1000, signal);
   }
 
   if (!TERMINAL.has(status)) {

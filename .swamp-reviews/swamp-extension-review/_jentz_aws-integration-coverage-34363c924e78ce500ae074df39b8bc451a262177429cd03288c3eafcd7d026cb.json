@@ -1,7 +1,7 @@
 {
   "extension": "@jentz/aws-integration-coverage",
   "version": "2026.06.13.0",
-  "reviewedAt": "2026-06-13T07:21:09Z",
+  "reviewedAt": "2026-06-13T10:09:00Z",
   "dimensions": [
     {
       "id": "credentials-secrets",

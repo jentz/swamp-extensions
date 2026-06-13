@@ -215,6 +215,12 @@ Deno.test("smoke: poll budget exhausted throws naming the last status and writes
   const maxPolls = 5;
   // Always RUNNING — never reaches a terminal state.
   const { api, describeCalls } = scriptedApi("op-stuck", [RUNNING]);
+  // Count inter-poll waits to prove none happens after the final poll.
+  let sleeps = 0;
+  const countingSleep = () => {
+    sleeps++;
+    return Promise.resolve();
+  };
 
   const err = await assertRejects(
     () =>
@@ -223,7 +229,7 @@ Deno.test("smoke: poll budget exhausted throws naming the last status and writes
         stackSetName: "StuckSet",
         pollSeconds: 20,
         maxPolls,
-        sleep: noSleep,
+        sleep: countingSleep,
         context,
       }),
     Error,
@@ -234,6 +240,8 @@ Deno.test("smoke: poll budget exhausted throws naming the last status and writes
 
   // Polled exactly maxPolls times, then gave up.
   assertEquals(describeCalls(), maxPolls);
+  // Waited at most maxPolls-1 times — no wasted sleep after the final poll.
+  assertEquals(sleeps, maxPolls - 1);
   // No resource written on budget exhaustion.
   assertEquals(written.length, 0);
 });
