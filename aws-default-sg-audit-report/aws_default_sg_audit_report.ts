@@ -312,7 +312,7 @@ export async function collect(
 
 /** Pick the most useful owner contact from a VPC's tags. */
 export function ownerFromTags(tags: Record<string, string>): string {
-  return tags["VantaOwner"] ?? tags["Owner"] ?? tags["owner"] ?? "";
+  return tags["Owner"] ?? tags["owner"] ?? tags["Team"] ?? tags["team"] ?? "";
 }
 
 /** Pick the team from a VPC's tags. */

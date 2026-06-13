@@ -99,7 +99,7 @@ const SummaryResourceSchema = z.object({
     skipped: z.number(),
   }),
   generatedAt: z.iso.datetime(),
-}).passthrough();
+});
 
 // ---------------------------------------------------------------------------
 // Cross-model data reading

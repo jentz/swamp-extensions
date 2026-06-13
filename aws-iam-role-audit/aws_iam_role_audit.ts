@@ -6,10 +6,11 @@
  * model answers "what is *actually* in IAM right now, and how did it get there"
  * — by reading the role(s) directly in each account.
  *
- * An integration can define **several roles** (e.g. Aikido's Readonly + ECR +
- * EBS scanning roles), each with its own expected policies / trust / external
- * id and a `required` flag. The single `audit` method is the **fan-out sweep**
- * (repo rule 6): in one locked execution it iterates the configured `profiles`
+ * An integration can define **several roles** (e.g. a compliance scanner's
+ * Readonly + ECR + EBS scanning roles), each with its own expected policies /
+ * trust / external id and a `required` flag. The single `audit` method is the
+ * **fan-out sweep** (repo rule 6): in one locked execution it iterates the
+ * configured `profiles`
  * (one account each) and, for each configured role, emits one `role` resource
  * carrying:
  *
@@ -188,7 +189,7 @@ const RoleRecordSchema = z.object({
   compliant: z.boolean(),
   findings: z.array(z.string()),
   scannedAt: z.iso.datetime(),
-}).passthrough();
+});
 
 const ScanErrorSchema = z.object({
   profile: z.string(),
@@ -198,7 +199,7 @@ const ScanErrorSchema = z.object({
   kind: z.enum(["auth_expired", "access_denied", "other"]),
   message: z.string(),
   scannedAt: z.iso.datetime(),
-}).passthrough();
+});
 
 // ---------------------------------------------------------------------------
 // Public resource shapes

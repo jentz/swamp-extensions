@@ -96,7 +96,7 @@ Deno.test("classifyError: SSO role ARN in unrelated AccessDenied does NOT trip a
   // get sent to run `aws sso login` for nothing.
   const err = new Error(
     "You are not authorized to perform this operation. User: " +
-      "arn:aws:sts::688375758630:assumed-role/AWSReservedSSO_SitooReadOnlyAccess_xyz/m@s.com " +
+      "arn:aws:sts::111111111111:assumed-role/AWSReservedSSO_ReadOnlyAccess_abc123/alice@example.com " +
       "is not authorized to perform: ec2:DescribeSecurityGroups with an " +
       "explicit deny in a service control policy: arn:aws:organizations::...",
   );
