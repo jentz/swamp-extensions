@@ -53,7 +53,7 @@ type CredentialProvider = ReturnType<typeof fromIni>;
 const GlobalArgsSchema = z.object({
   stackSetName: z.string().min(1).describe(
     "The name of the CloudFormation StackSet to run drift detection on " +
-      "(e.g. 'VantaOrgSetup').",
+      "(e.g. 'ExampleOrgBaseline').",
   ),
   callAs: z.enum(["SELF", "DELEGATED_ADMIN"]).default("SELF").describe(
     "Who you are calling as. SELF when signed in to the org management " +

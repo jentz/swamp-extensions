@@ -289,7 +289,7 @@ export const CoverageRowSchema = z.object({
   inStacksetTargets: z.boolean(),
   inIamSweep: z.boolean(),
   reconciliation: z.string(),
-}).passthrough();
+});
 
 // ---------------------------------------------------------------------------
 // Pure helpers
