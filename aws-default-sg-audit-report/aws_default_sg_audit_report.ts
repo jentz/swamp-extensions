@@ -233,12 +233,24 @@ export async function collect(
         handle.specName;
       if (specName !== FINDING_SPEC && specName !== SCAN_ERROR_SPEC) continue;
 
-      const bytes: Uint8Array | null = await context.dataRepository.getContent(
-        step.modelType,
-        step.modelId,
-        handle.name,
-        handle.version,
-      );
+      let bytes: Uint8Array | null;
+      try {
+        bytes = await context.dataRepository.getContent(
+          step.modelType,
+          step.modelId,
+          handle.name,
+          handle.version,
+        );
+      } catch {
+        // A storage read failure for one handle is a per-handle skip, not a
+        // whole-report failure — count it and move on.
+        skipped++;
+        tryLog(logger, "warn", "Could not read {spec} artifact {handle}", {
+          spec: specName,
+          handle: handle.name,
+        });
+        continue;
+      }
       const value = decodeJson(bytes);
       if (value === undefined) {
         skipped++;

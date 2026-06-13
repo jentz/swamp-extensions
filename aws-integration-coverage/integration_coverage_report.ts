@@ -114,11 +114,15 @@ export async function collect(
   const roles: Collected["roles"] = [];
   const iamErrors: Collected["iamErrors"] = [];
   let skipped = 0;
+  let matchingSteps = 0;
+  const observed = new Set<string>();
 
   for (const step of context.stepExecutions ?? []) {
+    if (typeof step?.modelType === "string") observed.add(step.modelType);
     const isStackset = step.modelType === STACKSET_MODEL_TYPE;
     const isIam = step.modelType === IAM_MODEL_TYPE;
     if (!isStackset && !isIam) continue;
+    matchingSteps++;
 
     for (const handle of step.dataHandles ?? []) {
       const specName: string | undefined = handle.metadata?.tags?.specName ??
@@ -159,6 +163,22 @@ export async function collect(
         r.success ? iamErrors.push(r.data) : skipped++;
       }
     }
+  }
+
+  const hadSteps = (context.stepExecutions ?? []).length > 0;
+  if (hadSteps && matchingSteps === 0) {
+    // Steps ran but none carried an upstream audit type — likely a miswired
+    // workflow. Warn so an operator does not mistake it for a real empty result.
+    tryLog(
+      logger,
+      "warn",
+      "No step matched modelType={stackset} or {iam}; observed: {observed}",
+      {
+        stackset: STACKSET_MODEL_TYPE,
+        iam: IAM_MODEL_TYPE,
+        observed: [...observed].sort().join(", ") || "<none>",
+      },
+    );
   }
 
   tryLog(
@@ -236,7 +256,10 @@ export function renderMarkdown(
   lines.push("");
   lines.push("| Mechanism | Accounts |");
   lines.push("|---|---|");
-  for (const [k, v] of Object.entries(byMechanism).sort()) {
+  const byMechEntries = Object.entries(byMechanism).sort(([a], [b]) =>
+    a.localeCompare(b)
+  );
+  for (const [k, v] of byMechEntries) {
     lines.push(`| ${k} | ${v} |`);
   }
   lines.push("");

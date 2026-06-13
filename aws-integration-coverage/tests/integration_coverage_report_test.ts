@@ -281,6 +281,27 @@ Deno.test("collect: a getContent read failure is a per-handle skip, not a whole-
   assertEquals(c.instances.length, 1);
 });
 
+Deno.test("collect: warns when steps exist but none match the upstream audit types", async () => {
+  const warns: string[] = [];
+  const ctx = {
+    workflowName: "wf",
+    logger: {
+      info: () => {},
+      warn: (m: string) => warns.push(m),
+      debug: () => {},
+      error: () => {},
+    },
+    stepExecutions: [
+      { modelType: "@other/unrelated", modelId: "x", dataHandles: [] },
+    ],
+    dataRepository: { getContent: () => Promise.resolve(null) },
+  };
+  const c = await collect(ctx);
+  assertEquals(c.instances.length, 0);
+  // A miswired workflow (steps present, none matched) is flagged, not silent.
+  assert(warns.some((m) => m.includes("No step matched")));
+});
+
 // ---------------------------------------------------------------------------
 // renderMarkdown — section presence
 // ---------------------------------------------------------------------------
