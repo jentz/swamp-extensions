@@ -216,11 +216,21 @@ function sdkApi(
 /** Sleep for `ms` milliseconds, rejecting if `signal` aborts first. */
 export function realSleep(ms: number, signal?: AbortSignal): Promise<void> {
   return new Promise((resolve, reject) => {
-    const t = setTimeout(resolve, ms);
-    signal?.addEventListener("abort", () => {
+    if (signal?.aborted) {
+      reject(new Error("aborted"));
+      return;
+    }
+    const onAbort = () => {
       clearTimeout(t);
       reject(new Error("aborted"));
-    }, { once: true });
+    };
+    const t = setTimeout(() => {
+      // Detach the abort listener on normal completion so a long poll loop
+      // sharing one signal does not accumulate a listener per sleep.
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+    signal?.addEventListener("abort", onAbort, { once: true });
   });
 }
 
