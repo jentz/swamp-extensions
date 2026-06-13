@@ -19,6 +19,7 @@ import {
   type AwsOperationSummary,
   type DriftApi,
   isoOrEmpty,
+  realSleep,
   runDetect,
 } from "../aws_stackset_drift_detect.ts";
 
@@ -266,4 +267,24 @@ Deno.test("smoke: every test finishes well under the network budget", () => {
   // single-digit milliseconds even on the budget-exhausted path. Anything
   // touching the network or a real timer would blow past that.
   assert(true);
+});
+
+Deno.test("realSleep: detaches its abort listener on normal completion", async () => {
+  let added = 0;
+  let removed = 0;
+  // Minimal AbortSignal stand-in that records listener churn.
+  const signal = {
+    aborted: false,
+    addEventListener: () => {
+      added++;
+    },
+    removeEventListener: () => {
+      removed++;
+    },
+  } as unknown as AbortSignal;
+  await realSleep(0, signal);
+  // The listener added for the wait must be removed once the timer fires, so a
+  // long poll loop sharing one signal does not leak a listener per sleep.
+  assertEquals(added, 1);
+  assertEquals(removed, 1);
 });
