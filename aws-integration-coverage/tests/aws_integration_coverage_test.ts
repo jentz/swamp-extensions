@@ -51,8 +51,7 @@ const enc = (v: unknown) => new TextEncoder().encode(JSON.stringify(v));
 /** Build a dataRepository over per-(modelType, modelId) stored items. */
 function fakeRepo(
   store: Record<string, Record<string, StoredItem[]>>,
-): { repo: unknown; awsTouched: boolean } {
-  const awsTouched = false;
+): { repo: unknown } {
   const repo = {
     findAllForModel: (modelType: string, modelId: string) => {
       const items = store[modelType]?.[modelId] ?? [];
@@ -82,7 +81,7 @@ function fakeRepo(
       return Promise.resolve(enc(it.json));
     },
   };
-  return { repo, awsTouched };
+  return { repo };
 }
 
 interface Written {
