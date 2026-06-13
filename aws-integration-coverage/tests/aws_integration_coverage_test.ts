@@ -42,6 +42,8 @@ interface StoredItem {
   json: unknown;
   /** When true, getContent returns null for this item (undecodable / missing). */
   noBytes?: boolean;
+  /** When true, getContent rejects for this item (storage read failure). */
+  failRead?: boolean;
 }
 
 const enc = (v: unknown) => new TextEncoder().encode(JSON.stringify(v));
@@ -73,6 +75,9 @@ function fakeRepo(
     ): Promise<Uint8Array | null> => {
       const items = store[modelType]?.[modelId] ?? [];
       const it = items.find((i) => i.name === name && i.version === version);
+      if (it?.failRead) {
+        return Promise.reject(new Error("storage read failed"));
+      }
       if (!it || it.noBytes) return Promise.resolve(null);
       return Promise.resolve(enc(it.json));
     },
@@ -217,6 +222,28 @@ Deno.test("readSpec: a null-bytes artifact is counted as decodeSkipped", async (
   );
   assertEquals(rows.length, 1);
   // The undecodable artifact is counted, not silently dropped.
+  assertEquals(decodeSkipped, 1);
+});
+
+Deno.test("readSpec: a getContent read failure is counted as decodeSkipped, not thrown", async () => {
+  const { repo } = fakeRepo({
+    [STACKSET_TYPE]: {
+      "ss-1": [
+        instanceItem("instance-acct-a", ACCT_A, "CURRENT"),
+        // a storage read that rejects rather than returning bytes
+        instanceItem("instance-fail", ACCT_B, "CURRENT", { failRead: true }),
+      ],
+    },
+  });
+  const { values: rows, decodeSkipped } = await readSpec(
+    repo,
+    STACKSET_TYPE,
+    "ss-1",
+    "instance",
+  );
+  // One bad read is counted and skipped; the healthy row is still returned and
+  // the whole coalesce is not aborted.
+  assertEquals(rows.length, 1);
   assertEquals(decodeSkipped, 1);
 });
 

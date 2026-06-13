@@ -162,12 +162,15 @@ export async function readSpec(
   const out: unknown[] = [];
   let decodeSkipped = 0;
   for (const { name, version } of latest.values()) {
-    const bytes: Uint8Array | null = await dataRepo.getContent(
-      modelType,
-      modelId,
-      name,
-      version,
-    );
+    let bytes: Uint8Array | null;
+    try {
+      bytes = await dataRepo.getContent(modelType, modelId, name, version);
+    } catch {
+      // A storage read failure is the same class as missing bytes — count it
+      // and skip, rather than aborting the whole coalesce on one bad read.
+      decodeSkipped++;
+      continue;
+    }
     if (!bytes) {
       decodeSkipped++;
       continue;
