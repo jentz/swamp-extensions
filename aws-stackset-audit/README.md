@@ -137,7 +137,7 @@ ahead of the mutating drift-detect step, not in this read-only model.
 steps:
   - name: detect-drift
     model: stackset-drift-detect       # @jentz/aws-stackset-drift-detect (sibling)
-    method: detect_drift
+    method: detect
     # runs under an admin profile that can call DetectStackSetDrift
 
   - name: audit

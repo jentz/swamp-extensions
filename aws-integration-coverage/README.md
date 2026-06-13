@@ -74,7 +74,7 @@ resource:
 ```sh
 # run the upstream audits, then coalesce
 swamp model method run stackset-audit audit
-swamp model method run iam-role-audit sweep
+swamp model method run iam-role-audit audit
 swamp model method run coverage coalesce
 
 # every uncovered account
