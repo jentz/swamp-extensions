@@ -1,0 +1,63 @@
+manifestVersion: 1
+name: "@jentz/aws-integration-coverage"
+version: "2026.06.13.0"
+description: |
+  Coalesces a CloudFormation StackSet lens (@jentz/aws-stackset-audit) and an
+  IAM-role lens (@jentz/aws-iam-role-audit) into a per-account integration
+  coverage matrix — is the integration role deployed and compliant, and by which
+  mechanism (this stackset / another stackset / a standalone stack / manual)?
+  Makes NO AWS API calls; it only consumes already-captured upstream audit data.
+
+  This is a single, self-contained package that ships BOTH a queryable model and
+  a workflow-scope report from one shared, pure coalesce core (`_lib/coverage.ts`)
+  so the two always derive identical verdicts:
+
+    - Model `@jentz/aws-integration-coverage` exposes one `coalesce` method that
+      reads the stored output of two upstream model instances via the data
+      repository (latest active version per data name, tolerantly skipping
+      undecodable or schema-mismatched artifacts) and writes one CEL-queryable
+      `coverage` resource per account plus one `summary` rollup resource.
+      Required global args `stacksetModelId` / `iamModelId` identify the upstream
+      instances; `stacksetModelType` / `iamModelType` default to the published
+      upstream types and are overridable.
+
+    - Report `@jentz/integration-coverage` (workflow scope) collects the same
+      upstream rows from the workflow's step executions, runs the identical
+      coalesce core, and emits markdown + JSON — the coverage matrix, per-role
+      rollups, account-by-mechanism distribution, and an explicit
+      lens-disagreements section. Markdown + JSON only, no CSV. Never throws: an
+      unexpected failure yields a degraded-but-valid report.
+
+  An account is covered-compliant only when every required role is present and
+  compliant; mechanism aggregates to mixed when an account's present roles
+  disagree. Lens disagreements (e.g. StackSet reports CURRENT but a required role
+  is missing) are surfaced explicitly.
+repository: "https://github.com/jentz/swamp-extensions"
+homepage: "https://github.com/jentz/swamp-extensions/tree/main/aws-integration-coverage"
+paths:
+  base: manifest
+models:
+  - aws_integration_coverage.ts
+workflows: []
+vaults: []
+drivers: []
+datastores: []
+reports:
+  - integration_coverage_report.ts
+additionalFiles:
+  - README.md
+  - LICENSE.md
+platforms:
+  - linux-x86_64
+  - linux-aarch64
+  - darwin-x86_64
+  - darwin-aarch64
+labels:
+  - aws
+  - coverage
+  - cloudformation
+  - iam
+  - audit
+  - report
+  - cloud
+dependencies: []
