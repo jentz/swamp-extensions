@@ -344,6 +344,38 @@ Deno.test("renderMarkdown: contains per-role, by-mechanism, lens-disagreements, 
   assertStringIncludes(md, "1 upstream artifact(s) skipped");
 });
 
+Deno.test("renderMarkdown: unresolved-profile remediation matches the scan_error kind", () => {
+  // Profiles with no accountId become unresolvedProfiles, carrying the upstream
+  // IAM scan_error kind. The remediation hint must follow the kind, not always
+  // tell the operator to re-login.
+  const c = {
+    instances: [] as never,
+    summaries: [] as never,
+    roles: [] as never,
+    iamErrors: [
+      { profile: "p-expired", kind: "auth_expired" },
+      { profile: "p-denied", kind: "access_denied" },
+      { profile: "p-other", kind: "weird" },
+    ] as never,
+    skipped: 0,
+  };
+  const md = renderMarkdown(
+    coalesce(c),
+    c,
+    "2026-06-13T00:00:00.000Z",
+    "wf",
+  );
+  assertStringIncludes(md, "`p-expired` — auth_expired (run `aws sso login`)");
+  assertStringIncludes(
+    md,
+    "`p-denied` — access_denied (check the role's IAM permissions / SCPs)",
+  );
+  assertStringIncludes(
+    md,
+    "`p-other` — weird (investigate the upstream scan error)",
+  );
+});
+
 // ---------------------------------------------------------------------------
 // report.execute — JSON payload + degraded path
 // ---------------------------------------------------------------------------
