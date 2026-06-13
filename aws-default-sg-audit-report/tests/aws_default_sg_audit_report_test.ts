@@ -88,6 +88,8 @@ interface Artifact {
   payload: unknown | string;
   /** When true, `payload` is treated as a literal (possibly invalid) string. */
   raw?: boolean;
+  /** When true, getContent rejects for this handle (storage read failure). */
+  failRead?: boolean;
 }
 
 function silentLogger() {
@@ -111,8 +113,13 @@ function contextFor(
     _payload: a,
   }));
   const bytesByHandle = new Map<string, Uint8Array>();
+  const failNames = new Set<string>();
   for (const h of handles) {
     const a = h._payload;
+    if (a.failRead) {
+      failNames.add(h.name);
+      continue;
+    }
     const text = a.raw ? (a.payload as string) : JSON.stringify(a.payload);
     bytesByHandle.set(h.name, ENCODER.encode(text));
   }
@@ -136,8 +143,12 @@ function contextFor(
         _id: string,
         name: string,
         _version: number,
-      ): Promise<Uint8Array | null> =>
-        Promise.resolve(bytesByHandle.get(name) ?? null),
+      ): Promise<Uint8Array | null> => {
+        if (failNames.has(name)) {
+          return Promise.reject(new Error("storage read failed"));
+        }
+        return Promise.resolve(bytesByHandle.get(name) ?? null);
+      },
     },
   };
 }
@@ -193,6 +204,19 @@ Deno.test("collect: ignores steps of an unrelated model type", async () => {
   assertEquals(out.findings.length, 0);
   assertEquals(out.errors.length, 0);
   assertEquals(out.skipped, 0);
+});
+
+Deno.test("collect: a getContent read failure is counted as skipped, never thrown", async () => {
+  const ctx = contextFor([
+    { specName: FINDING_SPEC, payload: finding(), failRead: true },
+    { specName: FINDING_SPEC, payload: finding({ defaultSgId: "sg-ok" }) },
+  ]);
+  // A storage read that rejects must not abort the whole report — it is
+  // counted as one skip and the healthy row is still collected.
+  const out = await collect(ctx);
+  assertEquals(out.findings.length, 1);
+  assertEquals(out.findings[0].defaultSgId, "sg-ok");
+  assertEquals(out.skipped, 1);
 });
 
 Deno.test("collect: a bad-JSON artifact is counted as skipped, never thrown", async () => {

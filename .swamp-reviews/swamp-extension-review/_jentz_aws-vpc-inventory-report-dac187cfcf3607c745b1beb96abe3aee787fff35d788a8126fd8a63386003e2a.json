@@ -1,7 +1,7 @@
 {
   "extension": "@jentz/aws-vpc-inventory-report",
   "version": "2026.06.13.0",
-  "reviewedAt": "2026-06-13T07:07:30Z",
+  "reviewedAt": "2026-06-13T10:43:36Z",
   "dimensions": [
     {
       "id": "credentials-secrets",
