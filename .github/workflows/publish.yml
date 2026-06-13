@@ -50,10 +50,21 @@ jobs:
               echo "::warning file=$manifest::no version scalar found; skipping"
               continue
             fi
-            published="$(
-              swamp extension version --manifest "$manifest" --json \
-                | jq -r '.currentPublished // ""'
-            )"
+            # Query the registry explicitly so a failed lookup or a non-JSON
+            # response fails the job with an actionable message, rather than
+            # leaving `published` empty and treating every extension as
+            # unpublished (which would try to publish everything). An empty
+            # `published` is then only ever a real "not yet published" signal.
+            if ! version_json="$(
+              swamp extension version --manifest "$manifest" --json
+            )"; then
+              echo "::error file=$manifest::failed to query the published version from the registry"
+              exit 1
+            fi
+            if ! published="$(jq -r '.currentPublished // ""' <<< "$version_json")"; then
+              echo "::error file=$manifest::registry response was not valid JSON: $version_json"
+              exit 1
+            fi
             if [ "$manifest_version" != "$published" ]; then
               extensions="$(jq -c --arg dir "$dir" '. + [$dir]' <<< "$extensions")"
               echo "Will publish: $dir (manifest=$manifest_version, published=${published:-<none>})"
