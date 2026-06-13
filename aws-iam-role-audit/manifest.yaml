@@ -1,0 +1,52 @@
+manifestVersion: 1
+name: "@jentz/aws-iam-role-audit"
+version: "2026.06.13.0"
+description: |
+  Read-only fleet IAM lens for an integration's roles across many accounts. A
+  single `audit` method fans out in one locked execution: for each configured
+  role it reads the role directly in each account, determines the management
+  mechanism authoritatively from CloudFormation ownership, validates the role
+  against its expectations (attached policies, trust principals, external ids),
+  and writes one `role` resource per (account, role) plus one `scan_error` per
+  account/phase that cannot be assessed.
+
+  The `role` resource carries existence, ARN, path, create date, tags, attached
+  managed-policy ARNs, inline policy names, trust principals and external ids,
+  the four-value management mechanism
+  (`cfn-stackset`/`cfn-standalone-stack`/`manual`/`missing`), a `required` flag,
+  and a `compliant` flag with human-readable `findings`. A per-account
+  credential failure or per-role read failure produces a `scan_error` and never
+  aborts the sweep.
+
+  Configuration is multi-role only (`roles: [...]`), and `stackLookupRegions` is
+  required with no default — both surfaces fail closed before any AWS call.
+
+  Read-only: only `iam:Get*`/`iam:List*`,
+  `cloudformation:DescribeStackResources`, and `sts:GetCallerIdentity` are ever
+  called, so the audit runs under a `*-readonly` profile. Companion to
+  `@jentz/aws-stackset-audit`; both feed an integration-coverage coalescer.
+repository: "https://github.com/jentz/swamp-extensions"
+homepage: "https://github.com/jentz/swamp-extensions/tree/main/aws-iam-role-audit"
+paths:
+  base: manifest
+models:
+  - aws_iam_role_audit.ts
+workflows: []
+vaults: []
+drivers: []
+datastores: []
+reports: []
+additionalFiles:
+  - README.md
+  - LICENSE.md
+platforms:
+  - linux-x86_64
+  - linux-aarch64
+  - darwin-x86_64
+  - darwin-aarch64
+labels:
+  - aws
+  - iam
+  - audit
+  - cloud
+dependencies: []
