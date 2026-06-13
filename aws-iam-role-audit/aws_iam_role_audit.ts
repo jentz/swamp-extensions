@@ -652,6 +652,11 @@ export interface AuditDeps {
   roles: RoleSpec[];
   /** Required profile suffix; "" disables the check. */
   requiredProfileSuffix: string;
+  /**
+   * The AWS_PROFILE the ambient credential chain would use, used only for the
+   * suffix gate on the ambient target; "" when unknown.
+   */
+  ambientProfile: string;
   /** Swamp method-execution context (host-injected; typed `any`). */
   // deno-lint-ignore no-explicit-any
   context: any;
@@ -686,6 +691,7 @@ export async function runAudit(deps: AuditDeps): Promise<AuditResult> {
   let errorCount = 0;
   const scannedAt = new Date().toISOString();
   const suffix = requiredProfileSuffix;
+  const ambientProfile = deps.ambientProfile ?? "";
 
   const writeError = async (e: ScanError): Promise<void> => {
     errorCount++;
@@ -701,10 +707,17 @@ export async function runAudit(deps: AuditDeps): Promise<AuditResult> {
   for (const target of targets) {
     const profileLabel = target.profile;
 
-    if (suffix.length > 0 && !profileLabel.endsWith(suffix)) {
+    // The ambient target has no profile label; gate it on the AWS_PROFILE the
+    // ambient chain would use instead, so a suffix policy still applies (and
+    // still fails closed when AWS_PROFILE is unset).
+    const labelForSuffix = profileLabel.length > 0
+      ? profileLabel
+      : ambientProfile;
+    if (suffix.length > 0 && !labelForSuffix.endsWith(suffix)) {
+      const shownLabel = labelForSuffix || "<ambient:no AWS_PROFILE>";
       context.logger.warn(
         "Skipping profile {profile}: does not end with required suffix {suffix}",
-        { profile: profileLabel || "<ambient>", suffix },
+        { profile: shownLabel, suffix },
       );
       await writeError({
         profile: profileLabel,
@@ -713,7 +726,7 @@ export async function runAudit(deps: AuditDeps): Promise<AuditResult> {
         phase: "profile_suffix_check",
         kind: "other",
         message:
-          `Profile '${profileLabel}' does not end with required suffix '${suffix}'.`,
+          `Profile '${shownLabel}' does not end with required suffix '${suffix}'.`,
         scannedAt,
       });
       continue;
@@ -910,7 +923,14 @@ export const model = {
               "is no safe default.",
           );
         }
-        const targets: ScanTarget[] = g.profiles.length === 0
+        const isAmbient = g.profiles.length === 0;
+        // For an ambient run the suffix gate has no profile label to check, so
+        // it falls back to the AWS_PROFILE the ambient chain would use.
+        const ambientProfile = isAmbient
+          ? (Deno.env.get("AWS_PROFILE") ?? "")
+          : "";
+
+        const targets: ScanTarget[] = isAmbient
           ? [{
             profile: "",
             api: sdkApi(
@@ -933,6 +953,7 @@ export const model = {
           targets,
           roles,
           requiredProfileSuffix: g.requiredProfileSuffix,
+          ambientProfile,
           context,
         });
       },

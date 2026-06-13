@@ -331,6 +331,7 @@ Deno.test("runScan: happy path writes one finding per default SG with correct ve
     })],
     configuredRegions: ["eu-west-1"],
     requiredProfileSuffix: "",
+    ambientProfile: "",
     context,
   });
 
@@ -383,6 +384,7 @@ Deno.test("runScan: compliant default SG (no rules) is emitted with verdict=comp
     })],
     configuredRegions: ["eu-west-1"],
     requiredProfileSuffix: "",
+    ambientProfile: "",
     context,
   });
   const f = getWrittenResources()[0].data as Record<string, unknown>;
@@ -400,6 +402,7 @@ Deno.test("runScan: region with no default SGs writes nothing", async () => {
     })],
     configuredRegions: ["eu-west-1"],
     requiredProfileSuffix: "",
+    ambientProfile: "",
     context,
   });
   assertEquals(result.findingCount, 0);
@@ -426,6 +429,7 @@ Deno.test("runScan: credential failure writes one scan_error and skips the accou
     ],
     configuredRegions: ["eu-west-1"],
     requiredProfileSuffix: "",
+    ambientProfile: "",
     context,
   });
 
@@ -466,6 +470,7 @@ Deno.test("runScan: per-region access_denied is recorded but other regions still
     })],
     configuredRegions: ["eu-west-2", "eu-west-1"],
     requiredProfileSuffix: "",
+    ambientProfile: "",
     context,
   });
 
@@ -507,6 +512,7 @@ Deno.test("runScan: auto-discovers regions when configuredRegions is empty", asy
     })],
     configuredRegions: [],
     requiredProfileSuffix: "",
+    ambientProfile: "",
     context,
   });
   const findings = getWrittenResources().filter((w) =>
@@ -528,6 +534,7 @@ Deno.test("runScan: describe_regions failure records a single error and skips th
     })],
     configuredRegions: [],
     requiredProfileSuffix: "",
+    ambientProfile: "",
     context,
   });
   const written = getWrittenResources();
@@ -553,6 +560,7 @@ Deno.test("runScan: requiredProfileSuffix mismatch skips the profile before any 
     targets: [{ profile: "ops-admin", api: tripwire }],
     configuredRegions: ["eu-west-1"],
     requiredProfileSuffix: "-readonly",
+    ambientProfile: "",
     context,
   });
   const written = getWrittenResources();
@@ -560,6 +568,51 @@ Deno.test("runScan: requiredProfileSuffix mismatch skips the profile before any 
   assertEquals(written[0].specName, "scan_error");
   const err = written[0].data as Record<string, unknown>;
   assertEquals(err.phase, "profile_suffix_check");
+});
+
+Deno.test("runScan: ambient target whose AWS_PROFILE matches the suffix is NOT refused", async () => {
+  const { context, getWrittenResources } = createModelTestContext({});
+  const result = await runScan({
+    // Ambient target — no profile label. The suffix gate falls back to the
+    // ambient AWS_PROFILE, which DOES end with the suffix, so the sweep runs.
+    targets: [target("", {
+      accountId: "111111111111",
+      perRegion: { "eu-west-1": { sgs: [] } },
+    })],
+    configuredRegions: ["eu-west-1"],
+    requiredProfileSuffix: "-readonly",
+    ambientProfile: "prod-platform-readonly",
+    context,
+  });
+  assertEquals(result.findingCount, 0);
+  const suffixErrs = getWrittenResources().filter((w) =>
+    w.specName === "scan_error" &&
+    (w.data as Record<string, unknown>).phase === "profile_suffix_check"
+  );
+  assertEquals(suffixErrs.length, 0);
+  assertEquals(result.errorCount, 0);
+});
+
+Deno.test("runScan: ambient target with no AWS_PROFILE is refused (fail-closed) when a suffix is required", async () => {
+  const { context, getWrittenResources } = createModelTestContext({});
+  const result = await runScan({
+    targets: [target("", {
+      accountId: "111111111111",
+      perRegion: { "eu-west-1": { sgs: [] } },
+    })],
+    configuredRegions: ["eu-west-1"],
+    requiredProfileSuffix: "-readonly",
+    ambientProfile: "", // AWS_PROFILE unset
+    context,
+  });
+  assertEquals(result.findingCount, 0);
+  assertEquals(result.errorCount, 1);
+  const written = getWrittenResources();
+  assertEquals(written.length, 1);
+  const err = written[0].data as Record<string, unknown>;
+  assertEquals(err.phase, "profile_suffix_check");
+  // AWS_PROFILE is used only for the gate, never leaked into the resource.
+  assertEquals(err.profile, "");
 });
 
 Deno.test("runScan: stable keys make re-runs idempotent (same key, same content)", async () => {
@@ -584,12 +637,14 @@ Deno.test("runScan: stable keys make re-runs idempotent (same key, same content)
     targets: [target("", spec)],
     configuredRegions: ["eu-west-1"],
     requiredProfileSuffix: "",
+    ambientProfile: "",
     context: ctxA.context,
   });
   await runScan({
     targets: [target("", spec)],
     configuredRegions: ["eu-west-1"],
     requiredProfileSuffix: "",
+    ambientProfile: "",
     context: ctxB.context,
   });
   const nameA = ctxA.getWrittenResources()[0].name;

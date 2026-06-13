@@ -1,7 +1,7 @@
 {
   "extension": "@jentz/aws-default-sg-audit",
   "version": "2026.06.13.0",
-  "reviewedAt": "2026-06-13T10:23:28Z",
+  "reviewedAt": "2026-06-13T11:21:09Z",
   "dimensions": [
     {
       "id": "credentials-secrets",
