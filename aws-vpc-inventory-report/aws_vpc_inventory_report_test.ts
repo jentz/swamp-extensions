@@ -11,11 +11,7 @@
  * duplicate that matrix.
  */
 
-import {
-  assert,
-  assertEquals,
-  assertExists,
-} from "https://deno.land/std@0.224.0/assert/mod.ts";
+import { assert, assertEquals, assertExists } from "jsr:@std/assert@1";
 
 import { report } from "./aws_vpc_inventory_report.ts";
 

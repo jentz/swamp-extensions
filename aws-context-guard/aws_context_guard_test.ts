@@ -5,11 +5,7 @@
  * are made. Env vars are set/restored per-test in try/finally blocks.
  */
 
-import {
-  assertEquals,
-  assertExists,
-  assertRejects,
-} from "https://deno.land/std@0.224.0/assert/mod.ts";
+import { assertEquals, assertExists, assertRejects } from "jsr:@std/assert@1";
 import { STSClient } from "npm:@aws-sdk/client-sts@3.1063.0";
 import { model, safeDestroy } from "./aws_context_guard.ts";
 

@@ -7,7 +7,7 @@
  * larger suite.
  */
 
-import { assertEquals } from "https://deno.land/std@0.224.0/assert/mod.ts";
+import { assertEquals } from "jsr:@std/assert@1";
 import { model } from "./aws_integration_coverage.ts";
 import { report } from "./integration_coverage_report.ts";
 

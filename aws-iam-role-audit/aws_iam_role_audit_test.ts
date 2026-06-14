@@ -8,11 +8,7 @@
  * `stackLookupRegions` — to the entrypoint.
  */
 
-import {
-  assertEquals,
-  assertRejects,
-  assertThrows,
-} from "https://deno.land/std@0.224.0/assert/mod.ts";
+import { assertEquals, assertRejects, assertThrows } from "jsr:@std/assert@1";
 import { effectiveRoles, model } from "./aws_iam_role_audit.ts";
 
 function manifestScalar(manifest: string, key: string): string {
