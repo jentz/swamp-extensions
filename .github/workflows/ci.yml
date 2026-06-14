@@ -92,19 +92,22 @@ jobs:
             swamp extension push "$manifest" --dry-run --yes
           done
       - name: test
+        shell: bash
         run: |
+          extension_dirs=()
+          while IFS= read -r -d '' manifest; do
+            extension_dirs+=("$(dirname "$manifest")")
+          done < <(
+            find . -mindepth 2 -maxdepth 2 -name manifest.yaml \
+              -not -path './.swamp/*' \
+              -print0 \
+            | sort -z
+          )
+          if [ "${#extension_dirs[@]}" -eq 0 ]; then
+            echo "No extension manifests found"
+            exit 1
+          fi
+
           deno test \
             --allow-read --allow-write --allow-env --allow-net --no-check \
-            aws-context-guard/ \
-            aws-rds-inventory/ \
-            aws-s3-bucket-audit/ \
-            aws-rds-reservations/ \
-            aws-rds-reservation-coverage/ \
-            aws-vpc-inventory/ \
-            aws-vpc-inventory-report/ \
-            aws-default-sg-audit/ \
-            aws-default-sg-audit-report/ \
-            aws-stackset-audit/ \
-            aws-stackset-drift-detect/ \
-            aws-iam-role-audit/ \
-            aws-integration-coverage/
+            "${extension_dirs[@]}"
