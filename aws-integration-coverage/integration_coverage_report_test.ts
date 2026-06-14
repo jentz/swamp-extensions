@@ -8,11 +8,7 @@
  * report's success AND failure (degraded) paths at a glance.
  */
 
-import {
-  assert,
-  assertEquals,
-  assertStringIncludes,
-} from "https://deno.land/std@0.224.0/assert/mod.ts";
+import { assert, assertEquals, assertStringIncludes } from "jsr:@std/assert@1";
 import { report } from "./integration_coverage_report.ts";
 
 function manifestScalar(manifest: string, key: string): string {

@@ -6,7 +6,7 @@
  * review tooling without duplicating that larger suite.
  */
 
-import { assertEquals } from "https://deno.land/std@0.224.0/assert/mod.ts";
+import { assertEquals } from "jsr:@std/assert@1";
 import { model } from "./aws_vpc_inventory.ts";
 
 function manifestScalar(manifest: string, key: string): string {

@@ -8,10 +8,7 @@
  * storage-key construction). No network or filesystem I/O.
  */
 
-import {
-  assertEquals,
-  assertThrows,
-} from "https://deno.land/std@0.224.0/assert/mod.ts";
+import { assertEquals, assertThrows } from "jsr:@std/assert@1";
 
 import {
   accountNameFromProfile,

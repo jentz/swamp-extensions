@@ -9,10 +9,7 @@
  * shape. All identifiers are placeholders so the corpus is safe to ship.
  */
 
-import {
-  assert,
-  assertEquals,
-} from "https://deno.land/std@0.224.0/assert/mod.ts";
+import { assert, assertEquals } from "jsr:@std/assert@1";
 
 import {
   type AwsApi,

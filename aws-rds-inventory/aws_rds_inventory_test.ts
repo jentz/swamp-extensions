@@ -6,10 +6,7 @@
  * review tooling without duplicating that larger suite.
  */
 
-import {
-  assertEquals,
-  assertThrows,
-} from "https://deno.land/std@0.224.0/assert/mod.ts";
+import { assertEquals, assertThrows } from "jsr:@std/assert@1";
 import { model, resolveRegion } from "./aws_rds_inventory.ts";
 
 function manifestScalar(manifest: string, key: string): string {
