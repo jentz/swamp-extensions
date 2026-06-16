@@ -138,4 +138,18 @@ jobs:
 
           deno test \
             --allow-read --allow-write --allow-env --allow-net --no-check \
+            --coverage=coverage \
             "${extension_dirs[@]}"
+
+          # Coverage is observability-only: print a summary to logs and the
+          # job summary. Enforcing a minimum threshold is intentionally OUT of
+          # scope (deno coverage has no native fail-under-threshold flag).
+          NO_COLOR=1 deno coverage coverage | tee coverage/summary.txt
+          if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+            {
+              echo '### Test coverage'
+              echo '```text'
+              cat coverage/summary.txt
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
