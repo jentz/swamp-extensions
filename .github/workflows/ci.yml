@@ -113,12 +113,78 @@ jobs:
             exit 1
           fi
 
+          stale_manifests=()
+          stale_packages=()
+          push_out="$(mktemp)"
+          # Always remove the temp file, whichever path the step exits on
+          # (normal completion, a dry-run push failure, or an earlier command
+          # such as `swamp extension quality`).
+          trap 'rm -f "$push_out"' EXIT
+
           for manifest in "${manifests[@]}"; do
             echo "Quality $manifest"
             swamp extension quality "$manifest"
+
             echo "Dry-run push $manifest"
-            swamp extension push "$manifest" --dry-run --yes
+            # Capture the dry-run JSON stream (stdout) so it can be parsed
+            # for adversarial-review warnings. A stale or missing committed
+            # review only WARNS (exit 0) via reviewRuleWarnings, whereas a
+            # genuine push error exits non-zero. Capture the exit code
+            # explicitly so real failures still fail the step, while the
+            # warning is detected by parsing the JSON.
+            push_status=0
+            swamp extension push "$manifest" --dry-run --json --yes \
+              >"$push_out" || push_status=$?
+            if [ "$push_status" -ne 0 ]; then
+              echo "::error::Dry-run push failed for $manifest (exit $push_status)"
+              cat "$push_out"
+              exit "$push_status"
+            fi
+
+            # The adversarial-review warning object carries no extension
+            # name, so derive the package name from the dry_run status
+            # object in the same stream when the warning is present.
+            review_file="$(
+              jq -rc 'select(.reviewRuleWarnings)
+                      | .reviewRuleWarnings[]
+                      | select(.ruleId == "adversarial-review-report")
+                      | .file' "$push_out"
+            )"
+            if [ -n "$review_file" ]; then
+              package_name="$(
+                jq -rc -s 'first(.[] | select(.status == "dry_run") | .name)
+                           // empty' "$push_out"
+              )"
+              [ -n "$package_name" ] || package_name="(unknown package)"
+              echo "::warning::Stale or missing adversarial review for $manifest ($package_name)"
+              stale_manifests+=("$manifest")
+              stale_packages+=("$package_name")
+            fi
           done
+
+          if [ "${#stale_manifests[@]}" -ne 0 ]; then
+            echo ""
+            echo "=============================================================="
+            echo "Adversarial-review gate FAILED."
+            echo ""
+            echo "The committed adversarial review under .swamp-reviews/ is"
+            echo "stale or missing for the following extension(s):"
+            echo ""
+            for i in "${!stale_manifests[@]}"; do
+              echo "  - ${stale_manifests[$i]}  (${stale_packages[$i]})"
+            done
+            echo ""
+            echo "The review report is bound to a content hash of each"
+            echo "extension's source and manifest, so any change (including a"
+            echo "version bump) invalidates it. Regenerate the affected"
+            echo "review(s) by following the steps in .swamp-reviews/README.md,"
+            echo "then commit the refreshed report(s) (and delete the stale"
+            echo "one(s))."
+            echo "=============================================================="
+            exit 1
+          fi
+
+          echo "All extensions have a current committed adversarial review."
       - name: test
         shell: bash
         run: |
