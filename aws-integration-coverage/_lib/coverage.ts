@@ -20,6 +20,20 @@
 
 import { z } from "npm:zod@4";
 
+/**
+ * The minimal validator surface the consumers of these schemas rely on. Used as
+ * the explicit type annotation on each exported schema so the public surface
+ * does not leak a private zod-internal type (`z.ZodObject` / `z.ZodType` would
+ * trip `deno doc --lint`'s `private-type-ref` rule). The runtime value is still
+ * a full zod object; only the static type is narrowed to this public shape.
+ */
+export interface SchemaOf<T> {
+  /** Validate one value, returning a discriminated success/failure result. */
+  safeParse(
+    value: unknown,
+  ): { success: true; data: T } | { success: false };
+}
+
 // ---------------------------------------------------------------------------
 // Upstream model types + specs
 // ---------------------------------------------------------------------------
@@ -44,7 +58,7 @@ export const IAM_ERROR_SPEC = "scan_error";
 // ---------------------------------------------------------------------------
 
 /** StackSet `instance` row (subset). */
-export const InstanceSchema = z.object({
+export const InstanceSchema: SchemaOf<Instance> = z.object({
   stackSetName: z.string().default(""),
   account: z.string(),
   region: z.string().default(""),
@@ -54,7 +68,7 @@ export const InstanceSchema = z.object({
 }).passthrough();
 
 /** StackSet `summary` row (subset). */
-export const SummarySchema = z.object({
+export const SummarySchema: SchemaOf<Summary> = z.object({
   stackSetName: z.string().default(""),
   accountsTargeted: z.number().default(0),
   instanceCount: z.number().default(0),
@@ -64,7 +78,7 @@ export const SummarySchema = z.object({
  * IAM `role` row (subset). `required` defaults to `true` so rows written by the
  * pre-multi-role IAM model still coalesce as required roles.
  */
-export const RoleSchema = z.object({
+export const RoleSchema: SchemaOf<Role> = z.object({
   accountId: z.string(),
   accountName: z.string().default(""),
   profile: z.string().default(""),
@@ -81,7 +95,7 @@ export const RoleSchema = z.object({
 }).passthrough();
 
 /** IAM `scan_error` row (subset). */
-export const IamErrorSchema = z.object({
+export const IamErrorSchema: SchemaOf<IamError> = z.object({
   profile: z.string().default(""),
   accountId: z.string().default(""),
   roleName: z.string().default(""),
@@ -257,8 +271,11 @@ export interface CoverageRow {
   reconciliation: string;
 }
 
-/** Zod schema for {@link RoleDetail}. */
-export const RoleDetailSchema = z.object({
+// Non-exported zod object reused both as the exported `RoleDetailSchema` and
+// inside `CoverageRowSchema`'s `z.array(...)`, so the exported schema can carry
+// a public type annotation without breaking the zod composition (which needs
+// the real zod-internal type).
+const roleDetailObject = z.object({
   roleName: z.string(),
   required: z.boolean(),
   exists: z.boolean(),
@@ -268,8 +285,20 @@ export const RoleDetailSchema = z.object({
   findings: z.array(z.string()),
 });
 
-/** Zod schema for a {@link CoverageRow} (for model resource validation). */
-export const CoverageRowSchema = z.object({
+/**
+ * Zod schema for {@link RoleDetail}. Typed as `SchemaOf<unknown>` because its
+ * `mechanism` field is validated loosely (`z.string()`), so the schema's decoded
+ * shape is wider than the {@link RoleDetail} domain type; the annotation only
+ * keeps the public surface free of private zod-internal types.
+ */
+export const RoleDetailSchema: SchemaOf<unknown> = roleDetailObject;
+
+/**
+ * Zod schema for a {@link CoverageRow} (for model resource validation). Typed as
+ * `SchemaOf<unknown>` for the same reason as {@link RoleDetailSchema}: the
+ * `mechanism`/`coverage` fields decode to a wider shape than {@link CoverageRow}.
+ */
+export const CoverageRowSchema: SchemaOf<unknown> = z.object({
   accountId: z.string(),
   accountName: z.string(),
   coverage: z.enum([
@@ -284,7 +313,7 @@ export const CoverageRowSchema = z.object({
   requiredPresent: z.number(),
   requiredCompliant: z.number(),
   missingRequiredRoles: z.array(z.string()),
-  roles: z.array(RoleDetailSchema),
+  roles: z.array(roleDetailObject),
   stacksetStatus: z.string(),
   inStacksetTargets: z.boolean(),
   inIamSweep: z.boolean(),

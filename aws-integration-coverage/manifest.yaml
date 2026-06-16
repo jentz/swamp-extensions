@@ -1,6 +1,6 @@
 manifestVersion: 1
 name: "@jentz/aws-integration-coverage"
-version: "2026.06.13.0"
+version: "2026.06.16.0"
 description: |
   Coalesces a CloudFormation StackSet lens (@jentz/aws-stackset-audit) and an
   IAM-role lens (@jentz/aws-iam-role-audit) into a per-account integration
