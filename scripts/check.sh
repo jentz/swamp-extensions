@@ -44,7 +44,8 @@ fi
 # 3. Type check: every *.ts/*.tsx under extension dirs.
 check_files="$(mktemp)"
 doc_files="$(mktemp)"
-trap 'rm -f "$check_files" "$doc_files"' EXIT
+push_out="$(mktemp)"
+trap 'rm -f "$check_files" "$doc_files" "$push_out"' EXIT
 find -- "${extension_dirs[@]}" -type f \( -name '*.ts' -o -name '*.tsx' \) \
   -print0 > "$check_files"
 if [ ! -s "$check_files" ]; then
@@ -86,17 +87,54 @@ done
 # 6. Per-manifest quality + dry-run push gates.
 #
 # CI sets SWAMP_EXTENSION_REVIEW_DIR at the job level; export the same value
-# here so the dry-run push reads the committed .swamp-reviews and does not
-# surface a spurious adversarial-review warning that CI would not. The dry-run
-# only WARNS on a stale review hash (e.g. aws-integration-coverage on this
-# branch); that is non-fatal and we rely on the dry-run's own exit code.
+# here so the dry-run push reads the committed .swamp-reviews. The dry-run
+# only WARNS (exit 0) when a committed review is stale or missing, so — exactly
+# like the CI "extension package gates" step — parse the JSON for
+# adversarial-review-report warnings and fail the gate if any extension is
+# stale. A genuine push error (non-zero exit) still fails immediately.
 export SWAMP_EXTENSION_REVIEW_DIR="$(git rev-parse --show-toplevel)/.swamp-reviews"
+stale_manifests=()
+stale_packages=()
 for manifest in "${manifests[@]}"; do
   echo "Quality $manifest"
   swamp extension quality "$manifest"
+
   echo "Dry-run push $manifest"
-  swamp extension push "$manifest" --dry-run --yes
+  push_status=0
+  swamp extension push "$manifest" --dry-run --json --yes \
+    >"$push_out" || push_status=$?
+  if [ "$push_status" -ne 0 ]; then
+    echo "Dry-run push failed for $manifest (exit $push_status)"
+    cat "$push_out"
+    exit "$push_status"
+  fi
+  review_file="$(
+    jq -rc 'select(.reviewRuleWarnings)
+            | .reviewRuleWarnings[]
+            | select(.ruleId == "adversarial-review-report")
+            | .file' "$push_out"
+  )"
+  if [ -n "$review_file" ]; then
+    package_name="$(
+      jq -rc -s 'first(.[] | select(.status == "dry_run") | .name)
+                 // empty' "$push_out"
+    )"
+    [ -n "$package_name" ] || package_name="(unknown package)"
+    echo "Stale or missing adversarial review for $manifest ($package_name)"
+    stale_manifests+=("$manifest")
+    stale_packages+=("$package_name")
+  fi
 done
+
+if [ "${#stale_manifests[@]}" -ne 0 ]; then
+  echo ""
+  echo "Adversarial-review gate FAILED. Regenerate the committed review(s)"
+  echo "under .swamp-reviews/ per .swamp-reviews/README.md for:"
+  for i in "${!stale_manifests[@]}"; do
+    echo "  - ${stale_manifests[$i]}  (${stale_packages[$i]})"
+  done
+  exit 1
+fi
 
 # 7. Tests. Keep --no-check (type checking is gate 3). Coverage is
 # intentionally omitted: CI's --coverage/`deno coverage` step is
