@@ -61,8 +61,7 @@ extension's `manifest.yaml` as its release signal:
 - Keep CalVer versions in the existing `YYYY.MM.DD.MICRO` style used by the
   extension.
 
-Before opening a PR, run the relevant local gates for the changed extensions:
-format check, lint, type check when available, tests, and swamp manifest/package
-checks such as `swamp extension fmt manifest.yaml --check`,
-`swamp extension quality manifest.yaml`, and
-`swamp extension push manifest.yaml --dry-run`.
+Before opening a PR, run `deno task check`. It runs the full local gate suite
+(format check, lint, type check, doc lint, tests, and the swamp
+manifest/quality/dry-run gates) across every extension, mirroring CI, so a
+local pass predicts a green CI run.
