@@ -231,12 +231,18 @@ export function parseAll<T>(
  */
 export const model = {
   type: "@jentz/aws-integration-coverage",
-  version: "2026.06.13.0",
+  version: "2026.06.16.0",
   globalArguments: GlobalArgsSchema,
   upgrades: [
     {
       toVersion: "2026.06.13.0",
       description: "Initial publish",
+      upgradeAttributes: (old: Record<string, unknown>) => old,
+    },
+    {
+      toVersion: "2026.06.16.0",
+      description:
+        "Doc-lint release (explicit schema type annotations); no schema changes",
       upgradeAttributes: (old: Record<string, unknown>) => old,
     },
   ],

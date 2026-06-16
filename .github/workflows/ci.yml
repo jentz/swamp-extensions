@@ -47,6 +47,34 @@ jobs:
             exit 1
           fi
           xargs -0 -n 50 deno check < "$check_files"
+      - name: doc lint
+        shell: bash
+        # Scope: every exported symbol in all TypeScript under manifest-owned
+        # extension dirs, including `_lib` helpers. Repo-local tooling outside
+        # extension dirs has no manifest.yaml, so it is naturally excluded.
+        run: |
+          extension_dirs=()
+          while IFS= read -r -d '' manifest; do
+            extension_dirs+=("$(dirname "$manifest")")
+          done < <(
+            find . -mindepth 2 -maxdepth 2 -name manifest.yaml \
+              -not -path './.swamp/*' \
+              -print0 \
+            | sort -z
+          )
+          if [ "${#extension_dirs[@]}" -eq 0 ]; then
+            echo "No extension manifests found"
+            exit 1
+          fi
+
+          doc_files="$(mktemp)"
+          find -- "${extension_dirs[@]}" -type f \( -name '*.ts' -o -name '*.tsx' \) \
+            -print0 > "$doc_files"
+          if [ ! -s "$doc_files" ]; then
+            echo "No TypeScript files found under extension manifests"
+            exit 1
+          fi
+          xargs -0 -n 50 deno doc --lint < "$doc_files"
       - name: manifest fmt
         shell: bash
         run: |
