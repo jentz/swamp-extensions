@@ -43,6 +43,8 @@ fi
 
 # 3. Type check: every *.ts/*.tsx under extension dirs.
 check_files="$(mktemp)"
+doc_files="$(mktemp)"
+trap 'rm -f "$check_files" "$doc_files"' EXIT
 find -- "${extension_dirs[@]}" -type f \( -name '*.ts' -o -name '*.tsx' \) \
   -print0 > "$check_files"
 if [ ! -s "$check_files" ]; then
@@ -52,7 +54,6 @@ fi
 xargs -0 -n 50 deno check < "$check_files"
 
 # 4. Doc lint: same enumeration, every exported symbol including `_lib`.
-doc_files="$(mktemp)"
 find -- "${extension_dirs[@]}" -type f \( -name '*.ts' -o -name '*.tsx' \) \
   -print0 > "$doc_files"
 if [ ! -s "$doc_files" ]; then
