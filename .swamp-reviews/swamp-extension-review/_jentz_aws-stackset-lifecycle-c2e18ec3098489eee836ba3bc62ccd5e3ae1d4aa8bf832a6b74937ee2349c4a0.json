@@ -1,7 +1,7 @@
 {
   "extension": "@jentz/aws-stackset-lifecycle",
   "version": "2026.06.17.1",
-  "reviewedAt": "2026-06-17T20:33:23Z",
+  "reviewedAt": "2026-06-17T20:44:01Z",
   "dimensions": [
     {
       "id": "credentials-secrets",
@@ -31,7 +31,7 @@
     {
       "id": "api-contracts",
       "verdict": "pass",
-      "note": "The LifecycleApi facade maps cleanly to the three real CloudFormation calls. DeploymentTargets correctly converts empty OU/account arrays to undefined so the API is never sent empty arrays; RetainStacks, CallAs, and Regions are threaded verbatim; describeOperation defaults a missing status to 'UNKNOWN' rather than silently SUCCEEDED. The public DeleteInstancesArgs interface mirrors the internal DeleteInstancesArgsSchema field-for-field with no drift, so the doc-lint seam cannot admit an invalid arg or reject a valid one. deleteStackSet correctly declares NO method arguments: DeleteStackSet returns no StackSet operation to poll, so the previously vestigial pollSeconds/maxPolls (which execute() ignored) were removed and the module/README/manifest descriptions were corrected so only deleteInstances is described as polling — accepted args now match observable behavior. The abort signal from context.signal is threaded through."
+      "note": "The LifecycleApi facade maps cleanly to the three real CloudFormation calls. DeploymentTargets correctly converts empty OU/account arrays to undefined so the API is never sent empty arrays; RetainStacks, CallAs, and Regions are threaded verbatim; describeOperation defaults a missing status to 'UNKNOWN' rather than silently SUCCEEDED. The poll loop issues at most maxPolls describeOperation calls with at most maxPolls-1 inter-poll waits — the wait after the final allowed poll is skipped (it would only delay the timeout), matching the aws-stackset-drift-detect sibling. The public DeleteInstancesArgs interface mirrors the internal DeleteInstancesArgsSchema field-for-field with no drift, so the doc-lint seam cannot admit an invalid arg or reject a valid one. deleteStackSet correctly declares NO method arguments: DeleteStackSet returns no StackSet operation to poll, so the previously vestigial pollSeconds/maxPolls (which execute() ignored) were removed and the module/README/manifest descriptions were corrected so only deleteInstances is described as polling — accepted args now match observable behavior. The abort signal from context.signal is threaded through."
     },
     {
       "id": "resource-management",

@@ -352,7 +352,10 @@ export async function pollToTerminal(
       "Operation {op} is {status} (poll {poll}/{max})",
       { op: operationId, status: last.status, poll: poll + 1, max: maxPolls },
     );
-    await delay(pollSeconds * 1000, context.signal);
+    // Skip the wait after the final allowed poll — there is no next poll it
+    // gates, and we would only delay the timeout. The budget is maxPolls polls
+    // with at most maxPolls-1 inter-poll waits.
+    if (poll < maxPolls - 1) await delay(pollSeconds * 1000, context.signal);
   }
   throw new Error(
     `Operation ${operationId} did not finish within ${maxPolls} polls ` +
