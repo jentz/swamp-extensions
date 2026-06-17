@@ -9,8 +9,8 @@
  * CloudFormation StackSets API, as a mutating sibling to the read-only
  * `@jentz/aws-stackset-audit` and `@jentz/aws-stackset-drift-detect`.
  *
- * Two mutating methods, each a single locked execution that polls its operation
- * to a terminal state and writes one `result` resource:
+ * Two mutating methods, each a single locked execution writing one `result`
+ * resource:
  *
  *   - `deleteInstances` — `DeleteStackInstances` for an explicit set of
  *     deployment targets (OUs + accounts) and regions, with an explicit
@@ -88,13 +88,6 @@ const DeploymentTargetsSchema = z.object({
     ),
 });
 
-const PollSchema = {
-  pollSeconds: z.number().int().min(5).max(300).default(15)
-    .describe("Seconds between operation status polls."),
-  maxPolls: z.number().int().min(1).max(360).default(120)
-    .describe("Maximum status polls before timing out."),
-};
-
 const DeleteInstancesArgsSchema = z.object({
   deploymentTargets: DeploymentTargetsSchema,
   regions: z.array(z.string().min(1)).min(1).describe(
@@ -109,12 +102,16 @@ const DeleteInstancesArgsSchema = z.object({
     "Safety guard. Must be true to delete instances for a whole OU/root with no " +
       "explicit account list. Leave false for batched account-scoped deletes.",
   ),
-  ...PollSchema,
+  pollSeconds: z.number().int().min(5).max(300).default(15)
+    .describe("Seconds between operation status polls."),
+  maxPolls: z.number().int().min(1).max(360).default(120)
+    .describe("Maximum status polls before timing out."),
 });
 
-const DeleteStackSetArgsSchema = z.object({
-  ...PollSchema,
-});
+// `deleteStackSet` takes no method arguments: `DeleteStackSet` returns no
+// StackSet operation to poll, so the method issues the delete and records the
+// outcome immediately. (`deleteInstances` owns the poll-tuning args above.)
+const DeleteStackSetArgsSchema = z.object({});
 
 // ---------------------------------------------------------------------------
 // Resource schema
@@ -309,11 +306,21 @@ function sdkApi(
 
 function delay(ms: number, signal?: AbortSignal): Promise<void> {
   return new Promise((resolve, reject) => {
-    const t = setTimeout(resolve, ms);
-    signal?.addEventListener("abort", () => {
-      clearTimeout(t);
+    if (signal?.aborted) {
       reject(new Error("aborted"));
-    }, { once: true });
+      return;
+    }
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(new Error("aborted"));
+    };
+    const timer = setTimeout(() => {
+      // Drop the listener so a shared signal does not accumulate one dead
+      // listener per poll iteration (MaxListenersExceededWarning).
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+    signal?.addEventListener("abort", onAbort, { once: true });
   });
 }
 

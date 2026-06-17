@@ -3,7 +3,9 @@
 Write-side retirement operations for a CloudFormation StackSet, run from the
 management / delegated-admin account. Two **mutating** methods —
 `deleteInstances` and `deleteStackSet` — each a single locked execution that
-polls its operation to a terminal state and writes one `result` resource.
+writes one `result` resource. `deleteInstances` polls its operation to a
+terminal state; `deleteStackSet` is a direct delete (it returns no operation to
+poll).
 
 The official [`@swamp/aws/cloudformation/stack-set`](https://github.com/systeminit/swamp-extensions)
 (Cloud Control) type can create/update/delete a StackSet, but its delete tears
@@ -73,10 +75,9 @@ CEL.
 
 ### `deleteStackSet` arguments
 
-| Argument      | Type          | Default | Meaning                                  |
-| ------------- | ------------- | ------- | ---------------------------------------- |
-| `pollSeconds` | `int` (5–300) | `15`    | Seconds between operation status polls.  |
-| `maxPolls`    | `int` (1–360) | `120`   | Maximum status polls before timing out.  |
+`deleteStackSet` takes no method arguments. `DeleteStackSet` returns no StackSet
+operation to poll, so the method issues the delete and records the outcome
+immediately.
 
 ## Running a retirement
 
