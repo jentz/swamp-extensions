@@ -1,0 +1,82 @@
+{
+  "extension": "@jentz/aws-stackset-lifecycle",
+  "version": "2026.06.17.1",
+  "reviewedAt": "2026-06-17T16:46:47Z",
+  "dimensions": [
+    {
+      "id": "credentials-secrets",
+      "verdict": "pass",
+      "note": "Credentials are resolved via fromIni({ profile }) only when a non-empty profile is supplied, otherwise the ambient AWS credential chain (apiFromGlobals). No secrets are handled, vaulted, or logged; stackSetName/callAs/region/profile are non-secret globalArguments and the profile name is a plain identifier. No credential material appears in the result resource or in any test fixture. The SSO export-credentials workaround (fromIni does not read the SSO cache) is documented in the README and the module JSDoc."
+    },
+    {
+      "id": "logging-quality",
+      "verdict": "pass",
+      "note": "context.logger.info logs the destructive intent before the call (stackset name, accounts, OUs, regions, retainStacks) and poll progress with operation/status/poll counters; a non-SUCCEEDED terminal status is logged at error level before the throw. Structured placeholders, no secrets. Account ids that appear in logs are operator-supplied delete targets, which is the appropriate audit trail for a destructive operation."
+    },
+    {
+      "id": "error-handling",
+      "verdict": "pass",
+      "note": "Destructive failures are surfaced, never masked. deleteInstances returning no OperationId throws; a non-SUCCEEDED terminal status writes the result resource (recording the failure honestly) and then throws; the poll timeout throws with the last observed status as context; deleteStackSet lets an SDK error propagate before writing any SUCCEEDED result, so no false success is ever recorded. SDK retries are capped at 8 attempts. Verified by mutation: removing the post-write throw on a non-SUCCEEDED status turns the smoke test red."
+    },
+    {
+      "id": "testing-completeness",
+      "verdict": "pass",
+      "note": "Unit tests cover every validateDeleteInstances guard branch (no regions, no targets, whole-OU/root without confirmWholeTarget, accounts under a non-INTERSECTION filter, and the confirmWholeTarget bypass), pollToTerminal reaching a terminal status and throwing on timeout after maxPolls, and isoOrEmpty. The smoke suite drives both run* entrypoints against an in-memory fake LifecycleApi (no live AWS) and asserts the written result's key and full shape plus the guard-short-circuits-before-any-API invariant. Test teeth confirmed by six independent source mutations (guard always-null, terminal set weakened, timeout swallowed, result key broken, INTERSECTION gate dropped, post-write throw removed) — all six turn a test red. Thin-variant gaps remain (an explicit STOPPED-throws path, the abort-signal path, deleteStackSet throwing) but each is a variant of already-covered logic; non-blocking."
+    },
+    {
+      "id": "idempotency-resilience",
+      "verdict": "pass",
+      "note": "DeleteStackInstances and DeleteStackSet are naturally tolerant of already-deleted targets (AWS returns success or a benign error), so a re-run after a partial retirement is safe. Each run writes a fresh result keyed by operation id (delete-instances) or stackset name (delete-stackset), so re-runs do not clobber prior records and garbageCollection retains the last 20. The poll loop re-reads operation status idempotently and holds no shared mutable client-side state."
+    },
+    {
+      "id": "api-contracts",
+      "verdict": "pass",
+      "note": "The LifecycleApi facade maps cleanly to the three real CloudFormation calls. DeploymentTargets correctly converts empty OU/account arrays to undefined so the API is never sent empty arrays; RetainStacks, CallAs, and Regions are threaded verbatim; describeOperation defaults a missing status to 'UNKNOWN' rather than silently SUCCEEDED. The public DeleteInstancesArgs interface mirrors the internal DeleteInstancesArgsSchema field-for-field with no drift, so the doc-lint seam cannot admit an invalid arg or reject a valid one. The abort signal from context.signal is threaded through."
+    },
+    {
+      "id": "resource-management",
+      "verdict": "pass",
+      "note": "A single CloudFormationClient is created per execution; the AWS SDK client needs no explicit teardown. delay() clears its timeout and rejects on abort, so no timer leaks across a cancelled run, and no file handles, sockets, or temp files are opened. The smoke suite includes a sentinel asserting each test finishes well under a network budget, guarding against accidental real I/O. The AbortSignal is propagated for prompt cancellation."
+    },
+    {
+      "id": "published-surface-hygiene",
+      "verdict": "pass",
+      "note": "The exported surface is intentional: the pure helpers (validateDeleteInstances, isoOrEmpty, pollToTerminal), the LifecycleApi/DeleteInstancesInput facade types, the run* entrypoints plus their *Deps, DeleteInstancesArgs, LifecycleResult, and model. No private or SDK types leak through an exported signature (the hand-written DeleteInstancesArgs seam exists precisely to avoid exporting z.infer of a private schema); deno doc --lint is clean. grep -rniE 'sitoo|vanta|aikido|[0-9]{12}|jentz@|m@s\\.' over the whole extension directory returns only synthetic RFC-style placeholder account ids (111111111111/222222222222) in the README and tests and the /^[0-9]{12}$/ account-id validation regex — the prototype's VantaOrgSetup/vanta-auditor identifiers and the eu-west-1-homing/migration narrative were genericized to ExampleOrgBaseline. No real account ids, vendor names, internal hostnames, or emails remain. (Nit: isoOrEmpty is exported and unit-tested but currently unused on the production path; retained because it is an acceptance-criteria-mandated pure helper and wiring it in would require expanding the describeOperation contract.)"
+    },
+    {
+      "id": "schema-strictness",
+      "verdict": "pass",
+      "note": "ResultSchema is a plain strict z.object — the prototype's trailing .passthrough() was removed during extraction to match the aws-stackset-audit sibling and the repo's schema-strictness convention (confirmed by grep: no .passthrough() anywhere in the extension). The model writes exactly the explicit LifecycleResult shape, which the schema mirrors field-for-field, so tightening loses nothing. All argument schemas (GlobalArgsSchema, DeleteInstancesArgsSchema) are strict z.object, and the public resource type LifecycleResult is a hand-written interface rather than z.infer of a private schema, keeping deno doc --lint clean."
+    },
+    {
+      "id": "lifetime-gc",
+      "verdict": "pass",
+      "note": "The single result resource declares lifetime 'infinite' with garbageCollection 20 — a deliberate choice (the read-only audit sibling uses 10) documented in the README, appropriate for retaining the audit trail across a multi-batch retirement."
+    },
+    {
+      "id": "crud-completeness",
+      "verdict": "pass",
+      "note": "Deliberately delete-only by design: this is the write-side sibling. Create/update are out of scope (the official @swamp/aws Cloud Control stack-set type owns them) and list/describe belong to the read-only audit sibling. deleteInstances (batched, with the safety guard and operation polling) and deleteStackSet (the final empty-set delete) compose a complete staged-retirement lifecycle, and the README 'Out of scope' section documents the boundary."
+    },
+    {
+      "id": "preflight-checks",
+      "verdict": "pass",
+      "note": "validateDeleteInstances runs before any destructive API call — a mutation flipping the guard to always-pass makes the smoke test's calls.deleteInstances.length === 0 and written.length === 0 assertions fail, proving the short-circuit. The INTERSECTION+accounts gate correctly bounds blast radius: under AWS DeploymentTargets semantics INTERSECTION can only narrow the explicit accounts list, so a broad OU or the org root cannot widen the target set; whole-OU/root targets and accounts under UNION/NONE/DIFFERENCE are refused unless confirmWholeTarget=true. No under-rejection hole was found, and the documented safe shape is not falsely rejected."
+    },
+    {
+      "id": "instance-names",
+      "verdict": "pass",
+      "note": "Mechanical check: result keys are deterministic and collision-resistant — delete-instances-<operationId> (unique per AWS StackSet operation) and delete-stackset-<stackSetName>. The two methods cannot collide, and each is written by a single code path. Both keys are asserted exactly in the smoke suite, and the CEL access patterns are documented in the README."
+    },
+    {
+      "id": "data-access",
+      "verdict": "pass",
+      "note": "Each method writes exactly one result via context.writeResource and returns {...result, dataHandles: [handle]}; nothing is read back from stored swamp state (no readResource), consistent with a fire-and-record mutating operation. The written object matches ResultSchema/LifecycleResult field-for-field, and the smoke test asserts the spec name 'result' and dataHandles.length === 1."
+    },
+    {
+      "id": "version-upgrades",
+      "verdict": "pass",
+      "note": "Initial publish. model.upgrades carries the required single no-op entry { toVersion: '2026.06.17.1', description: 'Initial publish', upgradeAttributes: (old) => old } whose toVersion equals model.version equals the manifest version (2026.06.17.1); the colocated entrypoint test asserts this invariant. The chain was added during extraction — the prototype had none — establishing a clean base for future schema-changing upgrades."
+    }
+  ]
+}

@@ -1,0 +1,51 @@
+manifestVersion: 1
+name: "@jentz/aws-stackset-lifecycle"
+version: "2026.06.17.1"
+description: |
+  Write-side retirement operations for a CloudFormation StackSet, run from the
+  management / delegated-admin account. Two MUTATING methods, each a single
+  locked execution that polls its operation to a terminal state and writes one
+  `result` resource.
+
+  `deleteInstances` runs `DeleteStackInstances` for an explicit batch of
+  deployment targets (OUs + accounts) and regions, with an explicit
+  `retainStacks` flag — use it batch-by-batch so each member is only briefly
+  affected. A safety guard refuses to operate on a whole OU/root unless
+  `confirmWholeTarget: true` is set, so a fat-fingered fleet-wide delete is
+  impossible. `deleteStackSet` runs `DeleteStackSet` once the stackset is empty.
+
+  The official `@swamp/aws/cloudformation/stack-set` (Cloud Control) type deletes
+  every instance at once with no batching and no `RetainStacks` control, so it
+  cannot express a staged, low-blast-radius retirement. This model fills that gap
+  using the native CloudFormation StackSets API, as the mutating sibling to the
+  read-only `@jentz/aws-stackset-audit` and `@jentz/aws-stackset-drift-detect`.
+
+  MUTATING: needs `cloudformation:DeleteStackInstances` /
+  `cloudformation:DeleteStackSet` plus the stackset admin role — a `*-readonly`
+  profile cannot run these, by design.
+repository: "https://github.com/jentz/swamp-extensions"
+homepage: "https://github.com/jentz/swamp-extensions/tree/main/aws-stackset-lifecycle"
+paths:
+  base: manifest
+models:
+  - aws_stackset_lifecycle.ts
+workflows: []
+vaults: []
+drivers: []
+datastores: []
+reports: []
+additionalFiles:
+  - README.md
+  - LICENSE.md
+platforms:
+  - linux-x86_64
+  - linux-aarch64
+  - darwin-x86_64
+  - darwin-aarch64
+labels:
+  - aws
+  - cloudformation
+  - stackset
+  - lifecycle
+  - delete
+dependencies: []
