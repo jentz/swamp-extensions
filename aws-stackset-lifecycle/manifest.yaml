@@ -4,8 +4,8 @@ version: "2026.06.17.1"
 description: |
   Write-side retirement operations for a CloudFormation StackSet, run from the
   management / delegated-admin account. Two MUTATING methods, each a single
-  locked execution that polls its operation to a terminal state and writes one
-  `result` resource.
+  locked execution that writes one `result` resource (`deleteInstances` polls
+  its operation to a terminal state; `deleteStackSet` is a direct delete).
 
   `deleteInstances` runs `DeleteStackInstances` for an explicit batch of
   deployment targets (OUs + accounts) and regions, with an explicit

@@ -1,7 +1,7 @@
 {
   "extension": "@jentz/aws-stackset-lifecycle",
   "version": "2026.06.17.1",
-  "reviewedAt": "2026-06-17T16:46:47Z",
+  "reviewedAt": "2026-06-17T20:33:23Z",
   "dimensions": [
     {
       "id": "credentials-secrets",
@@ -21,7 +21,7 @@
     {
       "id": "testing-completeness",
       "verdict": "pass",
-      "note": "Unit tests cover every validateDeleteInstances guard branch (no regions, no targets, whole-OU/root without confirmWholeTarget, accounts under a non-INTERSECTION filter, and the confirmWholeTarget bypass), pollToTerminal reaching a terminal status and throwing on timeout after maxPolls, and isoOrEmpty. The smoke suite drives both run* entrypoints against an in-memory fake LifecycleApi (no live AWS) and asserts the written result's key and full shape plus the guard-short-circuits-before-any-API invariant. Test teeth confirmed by six independent source mutations (guard always-null, terminal set weakened, timeout swallowed, result key broken, INTERSECTION gate dropped, post-write throw removed) — all six turn a test red. Thin-variant gaps remain (an explicit STOPPED-throws path, the abort-signal path, deleteStackSet throwing) but each is a variant of already-covered logic; non-blocking."
+      "note": "Unit tests cover every validateDeleteInstances guard branch (no regions, no targets, whole-OU/root without confirmWholeTarget, accounts under a non-INTERSECTION filter, and the confirmWholeTarget bypass), pollToTerminal reaching a terminal status and throwing on timeout after maxPolls, and isoOrEmpty. The smoke suite drives both run* entrypoints against an in-memory fake LifecycleApi (no live AWS) and asserts the written result's key and full shape plus the guard-short-circuits-before-any-API invariant. Test teeth confirmed by six independent source mutations (guard always-null, terminal set weakened, timeout swallowed, result key broken, INTERSECTION gate dropped, post-write throw removed) — all six turn a test red. Thin-variant gaps remain (an explicit STOPPED-throws path, the abort-signal path in delay(), deleteStackSet throwing) but each is a variant of already-covered logic; non-blocking."
     },
     {
       "id": "idempotency-resilience",
@@ -31,12 +31,12 @@
     {
       "id": "api-contracts",
       "verdict": "pass",
-      "note": "The LifecycleApi facade maps cleanly to the three real CloudFormation calls. DeploymentTargets correctly converts empty OU/account arrays to undefined so the API is never sent empty arrays; RetainStacks, CallAs, and Regions are threaded verbatim; describeOperation defaults a missing status to 'UNKNOWN' rather than silently SUCCEEDED. The public DeleteInstancesArgs interface mirrors the internal DeleteInstancesArgsSchema field-for-field with no drift, so the doc-lint seam cannot admit an invalid arg or reject a valid one. The abort signal from context.signal is threaded through."
+      "note": "The LifecycleApi facade maps cleanly to the three real CloudFormation calls. DeploymentTargets correctly converts empty OU/account arrays to undefined so the API is never sent empty arrays; RetainStacks, CallAs, and Regions are threaded verbatim; describeOperation defaults a missing status to 'UNKNOWN' rather than silently SUCCEEDED. The public DeleteInstancesArgs interface mirrors the internal DeleteInstancesArgsSchema field-for-field with no drift, so the doc-lint seam cannot admit an invalid arg or reject a valid one. deleteStackSet correctly declares NO method arguments: DeleteStackSet returns no StackSet operation to poll, so the previously vestigial pollSeconds/maxPolls (which execute() ignored) were removed and the module/README/manifest descriptions were corrected so only deleteInstances is described as polling — accepted args now match observable behavior. The abort signal from context.signal is threaded through."
     },
     {
       "id": "resource-management",
       "verdict": "pass",
-      "note": "A single CloudFormationClient is created per execution; the AWS SDK client needs no explicit teardown. delay() clears its timeout and rejects on abort, so no timer leaks across a cancelled run, and no file handles, sockets, or temp files are opened. The smoke suite includes a sentinel asserting each test finishes well under a network budget, guarding against accidental real I/O. The AbortSignal is propagated for prompt cancellation."
+      "note": "A single CloudFormationClient is created per execution; the AWS SDK client needs no explicit teardown. delay() clears its timeout and rejects on abort, removes its 'abort' listener on normal completion, and short-circuits an already-aborted signal before scheduling — so a shared context.signal does not accumulate one dead listener per poll iteration (no MaxListenersExceededWarning) and no timer leaks across a cancelled run. No file handles, sockets, or temp files are opened. The smoke suite includes a sentinel asserting each test finishes well under a network budget, guarding against accidental real I/O. The AbortSignal is propagated for prompt cancellation."
     },
     {
       "id": "published-surface-hygiene",
@@ -46,7 +46,7 @@
     {
       "id": "schema-strictness",
       "verdict": "pass",
-      "note": "ResultSchema is a plain strict z.object — the prototype's trailing .passthrough() was removed during extraction to match the aws-stackset-audit sibling and the repo's schema-strictness convention (confirmed by grep: no .passthrough() anywhere in the extension). The model writes exactly the explicit LifecycleResult shape, which the schema mirrors field-for-field, so tightening loses nothing. All argument schemas (GlobalArgsSchema, DeleteInstancesArgsSchema) are strict z.object, and the public resource type LifecycleResult is a hand-written interface rather than z.infer of a private schema, keeping deno doc --lint clean."
+      "note": "ResultSchema is a plain strict z.object — the prototype's trailing .passthrough() was removed during extraction to match the aws-stackset-audit sibling and the repo's schema-strictness convention (confirmed by grep: no .passthrough() anywhere in the extension). The model writes exactly the explicit LifecycleResult shape, which the schema mirrors field-for-field, so tightening loses nothing. All argument schemas (GlobalArgsSchema, DeleteInstancesArgsSchema) are strict z.object, and DeleteStackSetArgsSchema is an explicit empty z.object since the method takes no arguments. The public resource type LifecycleResult is a hand-written interface rather than z.infer of a private schema, keeping deno doc --lint clean."
     },
     {
       "id": "lifetime-gc",
