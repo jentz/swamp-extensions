@@ -1,24 +1,45 @@
 /**
  * Unit tests for `@jentz/aws-rds-inventory-report`.
  *
- * Collection / decoding — `collect` walks `context.stepExecutions`, matches the
- * upstream model type, and decodes `cluster` / `instance` artifacts. Malformed
- * (bad-JSON) and schema-mismatched artifacts are counted into `skipped`, never
- * thrown.
+ * Four layers:
+ *
+ *   1. Collection / decoding — `collect` walks `context.stepExecutions`,
+ *      matches the upstream model type, and decodes `cluster` / `instance`
+ *      artifacts. Malformed (bad-JSON) and schema-mismatched artifacts are
+ *      counted into `skipped`, never thrown.
+ *   2. Sort comparators — `compareClusters` and `compareInstances` impose a
+ *      stable ordering on the rows.
+ *   3. Markdown rendering — `renderMarkdown` produces the summary and the full
+ *      inventory table in stable sort order.
+ *   4. The JSON payload — `report.execute` carries structured `clusters[]` and
+ *      `instances[]` rows (in sort order), summary counts, the skipped count,
+ *      and the `degraded` flag — and NO `csv` / `columns` keys.
  *
  * @module
  */
 
-import { assertEquals } from "jsr:@std/assert@1";
+import {
+  assert,
+  assertEquals,
+  assertExists,
+  assertFalse,
+} from "jsr:@std/assert@1";
 
 import {
   CLUSTER_SPEC,
   type ClusterRecord,
   collect,
+  type Collected,
+  compareClusters,
+  compareInstances,
   INSTANCE_SPEC,
   type InstanceRecord,
   INVENTORY_MODEL_TYPE,
+  renderMarkdown,
+  report,
 } from "../aws_rds_inventory_report.ts";
+
+const ISO = "2026-06-20T00:00:00.000Z";
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -264,4 +285,262 @@ Deno.test("collect: emits no rows and no skips when no step matches the model ty
   assertEquals(out.clusters.length, 0);
   assertEquals(out.instances.length, 0);
   assertEquals(out.skipped, 0);
+});
+
+// ---------------------------------------------------------------------------
+// compareClusters / compareInstances
+// ---------------------------------------------------------------------------
+
+Deno.test("compareClusters: orders by cluster identifier", () => {
+  const rows = [
+    cluster({ DBClusterIdentifier: "c-zeta" }),
+    cluster({ DBClusterIdentifier: "c-alpha" }),
+    cluster({ DBClusterIdentifier: "c-mu" }),
+  ];
+  const sorted = [...rows].sort(compareClusters).map((c) =>
+    c.DBClusterIdentifier
+  );
+  assertEquals(sorted, ["c-alpha", "c-mu", "c-zeta"]);
+});
+
+Deno.test("compareInstances: orders by cluster, then writer-before-reader, then instance id", () => {
+  const rows = [
+    instance({
+      DBClusterIdentifier: "c-b",
+      DBInstanceIdentifier: "b-reader",
+      Role: "reader",
+    }),
+    instance({
+      DBClusterIdentifier: "c-a",
+      DBInstanceIdentifier: "a-reader-2",
+      Role: "reader",
+    }),
+    instance({
+      DBClusterIdentifier: "c-a",
+      DBInstanceIdentifier: "a-reader-1",
+      Role: "reader",
+    }),
+    instance({
+      DBClusterIdentifier: "c-a",
+      DBInstanceIdentifier: "a-writer",
+      Role: "writer",
+    }),
+  ];
+  const sorted = [...rows].sort(compareInstances).map((i) =>
+    i.DBInstanceIdentifier
+  );
+  assertEquals(sorted, ["a-writer", "a-reader-1", "a-reader-2", "b-reader"]);
+});
+
+// ---------------------------------------------------------------------------
+// renderMarkdown
+// ---------------------------------------------------------------------------
+
+Deno.test("renderMarkdown: empty collection renders the header, summary, and an empty table", () => {
+  const md = renderMarkdown(
+    { clusters: [], instances: [], skipped: 0 },
+    ISO,
+    "rds-workflow",
+  );
+  assert(md.includes("# AWS RDS Inventory"));
+  assert(md.includes("- Clusters inventoried: **0**"));
+  assert(md.includes("- Instances inventoried: **0**"));
+  assert(md.includes("- Skipped artifacts: **0**"));
+  assert(md.includes("_None._"));
+});
+
+Deno.test("renderMarkdown: a non-zero skipped count is flagged in the summary", () => {
+  const md = renderMarkdown(
+    {
+      clusters: [cluster({ DBClusterIdentifier: "c-aurora" })],
+      instances: [],
+      skipped: 3,
+    },
+    ISO,
+    "rds-workflow",
+  );
+  assert(md.includes("⚠️ Skipped artifacts: **3**"));
+  // The clean-run phrasing must not also appear.
+  assert(!md.includes("- Skipped artifacts: **0**"));
+});
+
+Deno.test("renderMarkdown: summary reports engines, writer/reader split, and multi-AZ count", () => {
+  const collected: Collected = {
+    clusters: [
+      cluster({ DBClusterIdentifier: "c-aurora", Engine: "aurora-mysql" }),
+      cluster({
+        DBClusterIdentifier: "c-pg",
+        Engine: "aurora-postgresql",
+        MultiAZ: false,
+      }),
+    ],
+    instances: [
+      instance({
+        DBClusterIdentifier: "c-aurora",
+        DBInstanceIdentifier: "c-aurora-w",
+        Role: "writer",
+      }),
+      instance({
+        DBClusterIdentifier: "c-aurora",
+        DBInstanceIdentifier: "c-aurora-r",
+        Role: "reader",
+      }),
+      instance({
+        DBClusterIdentifier: "c-pg",
+        DBInstanceIdentifier: "c-pg-w",
+        Role: "writer",
+      }),
+    ],
+    skipped: 0,
+  };
+  const md = renderMarkdown(collected, ISO, "rds-workflow");
+  assert(md.includes("- Clusters inventoried: **2**"));
+  assert(md.includes("- Instances inventoried: **3**"));
+  assert(md.includes("writers: **2**, readers: **1**"));
+  assert(md.includes("`aurora-mysql`"));
+  assert(md.includes("`aurora-postgresql`"));
+  // Only c-aurora keeps the default MultiAZ: true; c-pg is false.
+  assert(md.includes("- Multi-AZ clusters: **1**"));
+});
+
+Deno.test("renderMarkdown: table lists instances in stable sort order", () => {
+  const collected: Collected = {
+    clusters: [cluster({ DBClusterIdentifier: "c-a" })],
+    instances: [
+      instance({
+        DBClusterIdentifier: "c-b",
+        DBInstanceIdentifier: "b-writer",
+        Role: "writer",
+      }),
+      instance({
+        DBClusterIdentifier: "c-a",
+        DBInstanceIdentifier: "a-reader",
+        Role: "reader",
+      }),
+      instance({
+        DBClusterIdentifier: "c-a",
+        DBInstanceIdentifier: "a-writer",
+        Role: "writer",
+      }),
+    ],
+    skipped: 0,
+  };
+  const md = renderMarkdown(collected, ISO, "rds-workflow");
+  // Stable sort: cluster c-a before c-b; within c-a, writer before reader.
+  const firstIdx = md.indexOf("a-writer");
+  const secondIdx = md.indexOf("a-reader");
+  const thirdIdx = md.indexOf("b-writer");
+  assert(
+    firstIdx < secondIdx && secondIdx < thirdIdx,
+    "rows not in sort order",
+  );
+});
+
+// ---------------------------------------------------------------------------
+// report.execute — JSON payload
+// ---------------------------------------------------------------------------
+
+Deno.test("report.execute: JSON payload carries structured rows in sort order", async () => {
+  const ctx = contextFor([
+    {
+      specName: CLUSTER_SPEC,
+      payload: cluster({ DBClusterIdentifier: "c-z" }),
+    },
+    {
+      specName: CLUSTER_SPEC,
+      payload: cluster({ DBClusterIdentifier: "c-a" }),
+    },
+    {
+      specName: INSTANCE_SPEC,
+      payload: instance({
+        DBClusterIdentifier: "c-a",
+        DBInstanceIdentifier: "c-a-reader",
+        Role: "reader",
+      }),
+    },
+    {
+      specName: INSTANCE_SPEC,
+      payload: instance({
+        DBClusterIdentifier: "c-a",
+        DBInstanceIdentifier: "c-a-writer",
+        Role: "writer",
+      }),
+    },
+  ]);
+  const out = await report.execute(ctx);
+
+  assertEquals(out.json.report, "@jentz/aws-rds-inventory-report");
+  assertEquals(out.json.workflow, "rds-workflow");
+  assertEquals(out.json.clusterCount, 2);
+  assertEquals(out.json.instanceCount, 2);
+  assertEquals(out.json.skipped, 0);
+  assertEquals(out.json.degraded, false);
+
+  // Cluster rows in compareClusters order.
+  assertEquals(
+    out.json.clusters.map((c) => c.DBClusterIdentifier),
+    ["c-a", "c-z"],
+  );
+  // Instance rows in compareInstances order (writer before reader).
+  assertEquals(
+    out.json.instances.map((i) => i.DBInstanceIdentifier),
+    ["c-a-writer", "c-a-reader"],
+  );
+  // Each row object carries the model's row fields.
+  const firstCluster = out.json.clusters[0];
+  assertExists(firstCluster.tags);
+  assertEquals(typeof firstCluster.Engine, "string");
+  const firstInstance = out.json.instances[0];
+  assertExists(firstInstance.tags);
+  assertEquals(typeof firstInstance.DBInstanceClass, "string");
+});
+
+Deno.test("report.execute: never throws on an empty context and reports degraded=false", async () => {
+  const out = await report.execute({
+    workflowName: "empty",
+    stepExecutions: [],
+    logger: silentLogger(),
+    dataRepository: {
+      getContent: (): Promise<Uint8Array | null> => Promise.resolve(null),
+    },
+  });
+  assertExists(out.markdown);
+  assertEquals(out.json.clusters.length, 0);
+  assertEquals(out.json.instances.length, 0);
+  assertEquals(out.json.degraded, false);
+});
+
+Deno.test("report.execute: an unexpected collection failure degrades to a valid report", async () => {
+  // A context whose stepExecutions getter throws forces the outer guard.
+  const ctx = {
+    workflowName: "boom-workflow",
+    logger: silentLogger(),
+    get stepExecutions(): unknown[] {
+      throw new Error("stepExecutions exploded");
+    },
+    dataRepository: {
+      getContent: (): Promise<Uint8Array | null> => Promise.resolve(null),
+    },
+  };
+  const out = await report.execute(ctx);
+  assertEquals(out.json.degraded, true);
+  assertEquals(out.json.clusters.length, 0);
+  assertEquals(out.json.instances.length, 0);
+  assert(out.markdown.includes("degraded"));
+});
+
+Deno.test("report.execute: JSON payload carries NO csv or columns keys", async () => {
+  const ctx = contextFor([
+    { specName: CLUSTER_SPEC, payload: cluster() },
+    { specName: INSTANCE_SPEC, payload: instance() },
+  ]);
+  const out = await report.execute(ctx);
+  const keys = Object.keys(out.json);
+  assertFalse(keys.includes("csv"), "JSON payload must not carry a csv key");
+  assertFalse(
+    keys.includes("columns"),
+    "JSON payload must not carry a columns key",
+  );
+  // And the markdown body must not contain a CSV recipe or header line.
+  assertFalse(out.markdown.includes("jq -r .csv"));
 });

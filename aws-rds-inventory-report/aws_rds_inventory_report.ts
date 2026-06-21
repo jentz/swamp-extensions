@@ -7,8 +7,9 @@
  * API access.
  *
  * The markdown body is a human-readable summary (cluster count, instance
- * count, engines, writer/reader split, multi-AZ count) followed by the full
- * inventory table; the `json` payload carries structured `clusters[]` +
+ * count, engines, writer/reader split, multi-AZ count, and a skipped-artifact
+ * count that flags an incomplete run) followed by the full inventory table;
+ * the `json` payload carries structured `clusters[]` +
  * `instances[]` rows (mirroring the model's row fields, in a stable sort
  * order) plus the summary counts, the skipped-artifact count, and a
  * `degraded` flag. No `csv` field is emitted — a downstream `jq` recipe in
@@ -292,6 +293,126 @@ export async function collect(
 }
 
 // ---------------------------------------------------------------------------
+// Sort comparators
+// ---------------------------------------------------------------------------
+
+/** Stable order: by cluster identifier. */
+export function compareClusters(a: ClusterRecord, b: ClusterRecord): number {
+  return a.DBClusterIdentifier < b.DBClusterIdentifier
+    ? -1
+    : a.DBClusterIdentifier > b.DBClusterIdentifier
+    ? 1
+    : 0;
+}
+
+/**
+ * Stable order: by cluster identifier, then writer before reader, then
+ * instance identifier.
+ */
+export function compareInstances(a: InstanceRecord, b: InstanceRecord): number {
+  if (a.DBClusterIdentifier !== b.DBClusterIdentifier) {
+    return a.DBClusterIdentifier < b.DBClusterIdentifier ? -1 : 1;
+  }
+  if (a.Role !== b.Role) return a.Role === "writer" ? -1 : 1;
+  return a.DBInstanceIdentifier < b.DBInstanceIdentifier
+    ? -1
+    : a.DBInstanceIdentifier > b.DBInstanceIdentifier
+    ? 1
+    : 0;
+}
+
+// ---------------------------------------------------------------------------
+// Markdown rendering
+// ---------------------------------------------------------------------------
+
+function mdEscape(value: string): string {
+  return value.replaceAll("|", "\\|");
+}
+
+function mdTable(instances: InstanceRecord[]): string {
+  if (instances.length === 0) return "_None._\n";
+  const cols = [
+    "cluster",
+    "instance",
+    "role",
+    "class",
+    "engine",
+    "version",
+    "AZ",
+    "status",
+  ];
+  const header = `| ${cols.join(" | ")} |`;
+  const sep = `| ${cols.map(() => "---").join(" | ")} |`;
+  const rows = [...instances].sort(compareInstances).map((i) => {
+    const cells = [
+      i.DBClusterIdentifier,
+      i.DBInstanceIdentifier,
+      i.Role,
+      i.DBInstanceClass,
+      i.Engine,
+      i.EngineVersion ?? "",
+      i.AvailabilityZone ?? "",
+      i.Status ?? "",
+    ].map((c) => mdEscape(c));
+    return `| ${cells.join(" | ")} |`;
+  });
+  return [header, sep, ...rows].join("\n") + "\n";
+}
+
+/**
+ * Render the operator markdown report from collected cluster and instance
+ * rows.
+ *
+ * @param collected Cluster and instance rows from {@link collect}.
+ * @param generatedAt ISO timestamp for the report header.
+ * @param workflowName Originating workflow name, for the header.
+ * @returns The full markdown document.
+ */
+export function renderMarkdown(
+  collected: Collected,
+  generatedAt: string,
+  workflowName: string,
+): string {
+  const { clusters, instances, skipped } = collected;
+
+  const engines = new Set(clusters.map((c) => c.Engine));
+  const writers = instances.filter((i) => i.Role === "writer");
+  const readers = instances.filter((i) => i.Role === "reader");
+  const multiAz = clusters.filter((c) => c.MultiAZ);
+
+  const lines: string[] = [];
+  lines.push("# AWS RDS Inventory");
+  lines.push("");
+  lines.push(`_Generated ${generatedAt} · workflow \`${workflowName}\`_`);
+  lines.push("");
+  lines.push("## Summary");
+  lines.push("");
+  lines.push(`- Clusters inventoried: **${clusters.length}**`);
+  lines.push(`- Instances inventoried: **${instances.length}**`);
+  lines.push(
+    `  - writers: **${writers.length}**, readers: **${readers.length}**`,
+  );
+  lines.push(
+    `- Engines: ${
+      engines.size ? [...engines].sort().map((e) => `\`${e}\``).join(", ") : "—"
+    }`,
+  );
+  lines.push(`- Multi-AZ clusters: **${multiAz.length}**`);
+  lines.push(
+    skipped > 0
+      ? `- ⚠️ Skipped artifacts: **${skipped}** (unreadable, malformed, or ` +
+        "schema-drifted rows omitted from this report; see run logs)"
+      : `- Skipped artifacts: **0**`,
+  );
+  lines.push("");
+  lines.push("## Inventory");
+  lines.push("");
+  lines.push(mdTable(instances));
+
+  return lines.join("\n") + "\n";
+}
+
+// ---------------------------------------------------------------------------
 // Report export
 // ---------------------------------------------------------------------------
 
@@ -303,6 +424,17 @@ export interface ReportJson {
   workflow: string;
   /** ISO timestamp; `""` if the host clock was unavailable. */
   generatedAt: string;
+  /**
+   * Structured cluster rows, one object per cluster, mirroring the model's
+   * cluster row fields, in stable {@link compareClusters} sort order.
+   */
+  clusters: ClusterRecord[];
+  /**
+   * Structured instance rows, one object per instance, mirroring the model's
+   * instance row fields, in stable {@link compareInstances} sort order as the
+   * markdown table.
+   */
+  instances: InstanceRecord[];
   /** Number of cluster rows. */
   clusterCount: number;
   /** Number of instance rows. */
@@ -349,8 +481,7 @@ export const report = {
     try {
       generatedAt = new Date().toISOString();
       collected = await collect(context);
-      markdown = `# AWS RDS Inventory\n\n` +
-        `_Generated ${generatedAt} · workflow \`${workflowName}\`_\n`;
+      markdown = renderMarkdown(collected, generatedAt, workflowName);
     } catch (err) {
       degraded = true;
       const detail = err instanceof Error ? err.message : String(err);
@@ -358,12 +489,17 @@ export const report = {
       markdown = `# AWS RDS Inventory\n\n_Report degraded: ${detail}_\n`;
     }
 
+    const sortedClusters = [...collected.clusters].sort(compareClusters);
+    const sortedInstances = [...collected.instances].sort(compareInstances);
+
     const json: ReportJson = {
       report: "@jentz/aws-rds-inventory-report",
       workflow: workflowName,
       generatedAt,
-      clusterCount: collected.clusters.length,
-      instanceCount: collected.instances.length,
+      clusters: sortedClusters,
+      instances: sortedInstances,
+      clusterCount: sortedClusters.length,
+      instanceCount: sortedInstances.length,
       skipped: collected.skipped,
       degraded,
     };
