@@ -1,0 +1,46 @@
+manifestVersion: 1
+name: "@jentz/aws-rds-inventory-report"
+version: "2026.06.20.0"
+description: |
+  Workflow-scope report that renders an operator RDS inventory from the
+  `cluster` and `instance` rows produced earlier in the workflow by
+  `@jentz/aws-rds-inventory`. Pure data shaping — no AWS API access.
+
+  Emits a markdown body (summary with cluster/instance counts, engines, the
+  writer/reader split, and a multi-AZ count, plus the full inventory table)
+  and a JSON payload carrying structured `clusters[]` + `instances[]` rows,
+  the summary counts, the skipped-artifact count, and a `degraded` flag —
+  matching the markdown + JSON pattern of `@jentz/aws-vpc-inventory-report`.
+
+  No CSV is shipped; a downstream `jq` recipe in the README covers that case.
+
+  The report never throws: unparseable or schema-mismatched artifacts are
+  counted and skipped, and an unexpected failure degrades to a still-valid
+  report with the `degraded` flag set.
+repository: "https://github.com/jentz/swamp-extensions"
+homepage: "https://github.com/jentz/swamp-extensions/tree/main/aws-rds-inventory-report"
+paths:
+  base: manifest
+models: []
+workflows: []
+vaults: []
+drivers: []
+datastores: []
+reports:
+  - aws_rds_inventory_report.ts
+additionalFiles:
+  - README.md
+  - LICENSE.md
+platforms:
+  - linux-x86_64
+  - linux-aarch64
+  - darwin-x86_64
+  - darwin-aarch64
+labels:
+  - aws
+  - rds
+  - aurora
+  - inventory
+  - report
+  - cloud
+dependencies: []
