@@ -5,10 +5,6 @@ from the `cluster` and `instance` rows produced earlier in the workflow by
 [`@jentz/aws-rds-inventory`](../aws-rds-inventory). Pure data shaping — no AWS
 API access.
 
-> Note: this is the Phase 1 bootstrap README. The full overview, artifact-key
-> reference, and the downstream CSV-via-`jq` recipe are completed in a later
-> phase. The sections below already describe the intended shape.
-
 ## What it does
 
 The report walks the current workflow's step executions, decodes the `cluster`
