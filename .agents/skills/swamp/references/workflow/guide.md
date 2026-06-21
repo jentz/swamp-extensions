@@ -184,6 +184,49 @@ modifying, or removing a schedule takes effect without restart.
 - Use `--no-schedule` on `swamp serve` to disable scheduled execution
 - Health endpoint (`/health`) reports scheduled workflows and next fire times
 
+### Trigger inputs
+
+Scheduled runs have no `--input` flag, so add `trigger.inputs` to supply
+baseline input values at fire time:
+
+```yaml
+trigger:
+  schedule: "0 3 * * *"
+  inputs:
+    projectId: "a6b254a2-0b57-4d0f-bf8b-fef767ab119e"
+```
+
+These are merged just like `--input` on `swamp workflow run`, with precedence
+`caller inputs > trigger.inputs > schema defaults`. This lets a workflow keep
+`required` inputs instead of setting a schema `default` that would apply to
+every caller. `trigger.inputs` is a values map (the data to inject), not the
+`inputs` schema block. It applies to trigger-fired runs (scheduled and webhook);
+a manual `swamp workflow run` is unaffected.
+
+For webhook runs, `trigger.inputs` values may be CEL expressions that read the
+request payload through the `webhook` namespace, mapping payload fields onto
+named inputs:
+
+```yaml
+trigger:
+  inputs:
+    identifier: "${{ webhook.body.data.issue.identifier }}"
+    eventType: '${{ webhook.headers["x-linear-event"] }}'
+```
+
+`webhook.body` is the JSON-parsed body (raw string if not JSON),
+`webhook.headers` is a lowercased-name map (the active scheme's signature header
+excluded), and `webhook.route` is the matched route. Expressions resolve against
+the verified payload before input validation, so a payload field can satisfy a
+`required` input. swamp's CEL has no `??` — guard optional fields with
+`has(x) ? x : y`. See `design/workflow.md` for full semantics and the security
+caveat on headers.
+
+The signature scheme is set per endpoint on `swamp serve`'s `--webhook` flag:
+`<route>:<workflow>:<secret>[:<scheme>[:<header>[:<prefix>]]]`, where `scheme`
+is `github` (default), `linear`, `stripe`, `slack`, or `generic` (header +
+optional prefix). Omitting the scheme preserves the original behavior.
+
 ## Edit a Workflow
 
 **Recommended:** Use `swamp workflow get <name> --json` to get the file path,
