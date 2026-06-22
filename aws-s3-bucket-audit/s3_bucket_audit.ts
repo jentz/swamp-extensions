@@ -27,7 +27,7 @@
  * @module
  */
 
-import { z } from "npm:zod@4";
+import { z } from "npm:zod@4.4.3";
 
 /** Severity attached to a rule. `error` factors trip the gate at the default threshold. */
 export type Severity = "error" | "warn" | "info";

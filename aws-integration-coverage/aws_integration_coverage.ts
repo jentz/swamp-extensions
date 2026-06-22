@@ -28,7 +28,7 @@
  * @module
  */
 
-import { z } from "npm:zod@4";
+import { z } from "npm:zod@4.4.3";
 import {
   coalesce,
   type Collected,
@@ -231,7 +231,7 @@ export function parseAll<T>(
  */
 export const model = {
   type: "@jentz/aws-integration-coverage",
-  version: "2026.06.16.0",
+  version: "2026.06.22.0",
   globalArguments: GlobalArgsSchema,
   upgrades: [
     {
@@ -243,6 +243,11 @@ export const model = {
       toVersion: "2026.06.16.0",
       description:
         "Doc-lint release (explicit schema type annotations); no schema changes",
+      upgradeAttributes: (old: Record<string, unknown>) => old,
+    },
+    {
+      toVersion: "2026.06.22.0",
+      description: "Dependency refresh, no globalArguments schema changes",
       upgradeAttributes: (old: Record<string, unknown>) => old,
     },
   ],

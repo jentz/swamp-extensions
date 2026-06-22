@@ -18,7 +18,7 @@
  * @module
  */
 
-import { z } from "npm:zod@4";
+import { z } from "npm:zod@4.4.3";
 
 /**
  * The minimal validator surface the consumers of these schemas rely on. Used as

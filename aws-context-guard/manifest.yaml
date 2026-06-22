@@ -1,6 +1,6 @@
 manifestVersion: 1
 name: "@jentz/aws-context-guard"
-version: "2026.06.09.1"
+version: "2026.06.22.0"
 description: |
   Generic AWS workflow-safety primitive. Fails closed before any AWS work
   runs by verifying, in order:

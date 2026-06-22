@@ -14,11 +14,11 @@
  * @module
  */
 
-import { z } from "npm:zod@4";
+import { z } from "npm:zod@4.4.3";
 import {
   GetCallerIdentityCommand,
   STSClient,
-} from "npm:@aws-sdk/client-sts@3.1063.0";
+} from "npm:@aws-sdk/client-sts@3.1073.0";
 
 const GlobalArgsSchema = z.object({
   expectedAccountId: z.string().regex(/^\d{12}$/).describe(
@@ -77,7 +77,7 @@ export function safeDestroy(
  */
 export const model = {
   type: "@jentz/aws-context-guard",
-  version: "2026.06.09.1",
+  version: "2026.06.22.0",
   globalArguments: GlobalArgsSchema,
   // swamp model upgrades transform stored globalArguments, not the per-run
   // derived context resource. The guard's globalArguments shape

@@ -16,7 +16,7 @@
  */
 
 import { assertEquals, assertNotEquals } from "jsr:@std/assert@1";
-import { createModelTestContext } from "jsr:@systeminit/swamp-testing@0.20260525.18";
+import { createModelTestContext } from "jsr:@systeminit/swamp-testing@0.20260604.20";
 import {
   type AwsApi,
   type AwsNetworkInterface,
