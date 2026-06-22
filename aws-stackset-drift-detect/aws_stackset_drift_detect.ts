@@ -34,13 +34,13 @@
  * @module
  */
 
-import { z } from "npm:zod@4";
+import { z } from "npm:zod@4.4.3";
 import {
   CloudFormationClient,
   DescribeStackSetOperationCommand,
   DetectStackSetDriftCommand,
-} from "npm:@aws-sdk/client-cloudformation@3.1021.0";
-import { fromIni } from "npm:@aws-sdk/credential-providers@3.1021.0";
+} from "npm:@aws-sdk/client-cloudformation@3.1073.0";
+import { fromIni } from "npm:@aws-sdk/credential-providers@3.1073.0";
 
 /** Credential provider as returned by `fromIni`; `undefined` means the ambient chain. */
 type CredentialProvider = ReturnType<typeof fromIni>;
@@ -367,12 +367,17 @@ function apiFromGlobals(g: GlobalArgs, signal?: AbortSignal): DriftApi {
  */
 export const model = {
   type: "@jentz/aws-stackset-drift-detect",
-  version: "2026.06.13.0",
+  version: "2026.06.22.0",
   globalArguments: GlobalArgsSchema,
   upgrades: [
     {
       toVersion: "2026.06.13.0",
       description: "Initial publish",
+      upgradeAttributes: (old: Record<string, unknown>) => old,
+    },
+    {
+      toVersion: "2026.06.22.0",
+      description: "Dependency refresh, no globalArguments schema changes",
       upgradeAttributes: (old: Record<string, unknown>) => old,
     },
   ],

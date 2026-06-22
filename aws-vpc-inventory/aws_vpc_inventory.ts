@@ -31,17 +31,17 @@
  * @module
  */
 
-import { z } from "npm:zod@4";
+import { z } from "npm:zod@4.4.3";
 import {
   DescribeRegionsCommand,
   DescribeVpcsCommand,
   EC2Client,
-} from "npm:@aws-sdk/client-ec2@3.1021.0";
+} from "npm:@aws-sdk/client-ec2@3.1073.0";
 import {
   GetCallerIdentityCommand,
   STSClient,
-} from "npm:@aws-sdk/client-sts@3.1021.0";
-import { fromIni } from "npm:@aws-sdk/credential-providers@3.1021.0";
+} from "npm:@aws-sdk/client-sts@3.1073.0";
+import { fromIni } from "npm:@aws-sdk/credential-providers@3.1073.0";
 
 /** Credential provider as returned by `fromIni`; `undefined` means the ambient chain. */
 type CredentialProvider = ReturnType<typeof fromIni>;
@@ -630,7 +630,7 @@ export async function runScan(deps: ScanDeps): Promise<ScanResult> {
  */
 export const model = {
   type: "@jentz/aws-vpc-inventory",
-  version: "2026.06.13.0",
+  version: "2026.06.22.0",
   globalArguments: GlobalArgsSchema,
   // First published release. The single no-op upgrade advances the stored
   // typeVersion on existing instances so any future schema-changing upgrade
@@ -641,6 +641,11 @@ export const model = {
     {
       toVersion: "2026.06.13.0",
       description: "Initial publish",
+      upgradeAttributes: (old: Record<string, unknown>) => old,
+    },
+    {
+      toVersion: "2026.06.22.0",
+      description: "Dependency refresh, no globalArguments schema changes",
       upgradeAttributes: (old: Record<string, unknown>) => old,
     },
   ],

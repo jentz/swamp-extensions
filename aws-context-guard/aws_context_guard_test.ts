@@ -6,7 +6,7 @@
  */
 
 import { assertEquals, assertExists, assertRejects } from "jsr:@std/assert@1";
-import { STSClient } from "npm:@aws-sdk/client-sts@3.1063.0";
+import { STSClient } from "npm:@aws-sdk/client-sts@3.1073.0";
 import { model, safeDestroy } from "./aws_context_guard.ts";
 
 // ---------------------------------------------------------------------------

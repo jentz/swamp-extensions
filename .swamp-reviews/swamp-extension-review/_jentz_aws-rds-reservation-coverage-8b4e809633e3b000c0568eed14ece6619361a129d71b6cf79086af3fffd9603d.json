@@ -1,0 +1,47 @@
+{
+  "extension": "@jentz/aws-rds-reservation-coverage",
+  "version": "2026.06.22.0",
+  "reviewedAt": "2026-06-22T15:51:41Z",
+  "dimensions": [
+    {
+      "id": "credentials-secrets",
+      "verdict": "pass",
+      "note": "No new credential paths; AWS models continue to rely on environment/profile credential resolution, and report-only extensions introduce no secrets."
+    },
+    {
+      "id": "logging-quality",
+      "verdict": "pass",
+      "note": "No logging calls changed; dependency/version refresh does not add sensitive or interpolated log output."
+    },
+    {
+      "id": "error-handling",
+      "verdict": "pass",
+      "note": "No control-flow or catch/throw behavior changed; SDK/package upgrade preserves existing error paths for current call sites."
+    },
+    {
+      "id": "testing-completeness",
+      "verdict": "pass",
+      "note": "Pinned dependency refresh is covered by existing typecheck, unit, smoke, quality, and dry-run gates in deno task check."
+    },
+    {
+      "id": "idempotency-resilience",
+      "verdict": "na",
+      "note": "Report-only extension; it renders collected workflow data and does not create/update/delete external resources."
+    },
+    {
+      "id": "api-contracts",
+      "verdict": "na",
+      "note": "No direct external API client in this extension; it consumes swamp data/artifacts only."
+    },
+    {
+      "id": "resource-management",
+      "verdict": "pass",
+      "note": "No new files, handles, network clients, or cleanup paths introduced by the import-version refresh."
+    },
+    {
+      "id": "published-surface-hygiene",
+      "verdict": "pass",
+      "note": "Manifest version and exported model/report version are aligned at 2026.06.22.0 where applicable; no additional files added to package surface."
+    }
+  ]
+}

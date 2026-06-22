@@ -30,17 +30,17 @@
  * @module
  */
 
-import { z } from "npm:zod@4";
+import { z } from "npm:zod@4.4.3";
 import {
   DescribeDBInstancesCommand,
   DescribeReservedDBInstancesCommand,
   RDSClient,
-} from "npm:@aws-sdk/client-rds@3.1063.0";
+} from "npm:@aws-sdk/client-rds@3.1073.0";
 import {
   GetCallerIdentityCommand,
   STSClient,
-} from "npm:@aws-sdk/client-sts@3.1063.0";
-import { fromIni } from "npm:@aws-sdk/credential-providers@3.1063.0";
+} from "npm:@aws-sdk/client-sts@3.1073.0";
+import { fromIni } from "npm:@aws-sdk/credential-providers@3.1073.0";
 import { type RetryDeps, withRetry } from "./_lib/retry.ts";
 
 // Re-exported so the public `paginate` signature does not leak private types
@@ -1317,7 +1317,7 @@ export async function runSweep(deps: SweepDeps): Promise<SweepResult> {
  */
 export const model = {
   type: "@jentz/aws-rds-reservations",
-  version: "2026.06.08.1",
+  version: "2026.06.22.0",
   globalArguments: GlobalArgsSchema,
   // First publish. swamp model upgrades transform stored globalArguments, not
   // historical resource artifacts, so there is nothing to migrate here: the
@@ -1340,6 +1340,11 @@ export const model = {
     {
       toVersion: "2026.06.08.1",
       description: "Version bump, no globalArguments schema changes",
+      upgradeAttributes: (old: Record<string, unknown>) => old,
+    },
+    {
+      toVersion: "2026.06.22.0",
+      description: "Dependency refresh, no globalArguments schema changes",
       upgradeAttributes: (old: Record<string, unknown>) => old,
     },
   ] as Array<{
