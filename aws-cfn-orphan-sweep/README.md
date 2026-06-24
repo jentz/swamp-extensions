@@ -20,7 +20,7 @@ model instance accumulates the whole fleet, queryable with CEL.
 
 ## What it does
 
-Two methods:
+Three methods:
 
 ### `enumerate` (read-only)
 
@@ -35,6 +35,37 @@ In one locked, fan-out execution:
 It writes one **`orphan`** resource per matching stack plus one per-account
 **`summary`**. Only `List*` is ever called, so it is safe under a `*-readonly`
 profile.
+
+### `enumerateOrg` (read-only, cross-account)
+
+The recommended first action for an org-wide inventory. Run it **once** from the
+management account. It:
+
+1. Discovers the org's ACTIVE member accounts via Organizations `ListAccounts`
+   (paginated, `ACTIVE`-only).
+2. For each account, builds a per-account credential set and reuses the same
+   `enumerate` logic to sweep it. The **management account uses the ambient (or
+   `profile`) credentials directly — it is never self-assumed**; every other
+   member is reached by assuming the uniformly-named `assumeRoleName` role
+   (default `AWSControlTowerExecution`) into it.
+3. Writes the same per-account `orphan` / `summary` rows (keyed by account) plus
+   one **`org-summary`** rollup.
+
+It is read-only — `enumerate`'s `List*` permissions plus
+`organizations:ListAccounts` and `sts:AssumeRole` into the member role.
+
+Failure handling is **skip, don't abort**: if assuming into a member account or
+sweeping it fails, that account is recorded in `org-summary.failures` and the
+run continues with the rest. Only a failure to discover the org itself
+(`GetCallerIdentity` or `ListAccounts`) is fatal — you cannot iterate an org you
+cannot enumerate.
+
+The `onlyAccount` argument restricts the sweep to a single member account (a
+canary); `accountsDiscovered` still reports the full ACTIVE org count even when
+narrowed.
+
+> Accounts are swept **sequentially** today. Bounded concurrency is a future
+> optimization.
 
 ### `cleanup` (mutating; dry-run unless `apply=true`)
 
@@ -93,6 +124,25 @@ One row per delete attempt or dry-run plan, keyed
 - `roleChecked`, `roleGone`, `iamRolePhysicalName`
 - `error`, `startedAt`, `finishedAt`
 
+### `org-summary` resource
+
+One cross-account rollup written by `enumerateOrg`, keyed
+`org-summary-${managementAccount}`:
+
+- `managementAccount` — the account the run was driven from
+- `assumeRoleName` — the role assumed into each member account
+- `accountsDiscovered` — ACTIVE accounts found in the org (full count, even when
+  `onlyAccount` narrows the run)
+- `accountsProcessed` — accounts actually swept
+- `accountsFailed` — accounts whose assume/sweep failed and were skipped
+- `failures` — `[{ account, name, error }]` for each skipped account
+- `totalOrphans` — orphan stacks found across every processed account
+- `regionsScanned`, `mode` (`"enumerate"`), `applied` (`false`)
+- `scannedAt` — ISO-8601 timestamp
+
+The schema is a passthrough, so a future cleanup phase can add counters without
+a breaking change.
+
 ## Global arguments
 
 | Argument     | Type                            | Default                              | Meaning                                                                                              |
@@ -100,6 +150,13 @@ One row per delete attempt or dry-run plan, keyed
 | `namePrefix` | `string` (required, non-empty)  | `StackSet-IAMCustomPasswordPolicy-`  | Only stacks whose name starts with this prefix are enumerated or ever considered for deletion.       |
 | `regions`    | `string[]` (required, non-empty) | `us-east-1`, `eu-west-1`, `eu-central-1`, `eu-north-1` | Regions to fan out across in one execution.                                                          |
 | `profile`    | `string`                        | `""` (ambient)                       | Named AWS profile (resolved via `fromIni`). Empty uses the ambient credential chain (`AWS_*` env).   |
+| `assumeRoleName` | `string` (required, non-empty) | `AWSControlTowerExecution`        | Role name `enumerateOrg` assumes into each member account (must exist with this name in every member). Unused by the single-account methods. |
+
+The `enumerateOrg` method takes one argument:
+
+| Argument      | Type     | Default | Meaning                                                                                              |
+| ------------- | -------- | ------- | ---------------------------------------------------------------------------------------------------- |
+| `onlyAccount` | `string` | `""`    | If set, restrict the sweep to this one member account (canary). `accountsDiscovered` still reflects the full ACTIVE org count. |
 
 The `cleanup` method takes these arguments:
 
@@ -133,6 +190,28 @@ swamp model method run org-orphan-sweep enumerate
 swamp model get org-orphan-sweep --json
 ```
 
+For an org-wide inventory, run `enumerateOrg` once from the management account
+instead. Set `profile` to the management account's read-only creds and
+`assumeRoleName` to a role that exists in every member account:
+
+```sh
+swamp model create org-orphan-sweep \
+  --type @jentz/aws-cfn-orphan-sweep \
+  --global-args '{
+    "namePrefix": "StackSet-IAMCustomPasswordPolicy-",
+    "regions": ["us-east-1", "eu-west-1"],
+    "profile": "management-readonly",
+    "assumeRoleName": "AWSControlTowerExecution"
+  }'
+
+# Sweep the whole org (sequential per account):
+swamp model method run org-orphan-sweep enumerateOrg
+
+# Canary one member account first:
+swamp model method run org-orphan-sweep enumerateOrg \
+  --args '{ "onlyAccount": "222222222222" }'
+```
+
 Then preview a cleanup (dry-run, the default) before applying it from a profile
 that can mutate:
 
@@ -152,6 +231,15 @@ swamp model method run org-orphan-sweep cleanup \
 - `cloudformation:ListStacks`
 - `cloudformation:ListStackResources`
 - `sts:GetCallerIdentity`
+
+`enumerateOrg` is also read-only. The management-account profile adds, on top of
+the `enumerate` permissions:
+
+- `organizations:ListAccounts`
+- `sts:AssumeRole` into `assumeRoleName` in each member account
+
+and the assumed role in each member account needs the `enumerate` read-only
+permissions above.
 
 `cleanup` mutates, so run it from a `*-devops` (admin) profile that adds:
 
@@ -195,13 +283,18 @@ a row from a downstream model or report via CEL:
 data.latest("<sweep-name>", "summary-<account>").attributes.orphanCount
 data.latest("<sweep-name>", "orphan-<account>-<region>-<stack>").attributes.iamRolePhysicalName
 data.latest("<sweep-name>", "deletion-<account>-<region>-<stack>").attributes.roleGone
+data.latest("<sweep-name>", "org-summary-<management-account>").attributes.totalOrphans
 ```
 
 ## Out of scope
 
-- Multi-account fan-out — the model is account-scoped; run it once per account
-  (compose accounts in a workflow).
+- Cross-account **cleanup** — `enumerateOrg` is read-only inventory only; the
+  mutating `cleanup` stays account-scoped (run it once per account, or compose
+  accounts in a workflow).
+- Bounded-concurrency org sweeps — `enumerateOrg` iterates accounts sequentially
+  today; parallelism is a future optimization.
 - Removing stacks outside the configured `namePrefix` — the guard refuses them.
 - Retaining anything but the detected custom resource — the IAM role and Lambda
   are always deleted.
-- Any analysis beyond the documented `orphan` / `summary` / `deletion` rows.
+- Any analysis beyond the documented `orphan` / `summary` / `deletion` /
+  `org-summary` rows.

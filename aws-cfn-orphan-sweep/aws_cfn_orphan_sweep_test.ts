@@ -22,8 +22,12 @@ Deno.test("model metadata: type and version are the published values", () => {
 Deno.test("model metadata: resource and method surface is stable", () => {
   assertEquals(
     Object.keys(model.resources).sort(),
-    ["deletion", "orphan", "summary"],
+    ["deletion", "org-summary", "orphan", "summary"],
   );
-  // enumerate is read-only; cleanup is the mutating (dry-run by default) method.
-  assertEquals(Object.keys(model.methods).sort(), ["cleanup", "enumerate"]);
+  // enumerate / enumerateOrg are read-only; cleanup is the mutating (dry-run by
+  // default) method.
+  assertEquals(
+    Object.keys(model.methods).sort(),
+    ["cleanup", "enumerate", "enumerateOrg"],
+  );
 });
