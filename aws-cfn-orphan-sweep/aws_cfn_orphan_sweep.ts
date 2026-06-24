@@ -197,7 +197,11 @@ const DeletionSchema = z.object({
   region: z.string(),
   stackName: z.string(),
   stackId: z.string(),
-  /** "would-delete" (dry-run) | "delete-retain" | "skip" | "error". */
+  /**
+   * Planned or performed action. Dry-run: "skip" | "would-initiate-delete" |
+   * "would-retain-delete" | "would-wait". Apply: "delete-initiated" |
+   * "delete-in-progress" | "delete-retain" | "already-gone" | "skip" | "error".
+   */
   action: z.string(),
   retainedResources: z.array(z.string()),
   finalStatus: z.string(),
