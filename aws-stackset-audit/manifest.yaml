@@ -1,6 +1,6 @@
 manifestVersion: 1
 name: "@jentz/aws-stackset-audit"
-version: "2026.06.22.0"
+version: "2026.06.23.1"
 description: |
   Read-only operational audit of a CloudFormation StackSet and all of its stack
   instances across accounts and regions. A single `audit` method fans out in one

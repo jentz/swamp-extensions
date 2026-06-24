@@ -301,6 +301,100 @@ Deno.test("smoke: recentOperations limit caps the captured operations", async ()
   assertEquals((summary.operations as unknown[]).length, 2);
 });
 
+Deno.test("smoke: stackPresenceHint lands on rows and rolls up on the summary", async () => {
+  // Reconstructs the motivating real dismantle outcome: a single reachable
+  // survivor, a handful of suspended-but-present accounts, and a long tail of
+  // rolled-back create-failures whose stackId still lingers (phantom orphans).
+  const { context, written } = makeContext();
+
+  const padAccount = (n: number) => String(n).padStart(12, "0");
+  let next = 1;
+  const acct = () => padAccount(next++);
+  const sid = (a: string) =>
+    `arn:aws:cloudformation:us-east-1:${a}:stack/Demo/${a}`;
+
+  const instances: AwsStackInstanceSummary[] = [];
+
+  // 1 actionable: SUCCEEDED with a stackId → present.
+  {
+    const a = acct();
+    instances.push({
+      Account: a,
+      Region: "us-east-1",
+      StackId: sid(a),
+      Status: "CURRENT",
+      StackInstanceStatus: { DetailedStatus: "SUCCEEDED" },
+      DriftStatus: "IN_SYNC",
+    });
+  }
+
+  // 5 inaccessible: SKIPPED_SUSPENDED_ACCOUNT with a stackId → present.
+  for (let i = 0; i < 5; i++) {
+    const a = acct();
+    instances.push({
+      Account: a,
+      Region: "us-east-1",
+      StackId: sid(a),
+      Status: "INOPERABLE",
+      StackInstanceStatus: { DetailedStatus: "SKIPPED_SUSPENDED_ACCOUNT" },
+      DriftStatus: "UNKNOWN",
+    });
+  }
+
+  // 211 phantom orphans: FAILED create rolled back but stackId lingers →
+  // likely-absent.
+  for (let i = 0; i < 211; i++) {
+    const a = acct();
+    instances.push({
+      Account: a,
+      Region: "us-east-1",
+      StackId: sid(a),
+      Status: "OUTDATED",
+      StatusReason: "template validation error",
+      StackInstanceStatus: { DetailedStatus: "FAILED" },
+      DriftStatus: "NOT_CHECKED",
+    });
+  }
+
+  await runAudit({
+    api: fakeApi({
+      stackSet: { StackSetName: "Dismantle", Status: "ACTIVE" },
+      instances,
+      operations: [],
+    }),
+    stackSetName: "Dismantle",
+    recentOperations: 15,
+    context,
+  });
+
+  const summary = written.find((w) => w.spec === "summary")!.data;
+
+  // Rollups land on the summary row with the exact motivating counts.
+  const byHint = summary.byStackPresenceHint as Record<string, number>;
+  assertEquals(byHint["likely-absent"], 211);
+  assertEquals(byHint["present"], 6);
+  const orphanCandidates = summary.orphanCandidates as {
+    actionable: number;
+    inaccessible: number;
+  };
+  assertEquals(orphanCandidates.actionable, 1);
+  assertEquals(orphanCandidates.inaccessible, 5);
+
+  // The hint lands on the individual instance rows.
+  const rows = written.filter((w) => w.spec === "instance");
+  assertEquals(rows.length, 217);
+  const succeeded = rows.find(
+    (w) => w.data.detailedStatus === "SUCCEEDED",
+  )!;
+  assertEquals(succeeded.data.stackPresenceHint, "present");
+  const suspended = rows.find(
+    (w) => w.data.detailedStatus === "SKIPPED_SUSPENDED_ACCOUNT",
+  )!;
+  assertEquals(suspended.data.stackPresenceHint, "present");
+  const failed = rows.find((w) => w.data.detailedStatus === "FAILED")!;
+  assertEquals(failed.data.stackPresenceHint, "likely-absent");
+});
+
 Deno.test("smoke: every test finishes well under the network budget", () => {
   // Sentinel — the smoke tests above all complete in single-digit
   // milliseconds. Anything touching the network would blow past that and

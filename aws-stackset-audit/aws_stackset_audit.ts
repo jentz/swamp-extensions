@@ -143,6 +143,25 @@ const SummarySchema = z.object({
   byRegion: z.record(z.string(), z.number()),
   byDriftStatus: z.record(z.string(), z.number()),
   byFailureCategory: z.record(z.string(), z.number()),
+  byStackPresenceHint: z.record(z.string(), z.number()).default({}).describe(
+    "Instance counts grouped by the per-instance stackPresenceHint " +
+      "(present / likely-absent / unknown). NON-AUTHORITATIVE: the hint is a " +
+      "heuristic derived only from (detailedStatus, stackId); confirm with a " +
+      "live `@jentz/aws-cfn-orphan-sweep` `enumerate` (run against an " +
+      "org-scoped model for org-wide coverage) before acting on these counts.",
+  ),
+  orphanCandidates: z.object({
+    actionable: z.number(),
+    inaccessible: z.number(),
+  }).default({ actionable: 0, inaccessible: 0 }).describe(
+    "Heuristic split of instances whose stack is hinted 'present': " +
+      "`actionable` = SUCCEEDED (likely a real, reachable stack you can act " +
+      "on); `inaccessible` = SKIPPED_SUSPENDED_ACCOUNT (the stack likely " +
+      "exists but the account is suspended, so you cannot reach it). " +
+      "NON-AUTHORITATIVE: both derive from the stackPresenceHint heuristic — " +
+      "confirm with a live `@jentz/aws-cfn-orphan-sweep` `enumerate` (run " +
+      "against an org-scoped model for org-wide coverage) before acting.",
+  ),
   operations: z.array(OperationSchema),
   rootCauses: z.array(RootCauseSchema),
   detectedPatterns: z.array(PatternSchema),
@@ -162,6 +181,17 @@ const InstanceRecordSchema = z.object({
   stackId: z.string(),
   organizationalUnitId: z.string(),
   failureCategory: z.string(),
+  stackPresenceHint: z.enum(["present", "likely-absent", "unknown"])
+    .default("unknown").describe(
+      "Non-authoritative HEURISTIC derived ONLY from (detailedStatus, " +
+        "stackId) — it makes NO live cross-account call. It guesses whether " +
+        "a member stack still exists: a create-failure (FAILED / " +
+        "FAILED_IMPORT / INOPERABLE) typically rolls the stack back, so a " +
+        "lingering stackId is likely a phantom ('likely-absent'); SUCCEEDED " +
+        "or a skipped-suspended account is 'present'. Confirm with a live " +
+        "`@jentz/aws-cfn-orphan-sweep` `enumerate` (run against an org-scoped " +
+        "model for org-wide coverage) before acting. See classifyStackPresence.",
+    ),
   auditedAt: z.iso.datetime(),
 });
 
@@ -197,6 +227,18 @@ export interface InstanceRecord {
   organizationalUnitId: string;
   /** Normalized failure classification (see {@link classifyFailure}). */
   failureCategory: string;
+  /**
+   * Non-authoritative HEURISTIC for whether this member stack still exists,
+   * derived ONLY from `(detailedStatus, stackId)` — it makes no live
+   * cross-account call. A create-failure (`FAILED` / `FAILED_IMPORT` /
+   * `INOPERABLE`) usually rolls the stack back, so a lingering `stackId` is
+   * likely a phantom (`likely-absent`); `SUCCEEDED` and
+   * `SKIPPED_SUSPENDED_ACCOUNT` are `present`. NOT authoritative — confirm
+   * with a live `@jentz/aws-cfn-orphan-sweep` `enumerate` (run against an
+   * org-scoped model for org-wide coverage) before acting on it. See
+   * {@link classifyStackPresence}.
+   */
+  stackPresenceHint: "present" | "likely-absent" | "unknown";
   /** ISO 8601 audit timestamp. */
   auditedAt: string;
 }
@@ -326,6 +368,39 @@ export function classifyFailure(
     return "in-progress";
   }
   return "other";
+}
+
+/**
+ * Non-authoritative HEURISTIC for whether a member stack still exists, derived
+ * ONLY from `(detailedStatus, stackId)` — it makes NO live cross-account call.
+ *
+ * It exists so an operator can tell a phantom orphan (a dead `stackId`
+ * lingering after a rolled-back create) from a real survivor without a live
+ * cross-account check. A create-failure (`FAILED` / `FAILED_IMPORT` /
+ * `INOPERABLE`) typically rolls the stack back, so a still-populated `stackId`
+ * is likely a phantom and reads `likely-absent`; `SUCCEEDED` and
+ * `SKIPPED_SUSPENDED_ACCOUNT` (exists but inaccessible) read `present`; an
+ * empty `stackId` reads `likely-absent`; anything else (e.g. `CANCELLED` with
+ * a stackId) is `unknown`.
+ *
+ * This is a guess, not ground truth — always confirm with a live
+ * `@jentz/aws-cfn-orphan-sweep` `enumerate` (run against an org-scoped model
+ * for org-wide coverage) before acting. Evaluated in order, first match wins.
+ */
+export function classifyStackPresence(
+  detailedStatus: string,
+  stackId: string,
+): "present" | "likely-absent" | "unknown" {
+  if (stackId === "") return "likely-absent";
+  if (detailedStatus === "SUCCEEDED") return "present";
+  if (detailedStatus === "SKIPPED_SUSPENDED_ACCOUNT") return "present";
+  if (
+    (detailedStatus === "FAILED" || detailedStatus === "FAILED_IMPORT" ||
+      detailedStatus === "INOPERABLE") && stackId !== ""
+  ) {
+    return "likely-absent";
+  }
+  return "unknown";
 }
 
 /** Tally a list of records by a string key into a `{value: count}` map. */
@@ -763,6 +838,10 @@ export async function runAudit(deps: AuditDeps): Promise<AuditResult> {
       stackId: s.StackId ?? "",
       organizationalUnitId: s.OrganizationalUnitId ?? "",
       failureCategory: classifyFailure(detailedStatus, statusReason),
+      stackPresenceHint: classifyStackPresence(
+        detailedStatus,
+        s.StackId ?? "",
+      ),
       auditedAt,
     };
   });
@@ -798,6 +877,21 @@ export async function runAudit(deps: AuditDeps): Promise<AuditResult> {
   const byRegion = countBy(instances, (i) => i.region || "UNKNOWN");
   const byDriftStatus = countBy(instances, (i) => i.driftStatus || "UNKNOWN");
   const byFailureCategory = countBy(instances, (i) => i.failureCategory);
+  const byStackPresenceHint = countBy(instances, (i) => i.stackPresenceHint);
+  // Heuristic split of the "present"-hinted instances. NON-AUTHORITATIVE:
+  // confirm with a live aws-cfn-orphan-sweep enumerate (run against an
+  // org-scoped model for org-wide coverage).
+  const orphanCandidates = {
+    actionable: instances.filter(
+      (i) =>
+        i.stackPresenceHint === "present" && i.detailedStatus === "SUCCEEDED",
+    ).length,
+    inaccessible: instances.filter(
+      (i) =>
+        i.stackPresenceHint === "present" &&
+        i.detailedStatus === "SKIPPED_SUSPENDED_ACCOUNT",
+    ).length,
+  };
   const rootCauses = buildRootCauses(instances);
   const detectedPatterns = detectPatterns(instances, drift);
   const safeToReapply = deriveSafeToReapply({
@@ -835,6 +929,8 @@ export async function runAudit(deps: AuditDeps): Promise<AuditResult> {
     byRegion,
     byDriftStatus,
     byFailureCategory,
+    byStackPresenceHint,
+    orphanCandidates,
     operations,
     rootCauses,
     detectedPatterns,
@@ -894,7 +990,7 @@ function apiFromGlobals(g: GlobalArgs, signal?: AbortSignal): StackSetApi {
  */
 export const model = {
   type: "@jentz/aws-stackset-audit",
-  version: "2026.06.22.0",
+  version: "2026.06.23.1",
   globalArguments: GlobalArgsSchema,
   upgrades: [
     {
@@ -905,6 +1001,15 @@ export const model = {
     {
       toVersion: "2026.06.22.0",
       description: "Dependency refresh, no globalArguments schema changes",
+      upgradeAttributes: (old: Record<string, unknown>) => old,
+    },
+    {
+      toVersion: "2026.06.23.1",
+      description:
+        "Add the purely-derived stackPresenceHint heuristic on each " +
+        "instance plus byStackPresenceHint / orphanCandidates rollups on the " +
+        "summary. Purely additive; the new schema fields default for old " +
+        "persisted resources, so the pass-through upgrade still loads them.",
       upgradeAttributes: (old: Record<string, unknown>) => old,
     },
   ],
