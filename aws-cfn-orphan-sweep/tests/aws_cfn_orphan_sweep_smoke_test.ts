@@ -344,6 +344,101 @@ Deno.test("smoke: cleanup dry-run scopes to a single region via onlyRegion", asy
   assertEquals(deletions[0].key, `deletion-${ACCOUNT}-eu-west-1-${matchB}`);
 });
 
+Deno.test("smoke: cleanup dry-run skips a DELETE_FAILED stack when retainLogicalId is not a custom resource", async () => {
+  const { context, written } = makeContext();
+
+  const matchB = `${PREFIX}bbbb`;
+  // A bad override: LambdaRole is the IAM role, not a custom resource, so
+  // computeRetain refuses. processStack pass 2 would refuse on the same input.
+  const badOverride = "LambdaRole";
+
+  const result = await runCleanup({
+    api: fakeApi({
+      account: ACCOUNT,
+      stacksByRegion: {
+        "eu-west-1": [{
+          StackName: matchB,
+          StackId: "arn:stack/b",
+          StackStatus: "DELETE_FAILED",
+        }],
+      },
+      resourcesByStack: { [matchB]: orphanResources("b") },
+    }),
+    globals: {
+      namePrefix: PREFIX,
+      regions: ["eu-west-1"],
+      profile: "",
+    },
+    args: cleanupArgs({ retainLogicalId: badOverride }),
+    context,
+  });
+
+  const deletions = written.filter((w) => w.spec === "deletion");
+  assertEquals(deletions.length, 1);
+
+  // The dry-run row faithfully reports the refusal apply would hit at pass 2:
+  // a "skip" action carrying the computeRetain reason and retaining nothing.
+  const planB = deletions[0].data;
+  assertEquals(planB.action, "skip");
+  assertEquals(planB.retainedResources, []);
+  const reason = String(planB.error);
+  assert(reason.length > 0, "expected a non-empty refusal reason");
+  assert(
+    reason.includes(badOverride) && reason.includes("is not a custom resource"),
+    `unexpected refusal reason: ${reason}`,
+  );
+
+  // The skip is counted in the returned result.
+  assertEquals(result.skipped, 1);
+  assertEquals(result.considered, 1);
+  assertEquals(result.deleted, 0);
+  assertEquals(result.initiated, 0);
+  assertEquals(result.errors, 0);
+});
+
+Deno.test("smoke: cleanup dry-run does NOT over-skip a healthy stack with a bad retainLogicalId", async () => {
+  const { context, written } = makeContext();
+
+  const matchA = `${PREFIX}aaaa`;
+  // Same bad override, but the stack is healthy — apply would plain-delete and
+  // ignore retainLogicalId entirely, so the honest plan is still
+  // "would-initiate-delete" with no error. The fix must not over-correct here.
+  const badOverride = "LambdaRole";
+
+  const result = await runCleanup({
+    api: fakeApi({
+      account: ACCOUNT,
+      stacksByRegion: {
+        "us-east-1": [{
+          StackName: matchA,
+          StackId: "arn:stack/a",
+          StackStatus: "CREATE_COMPLETE",
+        }],
+      },
+      resourcesByStack: { [matchA]: orphanResources("a") },
+    }),
+    globals: {
+      namePrefix: PREFIX,
+      regions: ["us-east-1"],
+      profile: "",
+    },
+    args: cleanupArgs({ retainLogicalId: badOverride }),
+    context,
+  });
+
+  const deletions = written.filter((w) => w.spec === "deletion");
+  assertEquals(deletions.length, 1);
+
+  const planA = deletions[0].data;
+  assertEquals(planA.action, "would-initiate-delete");
+  assertEquals(planA.error, "");
+  assertEquals(planA.retainedResources, []);
+
+  // Nothing was skipped: apply ignores the override on a healthy stack.
+  assertEquals(result.skipped, 0);
+  assertEquals(result.considered, 1);
+});
+
 Deno.test("smoke: cleanup honors expectAccount guard", async () => {
   const { context } = makeContext();
 

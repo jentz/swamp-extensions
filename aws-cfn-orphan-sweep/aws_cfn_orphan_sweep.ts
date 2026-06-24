@@ -847,7 +847,32 @@ export async function runCleanup(deps: CleanupDeps): Promise<CleanupResult> {
         : (o.stackStatus.startsWith("DELETE_IN_PROGRESS")
           ? "would-wait"
           : "would-initiate-delete");
-      const { retain } = computeRetain(o.resources, args.retainLogicalId);
+      const { retain, reason } = computeRetain(
+        o.resources,
+        args.retainLogicalId,
+      );
+      // Fidelity: only the DELETE_FAILED path passes retainLogicalId to apply
+      // (pass 2 of processStack). A healthy stack plain-deletes and ignores the
+      // override, and a DELETE_IN_PROGRESS stack just waits — so a bad override
+      // only changes apply behavior for the failed case. When apply would refuse
+      // there (non-empty reason), the dry-run row must say "skip", not a
+      // "would-*" action, mirroring the prefix-refusal handling above.
+      if (isFailed && reason.length > 0) {
+        skipped++;
+        handles.push(
+          await writeDeletion(context, o, {
+            action: "skip",
+            retainedResources: [],
+            finalStatus: o.stackStatus,
+            gone: false,
+            roleChecked: false,
+            roleGone: false,
+            error: reason,
+            startedAt,
+          }),
+        );
+        continue;
+      }
       handles.push(
         await writeDeletion(context, o, {
           action: planned,
