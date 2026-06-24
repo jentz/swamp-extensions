@@ -13,6 +13,7 @@ import { assertEquals } from "jsr:@std/assert@1";
 import {
   buildRootCauses,
   classifyFailure,
+  classifyStackPresence,
   countBy,
   deriveSafeToReapply,
   detectPatterns,
@@ -39,6 +40,7 @@ function inst(over: Partial<InstanceRecord>): InstanceRecord {
     stackId: "",
     organizationalUnitId: "",
     failureCategory: "none",
+    stackPresenceHint: "unknown",
     auditedAt: "2026-06-13T00:00:00.000Z",
     ...over,
   };
@@ -140,6 +142,56 @@ Deno.test("classifyFailure: in-progress states", () => {
 
 Deno.test("classifyFailure: unknown status is 'other'", () => {
   assertEquals(classifyFailure("WEIRD_STATUS", ""), "other");
+});
+
+// ---------------------------------------------------------------------------
+// classifyStackPresence — full (detailedStatus, stackId) truth table
+// ---------------------------------------------------------------------------
+
+const SID = "arn:aws:cloudformation:us-east-1:111111111111:stack/s/abc";
+
+Deno.test("classifyStackPresence: rule 1 — empty stackId is likely-absent (wins over SUCCEEDED)", () => {
+  // Rule 1 fires before the SUCCEEDED check, so a success with no stackId is
+  // still likely-absent.
+  assertEquals(classifyStackPresence("SUCCEEDED", ""), "likely-absent");
+  assertEquals(classifyStackPresence("FAILED", ""), "likely-absent");
+  assertEquals(classifyStackPresence("CANCELLED", ""), "likely-absent");
+  assertEquals(
+    classifyStackPresence("SKIPPED_SUSPENDED_ACCOUNT", ""),
+    "likely-absent",
+  );
+  assertEquals(classifyStackPresence("", ""), "likely-absent");
+});
+
+Deno.test("classifyStackPresence: rule 2 — SUCCEEDED with a stackId is present", () => {
+  assertEquals(classifyStackPresence("SUCCEEDED", SID), "present");
+});
+
+Deno.test("classifyStackPresence: rule 3 — suspended account is present (exists but inaccessible)", () => {
+  assertEquals(
+    classifyStackPresence("SKIPPED_SUSPENDED_ACCOUNT", SID),
+    "present",
+  );
+});
+
+Deno.test("classifyStackPresence: rule 4 — create-failure with a stackId is likely-absent (rolled back)", () => {
+  assertEquals(classifyStackPresence("FAILED", SID), "likely-absent");
+  assertEquals(classifyStackPresence("FAILED_IMPORT", SID), "likely-absent");
+  assertEquals(classifyStackPresence("INOPERABLE", SID), "likely-absent");
+});
+
+Deno.test("classifyStackPresence: rule 5 — CANCELLED with a stackId is unknown", () => {
+  assertEquals(classifyStackPresence("CANCELLED", SID), "unknown");
+});
+
+Deno.test("classifyStackPresence: rule 5 — in-progress states with a stackId are unknown", () => {
+  assertEquals(classifyStackPresence("PENDING", SID), "unknown");
+  assertEquals(classifyStackPresence("RUNNING", SID), "unknown");
+  assertEquals(classifyStackPresence("QUEUED", SID), "unknown");
+});
+
+Deno.test("classifyStackPresence: rule 5 — unrecognized status with a stackId is unknown", () => {
+  assertEquals(classifyStackPresence("WEIRD_STATUS", SID), "unknown");
 });
 
 // ---------------------------------------------------------------------------
