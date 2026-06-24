@@ -1476,8 +1476,12 @@ function orgApiFromGlobals(g: GlobalArgs, signal?: AbortSignal): OrgApi {
           opts,
         );
         for (const a of resp.Accounts ?? []) {
-          if (a.Status !== "ACTIVE") continue;
-          out.push({ id: a.Id ?? "", name: a.Name ?? "" });
+          // Skip non-ACTIVE accounts and any account missing an id: an empty
+          // id would build an invalid role ARN and malformed row keys. AWS
+          // always returns an id for an account, but the SDK type allows
+          // undefined, so guard it.
+          if (a.Status !== "ACTIVE" || !a.Id) continue;
+          out.push({ id: a.Id, name: a.Name ?? "" });
         }
         token = resp.NextToken;
       } while (token);
@@ -1492,6 +1496,10 @@ function orgApiFromGlobals(g: GlobalArgs, signal?: AbortSignal): OrgApi {
             RoleArn: `arn:aws:iam::${accountId}:role/${g.assumeRoleName}`,
             RoleSessionName: "orphan-sweep",
           },
+          // STS is global, but the provider's internal STS client still needs
+          // an explicit region or it fails with "Region is missing" when no
+          // AWS_REGION/AWS_DEFAULT_REGION is set. Pin it like the other clients.
+          clientConfig: { region: iamRegion },
         }),
         iamRegion,
         signal,
