@@ -1594,6 +1594,11 @@ export async function runCleanupOrg(
   let accountsProcessed = 0;
   let considered = 0, deleted = 0, initiated = 0, skipped = 0, errors = 0;
 
+  // onlyAccount is an org-driver-only knob; per-account runCleanup never reads
+  // it, so drop it from the args forwarded to each account, keeping the
+  // per-account call site explicit about the CleanupArgs it actually passes.
+  const { onlyAccount: _onlyAccount, ...cleanupArgs } = args;
+
   for (const acct of toProcess) {
     try {
       const api = acct.id === mgmt ? org.baseApi() : org.assumedApi(acct.id);
@@ -1603,7 +1608,7 @@ export async function runCleanupOrg(
       const r = await runCleanup({
         api,
         globals,
-        args: { ...args, expectAccount: acct.id },
+        args: { ...cleanupArgs, expectAccount: acct.id },
         context,
       });
       for (const h of r.dataHandles) handles.push(h);
@@ -1885,8 +1890,9 @@ export const model = {
         "— run from *-devops.",
       arguments: z.object({
         apply: z.boolean().default(false).describe(
-          "When false (default), dry-run: write would-delete rows, mutate " +
-            "nothing. Set true to actually delete.",
+          "When false (default), dry-run: write would-* preview rows " +
+            "(would-initiate-delete / would-retain-delete / would-wait), " +
+            "mutate nothing. Set true to actually delete.",
         ),
         expectAccount: z.string().default("").describe(
           "If set, refuse to run unless the resolved account id matches — a " +
@@ -1956,8 +1962,9 @@ export const model = {
         "permissions plus organizations:ListAccounts and sts:AssumeRole.",
       arguments: z.object({
         apply: z.boolean().default(false).describe(
-          "When false (default), dry-run: write would-delete rows, mutate " +
-            "nothing. Set true to actually delete across the org.",
+          "When false (default), dry-run: write would-* preview rows " +
+            "(would-initiate-delete / would-retain-delete / would-wait), " +
+            "mutate nothing. Set true to actually delete across the org.",
         ),
         onlyAccount: z.string().default("").describe(
           "If set, restrict the sweep to this one member account (canary). " +
