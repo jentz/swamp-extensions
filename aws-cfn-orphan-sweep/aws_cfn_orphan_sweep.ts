@@ -45,6 +45,17 @@
  *     custom resource. Needs `cloudformation:DeleteStack` + `iam:GetRole`, so it
  *     runs from a `*-devops` profile, never a read-only one.
  *
+ *   - `cleanupOrg` (MUTATING, cross-account; dry-run unless `apply=true`): the
+ *     org-wide sibling of `cleanup`. Run once from the management account; it
+ *     discovers the org's ACTIVE member accounts, assumes `assumeRoleName` into
+ *     each member (the management account uses the ambient creds — no
+ *     self-assume), and reuses the per-account `cleanup` to delete the orphans
+ *     fleet-wide. Each member is run with an internal `expectAccount` landing
+ *     check (= that account's id), so a misconfigured role can never delete in
+ *     the wrong account. Writes the per-account `deletion` rows plus one
+ *     `org-summary` rollup with aggregate cleanup counters. A per-account
+ *     failure is recorded and skipped, never fatal. Run `enumerateOrg` first.
+ *
  * @module
  */
 
@@ -262,6 +273,14 @@ const OrgSummarySchema = z.object({
   mode: z.string(),
   applied: z.boolean(),
   scannedAt: z.iso.datetime(),
+  // Cleanup-only counters (written by cleanupOrg; omitted by enumerateOrg).
+  // Optional so the read-only enumerate rollup still validates, and passthrough
+  // keeps the schema forward-compatible.
+  considered: z.number().optional(),
+  deleted: z.number().optional(),
+  initiated: z.number().optional(),
+  skipped: z.number().optional(),
+  errors: z.number().optional(),
 }).passthrough();
 
 // ---------------------------------------------------------------------------
@@ -1435,6 +1454,238 @@ function writeDeletion(
 }
 
 // ---------------------------------------------------------------------------
+// cleanupOrg (mutating, cross-account; dry-run unless apply=true)
+// ---------------------------------------------------------------------------
+
+/**
+ * Per-run arguments for {@link runCleanupOrg}. Mirrors the single-account
+ * `cleanup` tuning knobs, PLUS the `onlyAccount` canary, but deliberately omits
+ * `expectAccount`: the driver sets that internally to each member account's id
+ * as a per-account landing check, so a misconfigured role can never delete in
+ * the wrong account.
+ */
+export interface CleanupOrgArgs {
+  /** When false, dry-run (write plan rows, mutate nothing); true to delete. */
+  apply: boolean;
+  /**
+   * If non-empty, restrict the sweep to the one member account whose id
+   * matches (a canary). `accountsDiscovered` still reflects the full ACTIVE
+   * org count.
+   */
+  onlyAccount: string;
+  /** If set, only act on orphans in this region. */
+  onlyRegion: string;
+  /** If set, only act on this exact stack name. */
+  onlyStack: string;
+  /** Override the retained logical id; honored only if it is the custom resource. */
+  retainLogicalId: string;
+  /** Seconds between `DescribeStacks` polls while waiting for deletion. */
+  waitSeconds: number;
+  /** Maximum polls before giving up on a delete. */
+  maxWaits: number;
+  /** After delete, `GetRole` on the captured role name to confirm removal. */
+  verifyRole: boolean;
+  /** Fire the delete and return without polling to completion. */
+  initiateOnly: boolean;
+  /** Delete the backing Lambda first so the custom resource deletes cleanly. */
+  predeleteLambda: boolean;
+}
+
+/** Dependencies for {@link runCleanupOrg}. */
+export interface CleanupOrgDeps {
+  /** Org-level facade (account discovery + per-account SweepApi factory). */
+  org: OrgApi;
+  /** Resolved global arguments (prefix, regions, profile, assumeRoleName). */
+  globals: GlobalArgs;
+  /** The per-run org-cleanup arguments. */
+  args: CleanupOrgArgs;
+  /** The swamp method context (logger, `writeResource`, abort signal). */
+  // deno-lint-ignore no-explicit-any
+  context: any;
+}
+
+/** Result of {@link runCleanupOrg}. */
+export interface CleanupOrgResult {
+  /** Handles for every written row (per-account `deletion` + the org-summary). */
+  dataHandles: unknown[];
+  /** The management account id the run was driven from. */
+  managementAccount: string;
+  /** ACTIVE accounts discovered in the org (full count, pre-canary). */
+  accountsDiscovered: number;
+  /** Accounts actually swept (after any `onlyAccount` narrowing). */
+  accountsProcessed: number;
+  /** Accounts whose assume/cleanup failed and were skipped. */
+  accountsFailed: number;
+  /** The recorded per-account failures. */
+  failures: OrgFailure[];
+  /** Total target stacks considered across every processed account. */
+  considered: number;
+  /** Total stacks confirmed gone across every processed account. */
+  deleted: number;
+  /** Total stacks whose delete was initiated but not confirmed complete. */
+  initiated: number;
+  /** Total stacks skipped (e.g. refused by the prefix guard). */
+  skipped: number;
+  /** Total stacks that errored during processing. */
+  errors: number;
+  /** Whether the run actually mutated (`apply=true`) or was a dry-run. */
+  applied: boolean;
+}
+
+/**
+ * MUTATING (when `apply=true`) cross-account driver — the org-wide sibling of
+ * the single-account `cleanup`. Runs once from the management account:
+ * discovers the org's ACTIVE member accounts, assumes `assumeRoleName` into
+ * each member (the management account uses the ambient creds — no self-assume),
+ * and reuses {@link runCleanup} per account to delete the orphans fleet-wide.
+ *
+ * Landing check: each per-account {@link runCleanup} is called with
+ * `expectAccount` set to that member's id, so if the assumed credentials
+ * resolve to a *different* account, `runCleanup` throws before writing any
+ * deletion rows — that throw is caught, recorded as a failure, and skipped, so
+ * a misconfigured role can never delete in the wrong account.
+ *
+ * Failure model: a failure to discover the org (`managementAccountId` or
+ * `listAccounts` throwing) is fatal — you cannot iterate an org you cannot
+ * enumerate, so it propagates. A per-account assume/landing-check/cleanup
+ * failure is caught, recorded in `failures`, and skipped; it never aborts the
+ * run. Writes the per-account `deletion` rows from the reused logic plus one
+ * `org-summary` rollup keyed `org-summary-${managementAccount}` carrying the
+ * aggregate cleanup counters.
+ *
+ * Operators should run `enumerateOrg` first to inventory the fleet, then this
+ * with `apply=false` (the default) to preview, then `apply=true` to delete.
+ *
+ * Accounts are iterated sequentially today; bounded concurrency is a future
+ * optimization.
+ */
+export async function runCleanupOrg(
+  deps: CleanupOrgDeps,
+): Promise<CleanupOrgResult> {
+  const { org, globals, args, context } = deps;
+  const scannedAt = new Date().toISOString();
+  const handles: unknown[] = [];
+
+  // A failure here is fatal: we cannot iterate an org we cannot enumerate.
+  const mgmt = await org.managementAccountId();
+  const all = await org.listAccounts();
+  // accountsDiscovered is the full ACTIVE org count, even when onlyAccount
+  // narrows what we process below.
+  const accountsDiscovered = all.length;
+
+  const toProcess = args.onlyAccount.length > 0
+    ? all.filter((a) => a.id === args.onlyAccount)
+    : all;
+
+  context.logger.info(
+    "cleanupOrg ({mode}) from {mgmt}: {discovered} ACTIVE account(s) discovered, {process} to process{canary}",
+    {
+      mode: args.apply ? "APPLY" : "dry-run",
+      mgmt,
+      discovered: accountsDiscovered,
+      process: toProcess.length,
+      canary: args.onlyAccount.length > 0
+        ? ` (onlyAccount=${args.onlyAccount})`
+        : "",
+    },
+  );
+
+  const failures: OrgFailure[] = [];
+  let accountsProcessed = 0;
+  let considered = 0, deleted = 0, initiated = 0, skipped = 0, errors = 0;
+
+  for (const acct of toProcess) {
+    try {
+      const api = acct.id === mgmt ? org.baseApi() : org.assumedApi(acct.id);
+      // Per-account landing check: expectAccount = this member's id, so a
+      // misconfigured role that resolves elsewhere is refused by runCleanup
+      // before any deletion row is written.
+      const r = await runCleanup({
+        api,
+        globals,
+        args: { ...args, expectAccount: acct.id },
+        context,
+      });
+      for (const h of r.dataHandles) handles.push(h);
+      considered += r.considered;
+      deleted += r.deleted;
+      initiated += r.initiated;
+      skipped += r.skipped;
+      errors += r.errors;
+      accountsProcessed++;
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      failures.push({ account: acct.id, name: acct.name, error: message });
+      context.logger.error(
+        "cleanupOrg: account {account} ({name}) failed, skipping: {error}",
+        { account: acct.id, name: acct.name, error: message },
+      );
+    }
+  }
+
+  const orgSummary = {
+    managementAccount: mgmt,
+    assumeRoleName: globals.assumeRoleName,
+    accountsDiscovered,
+    accountsProcessed,
+    accountsFailed: failures.length,
+    failures,
+    // Under onlyRegion/onlyStack scoping, `considered` (and thus totalOrphans)
+    // counts only the scoped targets, so it can be smaller than the same
+    // fleet's enumerateOrg totalOrphans. The dedicated `considered` counter and
+    // mode: "cleanup" distinguish this rollup from the enumerate one.
+    totalOrphans: considered,
+    regionsScanned: globals.regions,
+    mode: "cleanup",
+    applied: args.apply,
+    considered,
+    deleted,
+    initiated,
+    skipped,
+    errors,
+    scannedAt,
+  };
+  handles.push(
+    await context.writeResource(
+      "org-summary",
+      `org-summary-${mgmt}`,
+      orgSummary,
+    ),
+  );
+
+  context.logger.info(
+    "cleanupOrg complete from {mgmt}: discovered={d} processed={p} failed={f} considered={c} deleted={del} initiated={i} skipped={s} errors={e} applied={a}",
+    {
+      mgmt,
+      d: accountsDiscovered,
+      p: accountsProcessed,
+      f: failures.length,
+      c: considered,
+      del: deleted,
+      i: initiated,
+      s: skipped,
+      e: errors,
+      a: args.apply,
+    },
+  );
+
+  return {
+    dataHandles: handles,
+    managementAccount: mgmt,
+    accountsDiscovered,
+    accountsProcessed,
+    accountsFailed: failures.length,
+    failures,
+    considered,
+    deleted,
+    initiated,
+    skipped,
+    errors,
+    applied: args.apply,
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Credential + facade construction
 // ---------------------------------------------------------------------------
 
@@ -1519,7 +1770,10 @@ function orgApiFromGlobals(g: GlobalArgs, signal?: AbortSignal): OrgApi {
  * enumeration across every ACTIVE org member account (sequentially today;
  * bounded concurrency is a future optimization); `cleanup` (mutating, dry-run
  * unless `apply=true`) deletes the orphans retaining only the dead custom
- * resource and verifies the IAM role is gone.
+ * resource and verifies the IAM role is gone; `cleanupOrg` (mutating
+ * cross-account, dry-run unless `apply=true`) fans that same cleanup across the
+ * whole org from the management account, with a per-account `expectAccount`
+ * landing check so a misconfigured role can never delete in the wrong account.
  */
 export const model = {
   type: "@jentz/aws-cfn-orphan-sweep",
@@ -1554,11 +1808,14 @@ export const model = {
     },
     "org-summary": {
       description:
-        "Cross-account rollup written once per enumerateOrg run, keyed " +
-        "org-summary-${managementAccount}: management account, the assumed " +
-        "role name, ACTIVE accounts discovered/processed/failed, the per-" +
-        "account failures, total orphans, regions scanned, and the run mode. " +
-        "Passthrough so a later cleanup phase can add counters non-breakingly.",
+        "Cross-account rollup written once per enumerateOrg or cleanupOrg run, " +
+        "keyed org-summary-${managementAccount}: management account, the " +
+        "assumed role name, ACTIVE accounts discovered/processed/failed, the " +
+        "per-account failures, total orphans, regions scanned, and the run " +
+        "mode (enumerate | cleanup). cleanupOrg additionally writes the " +
+        "aggregate cleanup counters (considered/deleted/initiated/skipped/" +
+        "errors); enumerateOrg omits them. Passthrough so either writer can add " +
+        "fields non-breakingly.",
       schema: OrgSummarySchema,
       lifetime: "infinite" as const,
       garbageCollection: 10,
@@ -1675,6 +1932,77 @@ export const model = {
         const g = GlobalArgsSchema.parse(context.globalArgs);
         return runCleanup({
           api: apiFromGlobals(g, context.signal),
+          globals: g,
+          args,
+          context,
+        });
+      },
+    },
+    cleanupOrg: {
+      description:
+        "MUTATING cross-account cleanup when apply=true (dry-run otherwise — " +
+        "the default). The org-wide sibling of cleanup: run once from the " +
+        "management account to discover the org's ACTIVE member accounts, " +
+        "assume the uniformly-named assumeRoleName role into each member (the " +
+        "management account uses the ambient creds — no self-assume), and " +
+        "reuse the per-account cleanup to delete the orphans fleet-wide. Each " +
+        "account is run with an internal expectAccount landing check (= that " +
+        "member's id), so a misconfigured role can never delete in the wrong " +
+        "account. Writes the same per-account deletion rows plus one " +
+        "org-summary rollup with aggregate cleanup counters. A per-account " +
+        "assume/landing-check/cleanup failure is recorded and skipped, never " +
+        "fatal. Run enumerateOrg first to inventory the fleet, then this with " +
+        "apply=false to preview before apply=true. Needs the cleanup " +
+        "permissions plus organizations:ListAccounts and sts:AssumeRole.",
+      arguments: z.object({
+        apply: z.boolean().default(false).describe(
+          "When false (default), dry-run: write would-delete rows, mutate " +
+            "nothing. Set true to actually delete across the org.",
+        ),
+        onlyAccount: z.string().default("").describe(
+          "If set, restrict the sweep to this one member account (canary). " +
+            "accountsDiscovered still reflects the full ACTIVE org count.",
+        ),
+        onlyRegion: z.string().default("").describe(
+          "If set, only act on orphans in this region (canary scoping).",
+        ),
+        onlyStack: z.string().default("").describe(
+          "If set, only act on this exact stack name (single-stack canary).",
+        ),
+        retainLogicalId: z.string().default("").describe(
+          "Override the retained logical id. Honored only if it equals the " +
+            "detected custom-resource logical id; otherwise the stack is skipped.",
+        ),
+        waitSeconds: z.number().int().min(2).max(60).default(10).describe(
+          "Seconds between DescribeStacks polls while waiting for deletion.",
+        ),
+        maxWaits: z.number().int().min(1).max(120).default(30).describe(
+          "Maximum polls before giving up on a delete.",
+        ),
+        verifyRole: z.boolean().default(true).describe(
+          "After delete, GetRole on the captured role name to confirm removal.",
+        ),
+        initiateOnly: z.boolean().default(false).describe(
+          "Fire the delete on each stack and return immediately without polling " +
+            "to completion — for fast fleet fan-out. Re-run (or enumerate) to " +
+            "confirm. Combine with predeleteLambda so the delete completes on " +
+            "its own in seconds.",
+        ),
+        predeleteLambda: z.boolean().default(true).describe(
+          "Delete the stack's backing Lambda before deleting the stack, so the " +
+            "dead custom resource deletes cleanly (no ~1h hang) and the whole " +
+            "stack — including the IAM role — is removed in one plain pass. " +
+            "Needs lambda:DeleteFunction. Set false for the slow pure-CFN path.",
+        ),
+      }),
+      execute: (
+        args: CleanupOrgArgs,
+        // deno-lint-ignore no-explicit-any
+        context: any,
+      ): Promise<CleanupOrgResult> => {
+        const g = GlobalArgsSchema.parse(context.globalArgs);
+        return runCleanupOrg({
+          org: orgApiFromGlobals(g, context.signal),
           globals: g,
           args,
           context,

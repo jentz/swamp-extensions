@@ -24,10 +24,10 @@ Deno.test("model metadata: resource and method surface is stable", () => {
     Object.keys(model.resources).sort(),
     ["deletion", "org-summary", "orphan", "summary"],
   );
-  // enumerate / enumerateOrg are read-only; cleanup is the mutating (dry-run by
-  // default) method.
+  // enumerate / enumerateOrg are read-only; cleanup and cleanupOrg are the
+  // mutating (dry-run by default) single-account and cross-account methods.
   assertEquals(
     Object.keys(model.methods).sort(),
-    ["cleanup", "enumerate", "enumerateOrg"],
+    ["cleanup", "cleanupOrg", "enumerate", "enumerateOrg"],
   );
 });
