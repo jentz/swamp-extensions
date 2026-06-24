@@ -17,7 +17,7 @@
  * run writes rows keyed by account+region+stack so a single model instance
  * accumulates the whole fleet, queryable via CEL.
  *
- * Two methods:
+ * Three methods:
  *
  *   - `enumerate` (READ-ONLY): `ListStacks` per region (every status except
  *     DELETE_COMPLETE), keep names starting with `namePrefix`, and
@@ -25,6 +25,16 @@
  *     id to retain, the IAM role logical id + physical name (the audit smell we
  *     want gone), and the Lambda. Writes one `orphan` row per stack plus one
  *     per-account `summary`. Safe under a `*-readonly` profile.
+ *
+ *   - `enumerateOrg` (READ-ONLY, cross-account): run once from the management
+ *     account. It discovers the org's ACTIVE member accounts via Organizations,
+ *     assumes the uniformly-named `assumeRoleName` role into each member (the
+ *     management account itself uses the ambient creds — no self-assume), and
+ *     reuses the per-account `enumerate` logic to sweep every account. Writes
+ *     the same per-account `orphan` / `summary` rows plus one `org-summary`
+ *     rollup. A per-account assume/sweep failure is recorded and skipped, never
+ *     fatal. Account iteration is sequential today; bounded concurrency is a
+ *     future optimization. Recommended first action for an org-wide inventory.
  *
  *   - `cleanup` (MUTATING; dry-run unless `apply=true`): for each orphan,
  *     `DeleteStack` retaining ONLY the dead `Custom::*` resource (so the broken
@@ -52,10 +62,17 @@ import {
   LambdaClient,
 } from "npm:@aws-sdk/client-lambda@3.1021.0";
 import {
+  ListAccountsCommand,
+  OrganizationsClient,
+} from "npm:@aws-sdk/client-organizations@3.1021.0";
+import {
   GetCallerIdentityCommand,
   STSClient,
 } from "npm:@aws-sdk/client-sts@3.1021.0";
-import { fromIni } from "npm:@aws-sdk/credential-providers@3.1021.0";
+import {
+  fromIni,
+  fromTemporaryCredentials,
+} from "npm:@aws-sdk/credential-providers@3.1021.0";
 
 /** Credential provider as returned by `fromIni`; `undefined` means the ambient chain. */
 type CredentialProvider = ReturnType<typeof fromIni>;
@@ -110,6 +127,13 @@ const GlobalArgsSchema = z.object({
     "Named AWS profile (resolved via fromIni). Empty (default) uses the " +
       "ambient credential chain — the SSO creds exported into AWS_* env vars.",
   ),
+  assumeRoleName: z.string().min(1).default("AWSControlTowerExecution")
+    .describe(
+      "Role name assumed into each member account by enumerateOrg (the role " +
+        "must exist with the same name in every member account, e.g. the " +
+        "Control Tower execution role). Unused by the single-account " +
+        "enumerate / cleanup methods.",
+    ),
 });
 
 /**
@@ -134,6 +158,12 @@ export interface GlobalArgs {
    * credential chain — the SSO creds exported into `AWS_*` env vars.
    */
   profile: string;
+  /**
+   * Role name assumed into each member account by `enumerateOrg`. The role
+   * must exist with the same name in every member account. Unused by the
+   * single-account `enumerate` / `cleanup` methods.
+   */
+  assumeRoleName: string;
 }
 
 // Compile-time guard: the explicit interface and the schema's inferred output
@@ -212,6 +242,26 @@ const DeletionSchema = z.object({
   error: z.string(),
   startedAt: z.iso.datetime(),
   finishedAt: z.iso.datetime(),
+}).passthrough();
+
+const OrgFailureSchema = z.object({
+  account: z.string(),
+  name: z.string(),
+  error: z.string(),
+});
+
+const OrgSummarySchema = z.object({
+  managementAccount: z.string(),
+  assumeRoleName: z.string(),
+  accountsDiscovered: z.number(),
+  accountsProcessed: z.number(),
+  accountsFailed: z.number(),
+  failures: z.array(OrgFailureSchema),
+  totalOrphans: z.number(),
+  regionsScanned: z.array(z.string()),
+  mode: z.string(),
+  applied: z.boolean(),
+  scannedAt: z.iso.datetime(),
 }).passthrough();
 
 // ---------------------------------------------------------------------------
@@ -428,6 +478,33 @@ export interface SweepApi {
   deleteFunction(functionName: string, region: string): Promise<void>;
   /** Whether an IAM role still exists (by physical name). */
   roleExists(roleName: string): Promise<boolean>;
+}
+
+/** One ACTIVE member account discovered via Organizations. */
+export interface OrgAccount {
+  /** 12-digit account id. */
+  id: string;
+  /** Human-readable account name (from Organizations). */
+  name: string;
+}
+
+/**
+ * Facade over the org-level AWS calls `enumerateOrg` uses. Built once per run
+ * from the management account's ambient (or `profile`) credentials.
+ *
+ * `baseApi` is the management-account {@link SweepApi} (ambient creds);
+ * `assumedApi` mints a {@link SweepApi} backed by credentials assumed into a
+ * member account — so the management account is never self-assumed.
+ */
+export interface OrgApi {
+  /** The management account id, via STS GetCallerIdentity on the base creds. */
+  managementAccountId(): Promise<string>;
+  /** All ACTIVE org accounts, via Organizations ListAccounts (paginated). */
+  listAccounts(): Promise<OrgAccount[]>;
+  /** SweepApi for the management account (ambient/profile creds, no assume). */
+  baseApi(): SweepApi;
+  /** SweepApi for a member account, via the assumed `assumeRoleName` role. */
+  assumedApi(accountId: string): SweepApi;
 }
 
 const CLIENT_RETRY = { maxAttempts: 6 } as const;
@@ -686,6 +763,171 @@ export async function runEnumerate(
     account,
     orphanCount: orphans.length,
     orphans,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// enumerateOrg (read-only, cross-account)
+// ---------------------------------------------------------------------------
+
+/** Per-run arguments for {@link runEnumerateOrg}. */
+export interface EnumerateOrgArgs {
+  /**
+   * If non-empty, restrict the sweep to the one member account whose id
+   * matches (a canary). `accountsDiscovered` still reflects the full ACTIVE
+   * org count.
+   */
+  onlyAccount: string;
+}
+
+/** One member account that failed to assume / enumerate during an org sweep. */
+export interface OrgFailure {
+  /** Account id that failed. */
+  account: string;
+  /** Account name (from Organizations), or "". */
+  name: string;
+  /** The error message; non-empty. */
+  error: string;
+}
+
+/** Dependencies for {@link runEnumerateOrg}. */
+export interface EnumerateOrgDeps {
+  /** Org-level facade (account discovery + per-account SweepApi factory). */
+  org: OrgApi;
+  /** Resolved global arguments (prefix, regions, profile, assumeRoleName). */
+  globals: GlobalArgs;
+  /** The per-run org-enumerate arguments. */
+  args: EnumerateOrgArgs;
+  /** The swamp method context (logger, `writeResource`, abort signal). */
+  // deno-lint-ignore no-explicit-any
+  context: any;
+}
+
+/** Result of {@link runEnumerateOrg}. */
+export interface EnumerateOrgResult {
+  /** Handles for every written row (per-account orphan/summary + org-summary). */
+  dataHandles: unknown[];
+  /** The management account id the run was driven from. */
+  managementAccount: string;
+  /** ACTIVE accounts discovered in the org (full count, pre-canary). */
+  accountsDiscovered: number;
+  /** Accounts actually swept (after any `onlyAccount` narrowing). */
+  accountsProcessed: number;
+  /** Accounts whose assume/sweep failed and were skipped. */
+  accountsFailed: number;
+  /** The recorded per-account failures. */
+  failures: OrgFailure[];
+  /** Total orphan stacks found across every processed account. */
+  totalOrphans: number;
+}
+
+/**
+ * READ-ONLY cross-account driver. Runs once from the management account:
+ * discovers the org's ACTIVE member accounts, assumes `assumeRoleName` into
+ * each member (the management account uses the ambient creds — no self-assume),
+ * and reuses {@link runEnumerate} per account to build the org-wide orphan
+ * inventory. Writes the usual per-account `orphan` / `summary` rows plus one
+ * `org-summary` rollup keyed `org-summary-${managementAccount}`.
+ *
+ * Failure model: a failure to discover the org (`managementAccountId` or
+ * `listAccounts` throwing) is fatal — you cannot iterate an org you cannot
+ * enumerate, so it propagates. A per-account assume/sweep failure is caught,
+ * recorded in `failures`, and skipped; it never aborts the run.
+ *
+ * Accounts are iterated sequentially today; bounded concurrency is a future
+ * optimization.
+ */
+export async function runEnumerateOrg(
+  deps: EnumerateOrgDeps,
+): Promise<EnumerateOrgResult> {
+  const { org, globals, args, context } = deps;
+  const scannedAt = new Date().toISOString();
+  const handles: unknown[] = [];
+
+  // A failure here is fatal: we cannot iterate an org we cannot enumerate.
+  const mgmt = await org.managementAccountId();
+  const all = await org.listAccounts();
+  // accountsDiscovered is the full ACTIVE org count, even when onlyAccount
+  // narrows what we process below.
+  const accountsDiscovered = all.length;
+
+  const toProcess = args.onlyAccount.length > 0
+    ? all.filter((a) => a.id === args.onlyAccount)
+    : all;
+
+  context.logger.info(
+    "enumerateOrg from {mgmt}: {discovered} ACTIVE account(s) discovered, {process} to process{canary}",
+    {
+      mgmt,
+      discovered: accountsDiscovered,
+      process: toProcess.length,
+      canary: args.onlyAccount.length > 0
+        ? ` (onlyAccount=${args.onlyAccount})`
+        : "",
+    },
+  );
+
+  const failures: OrgFailure[] = [];
+  let accountsProcessed = 0;
+  let totalOrphans = 0;
+
+  for (const acct of toProcess) {
+    try {
+      const api = acct.id === mgmt ? org.baseApi() : org.assumedApi(acct.id);
+      const r = await runEnumerate({ api, globals, context });
+      for (const h of r.dataHandles) handles.push(h);
+      totalOrphans += r.orphanCount;
+      accountsProcessed++;
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      failures.push({ account: acct.id, name: acct.name, error: message });
+      context.logger.error(
+        "enumerateOrg: account {account} ({name}) failed, skipping: {error}",
+        { account: acct.id, name: acct.name, error: message },
+      );
+    }
+  }
+
+  const orgSummary = {
+    managementAccount: mgmt,
+    assumeRoleName: globals.assumeRoleName,
+    accountsDiscovered,
+    accountsProcessed,
+    accountsFailed: failures.length,
+    failures,
+    totalOrphans,
+    regionsScanned: globals.regions,
+    mode: "enumerate",
+    applied: false,
+    scannedAt,
+  };
+  handles.push(
+    await context.writeResource(
+      "org-summary",
+      `org-summary-${mgmt}`,
+      orgSummary,
+    ),
+  );
+
+  context.logger.info(
+    "enumerateOrg complete from {mgmt}: discovered={d} processed={p} failed={f} orphans={o}",
+    {
+      mgmt,
+      d: accountsDiscovered,
+      p: accountsProcessed,
+      f: failures.length,
+      o: totalOrphans,
+    },
+  );
+
+  return {
+    dataHandles: handles,
+    managementAccount: mgmt,
+    accountsDiscovered,
+    accountsProcessed,
+    accountsFailed: failures.length,
+    failures,
+    totalOrphans,
   };
 }
 
@@ -1204,6 +1446,59 @@ function apiFromGlobals(g: GlobalArgs, signal?: AbortSignal): SweepApi {
   return sdkApi(credentials, g.regions[0] ?? "us-east-1", signal);
 }
 
+/**
+ * Build the SDK-backed {@link OrgApi} for the management account. The base
+ * credentials are the same as {@link apiFromGlobals} (a named `profile` via
+ * `fromIni`, or the ambient chain). Member-account credentials are minted
+ * lazily by `fromTemporaryCredentials`, which assumes `assumeRoleName` and
+ * auto-refreshes.
+ */
+function orgApiFromGlobals(g: GlobalArgs, signal?: AbortSignal): OrgApi {
+  const base = g.profile.length > 0
+    ? fromIni({ profile: g.profile })
+    : undefined;
+  const iamRegion = g.regions[0] ?? "us-east-1";
+  return {
+    managementAccountId: () => sdkApi(base, iamRegion, signal).getAccountId(),
+    listAccounts: async () => {
+      // Organizations has a global endpoint served from us-east-1.
+      const client = new OrganizationsClient({
+        region: "us-east-1",
+        credentials: base,
+        ...CLIENT_RETRY,
+      });
+      const opts = { abortSignal: signal };
+      const out: OrgAccount[] = [];
+      let token: string | undefined;
+      do {
+        const resp = await client.send(
+          new ListAccountsCommand({ NextToken: token }),
+          opts,
+        );
+        for (const a of resp.Accounts ?? []) {
+          if (a.Status !== "ACTIVE") continue;
+          out.push({ id: a.Id ?? "", name: a.Name ?? "" });
+        }
+        token = resp.NextToken;
+      } while (token);
+      return out;
+    },
+    baseApi: () => sdkApi(base, iamRegion, signal),
+    assumedApi: (accountId: string) =>
+      sdkApi(
+        fromTemporaryCredentials({
+          masterCredentials: base,
+          params: {
+            RoleArn: `arn:aws:iam::${accountId}:role/${g.assumeRoleName}`,
+            RoleSessionName: "orphan-sweep",
+          },
+        }),
+        iamRegion,
+        signal,
+      ),
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Model export
 // ---------------------------------------------------------------------------
@@ -1211,9 +1506,12 @@ function apiFromGlobals(g: GlobalArgs, signal?: AbortSignal): SweepApi {
 /**
  * The `@jentz/aws-cfn-orphan-sweep` model.
  *
- * `enumerate` (read-only) builds the orphan inventory; `cleanup` (mutating,
- * dry-run unless `apply=true`) deletes the orphans retaining only the dead
- * custom resource and verifies the IAM role is gone.
+ * `enumerate` (read-only) builds the single-account orphan inventory;
+ * `enumerateOrg` (read-only) runs from the management account and fans the same
+ * enumeration across every ACTIVE org member account (sequentially today;
+ * bounded concurrency is a future optimization); `cleanup` (mutating, dry-run
+ * unless `apply=true`) deletes the orphans retaining only the dead custom
+ * resource and verifies the IAM role is gone.
  */
 export const model = {
   type: "@jentz/aws-cfn-orphan-sweep",
@@ -1246,6 +1544,17 @@ export const model = {
       lifetime: "infinite" as const,
       garbageCollection: 10,
     },
+    "org-summary": {
+      description:
+        "Cross-account rollup written once per enumerateOrg run, keyed " +
+        "org-summary-${managementAccount}: management account, the assumed " +
+        "role name, ACTIVE accounts discovered/processed/failed, the per-" +
+        "account failures, total orphans, regions scanned, and the run mode. " +
+        "Passthrough so a later cleanup phase can add counters non-breakingly.",
+      schema: OrgSummarySchema,
+      lifetime: "infinite" as const,
+      garbageCollection: 10,
+    },
   },
   methods: {
     enumerate: {
@@ -1263,6 +1572,39 @@ export const model = {
         return runEnumerate({
           api: apiFromGlobals(g, context.signal),
           globals: g,
+          context,
+        });
+      },
+    },
+    enumerateOrg: {
+      description:
+        "READ-ONLY cross-account fan-out — the recommended first action for an " +
+        "org-wide inventory. Run once from the management account: discovers " +
+        "the org's ACTIVE member accounts via Organizations ListAccounts, " +
+        "assumes the uniformly-named assumeRoleName role into each member " +
+        "(the management account uses the ambient creds — no self-assume), and " +
+        "reuses the per-account enumerate logic to sweep every account. Writes " +
+        "the same per-account orphan / summary rows plus one org-summary " +
+        "rollup. A per-account assume/sweep failure is recorded and skipped, " +
+        "never fatal. Accounts are swept sequentially today; bounded " +
+        "concurrency is a future optimization. Needs the read-only enumerate " +
+        "permissions plus organizations:ListAccounts and sts:AssumeRole.",
+      arguments: z.object({
+        onlyAccount: z.string().default("").describe(
+          "If set, restrict the sweep to this one member account (canary). " +
+            "accountsDiscovered still reflects the full ACTIVE org count.",
+        ),
+      }),
+      execute: (
+        args: EnumerateOrgArgs,
+        // deno-lint-ignore no-explicit-any
+        context: any,
+      ): Promise<EnumerateOrgResult> => {
+        const g = GlobalArgsSchema.parse(context.globalArgs);
+        return runEnumerateOrg({
+          org: orgApiFromGlobals(g, context.signal),
+          globals: g,
+          args,
           context,
         });
       },
