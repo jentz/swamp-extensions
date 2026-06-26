@@ -28,8 +28,9 @@ deno lint
 
 # 2b. Shared `_lib` codegen drift gate. Placed early, before the heavy
 # per-extension gates, so a stale generated copy fails fast. Mirrors the
-# `sync-lib drift` step in CI.
-deno run --allow-read --allow-write scripts/sync-lib.ts --check
+# `sync-lib drift` step in CI. Read-only (--check never writes), so a stale
+# copy can only fail the gate, never be silently regenerated here.
+deno run --allow-read scripts/sync-lib.ts --check
 
 # Discover extension dirs (parent of each manifest.yaml), matching CI verbatim.
 extension_dirs=()
