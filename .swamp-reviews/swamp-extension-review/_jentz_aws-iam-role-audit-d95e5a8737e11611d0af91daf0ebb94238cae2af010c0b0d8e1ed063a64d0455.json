@@ -1,0 +1,82 @@
+{
+  "extension": "@jentz/aws-iam-role-audit",
+  "version": "2026.06.26.1",
+  "reviewedAt": "2026-06-26T20:59:41Z",
+  "dimensions": [
+    {
+      "id": "credentials-secrets",
+      "verdict": "pass",
+      "note": "Still environment/profile credential resolution via fromIni; no new vaulted secrets. The new ssoSession global arg is a session NAME (an identifier), not a secret, and is only echoed into the remediation message. The pre-flight token resolver reads the on-disk SSO cache via the shared lib and never logs the token."
+    },
+    {
+      "id": "logging-quality",
+      "verdict": "pass",
+      "note": "New pre-flight log lines use structured placeholders ({session}/{message}) at warn level, matching the existing style; the completion info line is reused on the short-circuit path. No token or secret value is interpolated."
+    },
+    {
+      "id": "error-handling",
+      "verdict": "pass",
+      "note": "classifyError is now the shared lib's, which checks network BEFORE auth_expired so a wrapped getaddrinfo credential failure is no longer mislabeled auth_expired. The pre-flight only short-circuits on `expired`; a `network` blip logs and proceeds. Per-target/per-role catches remain narrow and still write a scan_error rather than aborting the sweep."
+    },
+    {
+      "id": "testing-completeness",
+      "verdict": "pass",
+      "note": "Added unit coverage for network classification and the canonical precedence (replacing the removed local-precedence test, with the load-bearing SSO-role-ARN access_denied case retained), and smoke coverage for the network credential tag (service:'sts'), the per-role IAM tag (service:'iam'), and all four pre-flight branches (expired short-circuit, healthy, network proceed, no-op skip) via the injected resolver and a tripwire IamApi."
+    },
+    {
+      "id": "idempotency-resilience",
+      "verdict": "pass",
+      "note": "Read-only audit; method semantics unchanged. scan_error keys remain the role-scoped 3-arg scanErrorKey(profile, roleName, phase), so re-runs overwrite the same keys. The expired pre-flight short-circuit writes exactly one deterministic preflight_sso row and returns."
+    },
+    {
+      "id": "api-contracts",
+      "verdict": "pass",
+      "note": "No SDK command classes or response-field mappings changed. The only client-config change is replacing the inline {maxAttempts:6} with the shared adaptive SHARED_RETRY ({retryMode:'adaptive',maxAttempts:3}) spread into the IAM/STS/CloudFormation clients; pagination loops are untouched. The pre-flight SSO token resolution is delegated to the shared lib's SDK token provider."
+    },
+    {
+      "id": "resource-management",
+      "verdict": "pass",
+      "note": "No new file handles or long-lived clients; SDK clients are constructed per-call as before. The new _lib twins (scan_error.ts, aws_credentials.ts) are code-generated copies, not new runtime resources."
+    },
+    {
+      "id": "published-surface-hygiene",
+      "verdict": "pass",
+      "note": "Manifest version (2026.06.26.1) equals the exported model.version. No real account ids, ARNs, hostnames, or IPs added: new test fixtures use placeholder account ids and example service endpoints (sts/oidc/iam.<region>.amazonaws.com host names, not internal). The two generated _lib files carry the auto-generated do-not-edit header."
+    },
+    {
+      "id": "schema-strictness",
+      "verdict": "pass",
+      "note": "MECHANICAL schema-write conformance: scan_error is the only changed schema; it gains `service` (string, default '' for back-compat on reads) and widens `kind` to add 'network'. No .passthrough(). All four writeResource('scan_error', ...) sites (preflight_sso, profile_suffix_check, credentials, get_role) set every one of the 8 schema fields including `service` (sso/''/sts/iam respectively). RoleRecordSchema unchanged. The role-scoped row shape is deliberately kept local rather than adopting the fleet's region-oriented canonical schema."
+    },
+    {
+      "id": "lifetime-gc",
+      "verdict": "pass",
+      "note": "role and scan_error specs keep lifetime 'infinite' and garbageCollection 10; unchanged by this slice."
+    },
+    {
+      "id": "crud-completeness",
+      "verdict": "na",
+      "note": "Read-only audit model with a single fan-out `audit` method; no CRUD lifecycle surface is intended, so create/update/delete/sync do not apply."
+    },
+    {
+      "id": "preflight-checks",
+      "verdict": "pass",
+      "note": "This is an audit model, not a mutating model, so swamp method-level pre-flight `check` labels do not apply. The new SSO pre-flight is an in-method short-circuit (resolve the shared session token once, emit one actionable scan_error and return on expiry) and complements the existing fail-closed stackLookupRegions guard, which still throws before any AWS call."
+    },
+    {
+      "id": "instance-names",
+      "verdict": "pass",
+      "note": "MECHANICAL instance-name review: scan_error rows still key on the role-scoped scanErrorKey(profile, roleName, phase) and role rows on roleKey(accountId, roleName); the two specs use disjoint key prefixes (error- vs role-). The new preflight_sso phase yields a distinct, collision-free key (error-ambient-_-preflight_sso)."
+    },
+    {
+      "id": "data-access",
+      "verdict": "pass",
+      "note": "No readResource/dataRepository access in this producer; it only writes its own resources. Unchanged by this slice."
+    },
+    {
+      "id": "version-upgrades",
+      "verdict": "pass",
+      "note": "model.version bumped 2026.06.22.0 -> 2026.06.26.1 with a matching upgrades entry whose toVersion equals model.version; upgradeAttributes is the identity transform because the only schema change (the additive `service` field) defaults to '' on reads, so pre-existing stored rows parse without a data migration."
+    }
+  ]
+}

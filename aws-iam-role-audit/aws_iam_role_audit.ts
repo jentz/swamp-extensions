@@ -58,9 +58,15 @@ import {
   STSClient,
 } from "npm:@aws-sdk/client-sts@3.1073.0";
 import { fromIni } from "npm:@aws-sdk/credential-providers@3.1073.0";
+import { classifyError, type ScanErrorKind } from "./_lib/scan_error.ts";
+import {
+  type CredentialProvider,
+  preflightSso,
+  SHARED_RETRY,
+  ssoRemediation,
+} from "./_lib/aws_credentials.ts";
 
-/** Credential provider as returned by `fromIni`; `undefined` means the ambient chain. */
-type CredentialProvider = ReturnType<typeof fromIni>;
+export { classifyError };
 
 // ---------------------------------------------------------------------------
 // Global arguments
@@ -125,6 +131,14 @@ const GlobalArgsSchema = z.object({
   region: z.string().min(1).default("us-east-1").describe(
     "Region for the IAM/STS client endpoint. IAM is global; us-east-1 is safe.",
   ),
+  ssoSession: z.string().default("").describe(
+    "Name of the shared AWS SSO session backing the swept profiles (the " +
+      "`[sso-session <name>]` block in ~/.aws/config). When set, the audit " +
+      "pre-flights this session's cached token once before the per-profile " +
+      "loop: a genuinely expired token short-circuits the whole sweep with a " +
+      "single 'run aws sso login' error rather than failing every profile. " +
+      "Empty (default) skips the pre-flight entirely.",
+  ),
 });
 
 /** Resolved global arguments after schema parsing. */
@@ -142,6 +156,11 @@ export interface GlobalArgs {
   requiredProfileSuffix: string;
   /** Region for the IAM/STS client endpoint. */
   region: string;
+  /**
+   * Shared AWS SSO session name to pre-flight once before the per-profile loop;
+   * "" (default) skips the pre-flight entirely.
+   */
+  ssoSession: string;
 }
 
 /**
@@ -195,8 +214,9 @@ const ScanErrorSchema = z.object({
   profile: z.string(),
   accountId: z.string(),
   roleName: z.string(),
+  service: z.string().default(""),
   phase: z.string(),
-  kind: z.enum(["auth_expired", "access_denied", "other"]),
+  kind: z.enum(["network", "auth_expired", "access_denied", "other"]),
   message: z.string(),
   scannedAt: z.iso.datetime(),
 });
@@ -255,7 +275,15 @@ export interface RoleRecord {
   scannedAt: string;
 }
 
-/** A profile that could not be assessed. */
+/**
+ * A profile (or profile × role) that could not be assessed. This row is
+ * deliberately role-scoped — IAM is global, so failures key on `roleName`, not
+ * a region — which is why it keeps its own local shape rather than adopting the
+ * fleet's region-oriented {@link "./_lib/scan_error.ts"} schema.
+ *
+ * `service` defaults to `""` on reads so rows written by an earlier scanner
+ * that predates the field still parse (back-compat); new writes always set it.
+ */
 export interface ScanError {
   /** Profile being swept; "" for ambient. */
   profile: string;
@@ -263,10 +291,12 @@ export interface ScanError {
   accountId: string;
   /** Role name being looked up; "" for account-level (credentials) failures. */
   roleName: string;
+  /** AWS service that failed (`sts`, `iam`, `cloudformation`, `sso`), or "". */
+  service: string;
   /** Stage that failed: credentials, get_role, etc. */
   phase: string;
   /** Coarse classification driving the operator's next action. */
-  kind: "auth_expired" | "access_denied" | "other";
+  kind: ScanErrorKind;
   /** Error detail. */
   message: string;
   /** ISO 8601 timestamp. */
@@ -307,35 +337,6 @@ export function accountNameFromProfile(
   return profile.endsWith(suffix)
     ? profile.slice(0, profile.length - suffix.length)
     : profile;
-}
-
-/** Classify an AWS SDK error into the coarse kind the report groups on. */
-export function classifyError(err: unknown): {
-  kind: "auth_expired" | "access_denied" | "other";
-  message: string;
-} {
-  const message = err instanceof Error ? err.message : String(err);
-  const name = (err as { name?: string } | null)?.name ?? "";
-  const haystack = `${name} ${message}`.toLowerCase();
-  const isAccessDenied = haystack.includes("not authorized") ||
-    haystack.includes("accessdenied") ||
-    haystack.includes("access denied") ||
-    haystack.includes("explicit deny") ||
-    haystack.includes("forbidden");
-  const isAuthExpired = name.toLowerCase().includes("expiredtoken") ||
-    name.toLowerCase().includes("credentialsprovidererror") ||
-    haystack.includes("token has expired") ||
-    haystack.includes("token is expired") ||
-    haystack.includes("token included in the request is expired") ||
-    haystack.includes("sso session") ||
-    haystack.includes("session associated with this profile has expired") ||
-    haystack.includes("could not load credentials") ||
-    haystack.includes("failed to refresh");
-  // Access-denied wins over auth-expired: a denied call that happens to carry an
-  // SSO role ARN in its message is an authorization problem, not a stale token.
-  if (isAccessDenied) return { kind: "access_denied", message };
-  if (isAuthExpired) return { kind: "auth_expired", message };
-  return { kind: "other", message };
 }
 
 /** The CloudFormation stack that owns a resource, as found by the lookup. */
@@ -525,8 +526,6 @@ export interface IamApi {
 // SDK-backed facade
 // ---------------------------------------------------------------------------
 
-const CLIENT_RETRY = { maxAttempts: 6 } as const;
-
 function isNoSuchEntity(err: unknown): boolean {
   const name = (err as { name?: string } | null)?.name ?? "";
   const msg = err instanceof Error ? err.message : String(err);
@@ -547,11 +546,11 @@ function sdkApi(
   stackLookupRegions: string[],
   signal?: AbortSignal,
 ): IamApi {
-  const iam = new IAMClient({ region, credentials, ...CLIENT_RETRY });
+  const iam = new IAMClient({ region, credentials, ...SHARED_RETRY });
   const opts = { abortSignal: signal };
   return {
     getAccountId: async () => {
-      const sts = new STSClient({ region, credentials, ...CLIENT_RETRY });
+      const sts = new STSClient({ region, credentials, ...SHARED_RETRY });
       const resp = await sts.send(new GetCallerIdentityCommand({}), opts);
       return resp.Account ?? "";
     },
@@ -607,7 +606,7 @@ function sdkApi(
         const cfn = new CloudFormationClient({
           region: r,
           credentials,
-          ...CLIENT_RETRY,
+          ...SHARED_RETRY,
         });
         try {
           const resp = await cfn.send(
@@ -657,6 +656,19 @@ export interface AuditDeps {
    * suffix gate on the ambient target; "" when unknown.
    */
   ambientProfile: string;
+  /**
+   * Shared AWS SSO session name to pre-flight once before the per-profile loop;
+   * "" (default) skips the pre-flight entirely.
+   */
+  ssoSession?: string;
+  /** SSO region for the pre-flight token resolve (the IAM/STS endpoint region). */
+  ssoRegion?: string;
+  /**
+   * SSO-token resolver injected into the pre-flight. Defaults (when omitted) to
+   * the lib's on-disk cache reader; tests pass a fake to drive the
+   * expired/ok/network branches without touching disk or the SDK.
+   */
+  resolveSsoToken?: (session: string, region: string) => Promise<unknown>;
   /** Swamp method-execution context (host-injected; typed `any`). */
   // deno-lint-ignore no-explicit-any
   context: any;
@@ -692,6 +704,8 @@ export async function runAudit(deps: AuditDeps): Promise<AuditResult> {
   const scannedAt = new Date().toISOString();
   const suffix = requiredProfileSuffix;
   const ambientProfile = deps.ambientProfile ?? "";
+  const ssoSession = deps.ssoSession ?? "";
+  const ssoRegion = deps.ssoRegion ?? "";
 
   const writeError = async (e: ScanError): Promise<void> => {
     errorCount++;
@@ -703,6 +717,45 @@ export async function runAudit(deps: AuditDeps): Promise<AuditResult> {
       ),
     );
   };
+
+  // Pre-flight the shared SSO session once, before the per-profile loop. A
+  // single SSO session backs every profile, so a genuinely expired token would
+  // fail every profile identically; resolving it up front lets one actionable
+  // error replace that wasteful loop. Skipped entirely when no session is
+  // configured (today's behavior). A `network` blip must NOT short-circuit —
+  // the same transient failure would otherwise abort the whole sweep and demand
+  // a needless re-login — so only `expired` returns early.
+  if (ssoSession.length > 0) {
+    const pre = await preflightSso(ssoSession, ssoRegion, deps.resolveSsoToken);
+    if (pre.status === "expired") {
+      context.logger.warn(
+        "SSO pre-flight failed for session {session}: {message}",
+        { session: ssoSession, message: pre.message },
+      );
+      await writeError({
+        profile: "",
+        accountId: "",
+        roleName: "",
+        service: "sso",
+        phase: "preflight_sso",
+        kind: "auth_expired",
+        message: ssoRemediation(ssoSession),
+        scannedAt,
+      });
+      context.logger.info(
+        "iam-role-audit complete: {roles} role row(s) ({present} present), {errors} error(s)",
+        { roles: roleCount, present: presentCount, errors: errorCount },
+      );
+      return { dataHandles: handles, roleCount, presentCount, errorCount };
+    }
+    if (pre.status === "network") {
+      context.logger.warn(
+        "SSO pre-flight hit a transient network error; proceeding with the " +
+          "per-profile sweep: {message}",
+        { message: pre.message },
+      );
+    }
+  }
 
   for (const target of targets) {
     const profileLabel = target.profile;
@@ -723,6 +776,8 @@ export async function runAudit(deps: AuditDeps): Promise<AuditResult> {
         profile: profileLabel,
         accountId: "",
         roleName: "",
+        // No AWS service is involved — the profile is refused before any call.
+        service: "",
         phase: "profile_suffix_check",
         kind: "other",
         message:
@@ -745,6 +800,8 @@ export async function runAudit(deps: AuditDeps): Promise<AuditResult> {
         profile: profileLabel,
         accountId: "",
         roleName: "",
+        // sts:GetCallerIdentity is what failed (also the credential probe).
+        service: "sts",
         phase: "credentials",
         kind,
         message,
@@ -837,6 +894,10 @@ export async function runAudit(deps: AuditDeps): Promise<AuditResult> {
           profile: profileLabel,
           accountId,
           roleName: spec.roleName,
+          // The per-role reads that can throw here are all IAM
+          // (GetRole / ListAttachedRolePolicies / ListRolePolicies);
+          // findManagingStack swallows its own CloudFormation errors.
+          service: "iam",
           phase: "get_role",
           kind,
           message,
@@ -870,8 +931,13 @@ export async function runAudit(deps: AuditDeps): Promise<AuditResult> {
  */
 export const model = {
   type: "@jentz/aws-iam-role-audit",
-  version: "2026.06.22.0",
+  version: "2026.06.26.1",
   globalArguments: GlobalArgsSchema,
+  // The upgrade chain's tail toVersion must equal model.version — swamp
+  // registry/host loading rejects a model where the two drift. The no-op
+  // upgrades advance the stored typeVersion on existing instances so the chain
+  // stays clean: the new `service` field on `scan_error` defaults to `""` on
+  // reads, so pre-existing stored rows still parse without a data migration.
   upgrades: [
     {
       toVersion: "2026.06.13.0",
@@ -881,6 +947,15 @@ export const model = {
     {
       toVersion: "2026.06.22.0",
       description: "Dependency refresh, no globalArguments schema changes",
+      upgradeAttributes: (old: Record<string, unknown>) => old,
+    },
+    {
+      toVersion: "2026.06.26.1",
+      description:
+        "Adopt shared scan-error/credential libs: add `service` tag to " +
+        "scan_error, `network` classification, optional ssoSession pre-flight, " +
+        "and adaptive retry. `service` reads default '' so stored rows still " +
+        "parse; no row migration needed.",
       upgradeAttributes: (old: Record<string, unknown>) => old,
     },
   ],
@@ -959,6 +1034,11 @@ export const model = {
           roles,
           requiredProfileSuffix: g.requiredProfileSuffix,
           ambientProfile,
+          // Pre-flight the shared SSO session (if configured) once, against the
+          // same region the IAM/STS endpoint targets. The default (disk-cache)
+          // resolver is used in production; tests inject a fake.
+          ssoSession: g.ssoSession,
+          ssoRegion: g.region,
           context,
         });
       },

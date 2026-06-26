@@ -210,6 +210,8 @@ function remediationForKind(kind: string): string {
       return "run `aws sso login`";
     case "access_denied":
       return "check the role's IAM permissions / SCPs";
+    case "network":
+      return "transient network failure — retry the scan";
     default:
       return "investigate the upstream scan error";
   }

@@ -427,6 +427,198 @@ Deno.test("smoke: model.audit throws on unset stackLookupRegions before any AWS 
   );
 });
 
+Deno.test("smoke: a network blip during credential resolution classifies as network and tags service:'sts'", async () => {
+  const { context, written } = makeContext();
+
+  // A getaddrinfo/ENOTFOUND failure during credential resolution surfaces as a
+  // "Could not load credentials" CredentialsProviderError — the shared lib must
+  // classify it `network` (checked before auth_expired) so a transient DNS blip
+  // never sends the operator to `aws sso login`.
+  const networkErr = Object.assign(
+    new Error("Could not load credentials from any providers"),
+    {
+      name: "CredentialsProviderError",
+      cause: new Error("getaddrinfo ENOTFOUND sts.us-east-1.amazonaws.com"),
+    },
+  );
+
+  const result = await runAudit({
+    targets: [{
+      profile: "acct-readonly",
+      api: fakeApi({
+        accountId: "",
+        roles: {},
+        credentialError: networkErr,
+      }),
+    }],
+    roles: [spec()],
+    requiredProfileSuffix: "",
+    ambientProfile: "",
+    context,
+  });
+
+  const errors = written.filter((w) => w.spec === "scan_error");
+  assertEquals(errors.length, 1);
+  assertEquals(errors[0].data.phase, "credentials");
+  assertEquals(errors[0].data.kind, "network");
+  // The credentials probe is sts:GetCallerIdentity — tag it as such.
+  assertEquals(errors[0].data.service, "sts");
+  assertEquals(result.roleCount, 0);
+});
+
+Deno.test("smoke: a per-role read failure tags the scan_error service as iam", async () => {
+  const { context, written } = makeContext();
+  await runAudit({
+    targets: [{
+      profile: "acct-readonly",
+      api: fakeApi({
+        accountId: "444444444444",
+        roles: {},
+        failRoles: new Set(["Locked"]),
+      }),
+    }],
+    roles: [spec({ roleName: "Locked" })],
+    requiredProfileSuffix: "",
+    ambientProfile: "",
+    context,
+  });
+  const err = written.find((w) => w.spec === "scan_error")!.data;
+  assertEquals(err.phase, "get_role");
+  assertEquals(err.service, "iam");
+});
+
+// ---- SSO pre-flight (injected resolver via the audit seam) -----------------
+
+Deno.test("smoke: expired SSO pre-flight short-circuits the sweep with one service:'sso' error", async () => {
+  const { context, written } = makeContext();
+  // Tripwire: the per-profile loop must never run once pre-flight reports the
+  // session expired.
+  const tripwire: IamApi = {
+    getAccountId: () => Promise.reject(new Error("must not be called")),
+    getRole: () => Promise.reject(new Error("must not be called")),
+    listAttachedPolicyArns: () =>
+      Promise.reject(new Error("must not be called")),
+    listInlinePolicyNames: () =>
+      Promise.reject(new Error("must not be called")),
+    findManagingStack: () => Promise.reject(new Error("must not be called")),
+  };
+
+  const result = await runAudit({
+    targets: [{ profile: "acct-a-readonly", api: tripwire }],
+    roles: [spec()],
+    requiredProfileSuffix: "",
+    ambientProfile: "",
+    ssoSession: "prod-sso",
+    ssoRegion: "us-east-1",
+    // The cached token is expired — the resolver rejects with an expiry signal.
+    resolveSsoToken: () =>
+      Promise.reject(new Error("SSO session token is expired")),
+    context,
+  });
+
+  assertEquals(result.errorCount, 1);
+  assertEquals(result.roleCount, 0);
+  const errors = written.filter((w) => w.spec === "scan_error");
+  assertEquals(errors.length, 1);
+  const err = errors[0].data;
+  assertEquals(err.service, "sso");
+  assertEquals(err.phase, "preflight_sso");
+  assertEquals(err.kind, "auth_expired");
+  assertEquals(err.profile, "");
+  assert(String(err.message).includes("aws sso login"));
+  assert(String(err.message).includes("prod-sso"));
+});
+
+Deno.test("smoke: a healthy SSO pre-flight proceeds into the per-profile sweep", async () => {
+  const { context, written } = makeContext();
+  const result = await runAudit({
+    targets: [{
+      profile: "acct-a-readonly",
+      api: fakeApi({
+        accountId: "111111111111",
+        roles: {
+          DemoRole: {
+            role: { Arn: "arn:aws:iam::111111111111:role/DemoRole" },
+          },
+        },
+      }),
+    }],
+    roles: [spec()],
+    requiredProfileSuffix: "",
+    ambientProfile: "",
+    ssoSession: "prod-sso",
+    ssoRegion: "us-east-1",
+    resolveSsoToken: () => Promise.resolve({ accessToken: "ok" }),
+    context,
+  });
+  // Token resolved → the loop ran and wrote the role row, no pre-flight error.
+  assertEquals(result.errorCount, 0);
+  assertEquals(result.roleCount, 1);
+  assertEquals(written.filter((w) => w.spec === "role").length, 1);
+});
+
+Deno.test("smoke: a network-blip SSO pre-flight does NOT short-circuit; the sweep proceeds", async () => {
+  const { context, written } = makeContext();
+  const result = await runAudit({
+    targets: [{
+      profile: "acct-a-readonly",
+      api: fakeApi({
+        accountId: "111111111111",
+        roles: {
+          DemoRole: {
+            role: { Arn: "arn:aws:iam::111111111111:role/DemoRole" },
+          },
+        },
+      }),
+    }],
+    roles: [spec()],
+    requiredProfileSuffix: "",
+    ambientProfile: "",
+    ssoSession: "prod-sso",
+    ssoRegion: "us-east-1",
+    // A transient DNS blip during token resolution → classified `network`,
+    // which must not abort the whole sweep over one flaky lookup.
+    resolveSsoToken: () =>
+      Promise.reject(
+        new Error("getaddrinfo ENOTFOUND oidc.us-east-1.amazonaws.com"),
+      ),
+    context,
+  });
+  assertEquals(result.errorCount, 0);
+  assertEquals(result.roleCount, 1);
+  assertEquals(written.filter((w) => w.spec === "role").length, 1);
+});
+
+Deno.test("smoke: no ssoSession means the pre-flight is skipped entirely (no-op)", async () => {
+  const { context } = makeContext();
+  let resolverCalled = false;
+  const result = await runAudit({
+    targets: [{
+      profile: "acct-a-readonly",
+      api: fakeApi({
+        accountId: "111111111111",
+        roles: {
+          DemoRole: {
+            role: { Arn: "arn:aws:iam::111111111111:role/DemoRole" },
+          },
+        },
+      }),
+    }],
+    roles: [spec()],
+    requiredProfileSuffix: "",
+    ambientProfile: "",
+    // ssoSession omitted → pre-flight skipped; this resolver must never run.
+    resolveSsoToken: () => {
+      resolverCalled = true;
+      return Promise.reject(new Error("must not call"));
+    },
+    context,
+  });
+  assertEquals(resolverCalled, false);
+  assertEquals(result.errorCount, 0);
+  assertEquals(result.roleCount, 1);
+});
+
 Deno.test("smoke: every test finishes well under the network budget", () => {
   // Sentinel — the smoke tests above all complete in single-digit
   // milliseconds. Anything touching the network would blow past that and
