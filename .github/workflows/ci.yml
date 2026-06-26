@@ -25,7 +25,8 @@ jobs:
       - name: sync-lib drift
         # Fail if any generated per-package `_lib` copy has drifted from its
         # canonical source under repo-root `_lib/`. Mirrored in scripts/check.sh.
-        run: deno run --allow-read --allow-write scripts/sync-lib.ts --check
+        # Read-only (--check never writes), so the gate cannot self-heal drift.
+        run: deno run --allow-read scripts/sync-lib.ts --check
       - name: check
         shell: bash
         run: |

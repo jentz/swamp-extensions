@@ -14,7 +14,7 @@
  *
  * Usage (invoked directly, not as a `deno task`, on purpose — see below):
  *   deno run --allow-read --allow-write scripts/sync-lib.ts            # regenerate
- *   deno run --allow-read --allow-write scripts/sync-lib.ts --check    # drift gate
+ *   deno run --allow-read scripts/sync-lib.ts --check                  # drift gate (read-only)
  *
  * Why a direct invocation rather than a `deno task`: swamp derives each
  * extension's package content hash from the manifest, every referenced source
