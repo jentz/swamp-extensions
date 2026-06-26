@@ -104,11 +104,22 @@ interface RunOutcome {
   logs: Array<{ level: string; message: string }>;
 }
 
+interface RunOpts {
+  requiredProfileSuffix?: string;
+  ssoSession?: string;
+  ssoRegion?: string;
+  resolveSsoToken?: (session: string, region: string) => Promise<unknown>;
+}
+
 async function runWithTargets(
   targets: SweepTarget[],
   regions: string[],
-  requiredProfileSuffix = "",
+  opts: RunOpts | string = {},
 ): Promise<RunOutcome> {
+  // Back-compat positional form: a bare string is the requiredProfileSuffix.
+  const o: RunOpts = typeof opts === "string"
+    ? { requiredProfileSuffix: opts }
+    : opts;
   const written: WrittenResource[] = [];
   const logs: Array<{ level: string; message: string }> = [];
   const log = (level: string) => (message: string) =>
@@ -134,7 +145,10 @@ async function runWithTargets(
   const result = await runSweep({
     targets,
     regions,
-    requiredProfileSuffix,
+    requiredProfileSuffix: o.requiredProfileSuffix ?? "",
+    ssoSession: o.ssoSession,
+    ssoRegion: o.ssoRegion,
+    resolveSsoToken: o.resolveSsoToken,
     context,
   });
   return { result, written, logs };
@@ -253,12 +267,14 @@ Deno.test("smoke: two accounts × two regions sweep in one pass", async () => {
   assertEquals((reserved[0].data as ReservedRecord).dbInstanceCount, 2);
 });
 
-Deno.test("smoke: storage-key separator is locked to `--` (task-57 published contract)", () => {
+Deno.test("smoke: instance/reserved storage-key separator is locked to `--` (task-57 published contract)", () => {
   // The double-hyphen joins the hyphen-bearing identifier; account id and region
   // keep single hyphens since they are self-delimiting (12 digits / closed set).
   // The 12-digit literals below are intentional and load-bearing: the property
   // under test is that a fixed-width, all-digit account id is self-delimiting,
   // so a named placeholder would no longer prove it. Documented exception.
+  // (scan_error keys are covered separately — they use the canonical fleet key,
+  // not this `--` convention.)
   assertEquals(
     instanceKey("111122223333", "us-east-1", "orders-db"),
     "instance-111122223333-us-east-1--orders-db",
@@ -267,44 +283,45 @@ Deno.test("smoke: storage-key separator is locked to `--` (task-57 published con
     reservedKey("111122223333", "us-east-1", "ri-a-east"),
     "reserved-111122223333-us-east-1--ri-a-east",
   );
+});
 
-  // scanErrorKey: empty segments for the ambient chain / account-level failure,
-  // NOT word-sentinels — so a profile literally named `ambient` (or a region
-  // named `account`) cannot collide with the absent-value case.
+Deno.test("smoke: scanErrorKey uses the canonical fleet format (4-arg, single-hyphen, ambient/account sentinels)", () => {
+  // The canonical key is `error-<profile|ambient>-<region|account>-<service>-<phase>`
+  // (single hyphens; the absent profile/region render as the `ambient`/`account`
+  // sentinel words, not empty segments). The legacy `--`/operator-string
+  // injectivity contract no longer applies — the canonical key trades it for the
+  // shared fleet shape — so those assertions are intentionally dropped.
   assertEquals(
-    scanErrorKey("", "us-east-1", "credentials"),
-    "error----us-east-1--credentials",
+    scanErrorKey("", "us-east-1", "sts", "credentials"),
+    "error-ambient-us-east-1-sts-credentials",
   );
-  // Account-level failure: empty region renders as an empty segment (`----`),
-  // not a sentinel word.
+  // Account-level failure: empty region renders as the `account` sentinel.
   assertEquals(
-    scanErrorKey("ro", "", "credentials"),
-    "error--ro----credentials",
+    scanErrorKey("ro", "", "sts", "credentials"),
+    "error-ro-account-sts-credentials",
   );
+  // Field-swap: profile/region are positional; swapping a value changes the key.
   assert(
-    scanErrorKey("ambient", "us-east-1", "credentials") !==
-      scanErrorKey("", "us-east-1", "credentials"),
-    "a profile named 'ambient' must not collide with the ambient chain",
-  );
-  assert(
-    scanErrorKey("ro", "account", "credentials") !==
-      scanErrorKey("ro", "", "credentials"),
-    "a region named 'account' must not collide with an account-level failure",
-  );
-  // A profile is a free operator string that MAY contain `--`. Injectivity does
-  // not rely on the separator being absent from the profile — it relies on the
-  // trailing region/phase being closed-set — so a `--`-bearing profile must
-  // still decode distinctly from a swap of where that `--` lands.
-  assert(
-    scanErrorKey("team--prod", "us-east-1", "credentials") !==
-      scanErrorKey("team", "us-east-1", "credentials"),
-    "a profile containing '--' must not collide with a shorter profile",
-  );
-  // Field-swap: a value in profile vs the same value in region must not collide.
-  assert(
-    scanErrorKey("", "us-east-1", "credentials") !==
-      scanErrorKey("us-east-1", "", "credentials"),
+    scanErrorKey("", "us-east-1", "sts", "credentials") !==
+      scanErrorKey("us-east-1", "", "sts", "credentials"),
     "profile/region are positional; swapping a value must change the key",
+  );
+  // Two malformed rows in the SAME base phase get DISTINCT keys because the
+  // per-row discriminator is folded into the `phase` segment.
+  assert(
+    scanErrorKey(
+      "ro",
+      "us-east-1",
+      "rds",
+      "malformed_db_instance:0:orders-db",
+    ) !==
+      scanErrorKey(
+        "ro",
+        "us-east-1",
+        "rds",
+        "malformed_db_instance:1:billing-db",
+      ),
+    "two malformed rows in one base phase must get distinct keys via the discriminated phase",
   );
 });
 
@@ -351,9 +368,15 @@ Deno.test("smoke: a denied region degrades to scan_error; the rest of the sweep 
   assertEquals(err.phase, "describe_db_instances");
   assertEquals(err.kind, "access_denied");
   assertEquals(err.region, "ap-southeast-2");
+  assertEquals(err.service, "rds");
   assertEquals(
     ofSpec(out.written, "scan_error")[0].key,
-    scanErrorKey("app-readonly", "ap-southeast-2", "describe_db_instances"),
+    scanErrorKey(
+      "app-readonly",
+      "ap-southeast-2",
+      "rds",
+      "describe_db_instances",
+    ),
   );
 });
 
@@ -418,6 +441,80 @@ Deno.test("smoke: a credential failure skips the account but not its peers", asy
   assertEquals(err.phase, "credentials");
   assertEquals(err.kind, "auth_expired");
   assertEquals(err.profile, "stale-readonly");
+});
+
+Deno.test("smoke: an expired SSO pre-flight short-circuits the whole sweep with one sso-tagged error", async () => {
+  // The pre-flight token resolve rejects -> classifyError sees an expired-token
+  // signature -> preflightSso returns `expired`. runSweep writes ONE scan_error
+  // tagged service:"sso", phase:"preflight_sso", and returns before touching any
+  // target's credentials.
+  const out = await runWithTargets(
+    [target("prod-readonly", {
+      // If the loop ran, this account would contribute an instance — proving it
+      // never ran is the point of the short-circuit.
+      accountId: ACCOUNT_ALPHA,
+      perRegion: {
+        "us-east-1": {
+          instances: [{
+            DBInstanceIdentifier: "should-not-be-swept",
+            DBInstanceClass: "db.r7g.large",
+            Engine: "postgres",
+            DBInstanceStatus: "available",
+          }],
+        },
+      },
+    })],
+    ["us-east-1"],
+    {
+      requiredProfileSuffix: "-readonly",
+      ssoSession: "fleet-sso",
+      ssoRegion: "us-east-1",
+      resolveSsoToken: () =>
+        Promise.reject(new Error("Token has expired and refresh failed")),
+    },
+  );
+
+  assertEquals(out.result.instanceCount, 0);
+  assertEquals(out.result.errorCount, 1);
+  const err = ofSpec(out.written, "scan_error")[0].data as ScanError;
+  assertEquals(err.service, "sso");
+  assertEquals(err.phase, "preflight_sso");
+  assertEquals(err.kind, "auth_expired");
+});
+
+Deno.test("smoke: a transient-network SSO pre-flight does NOT short-circuit; the sweep proceeds", async () => {
+  // A network blip during the pre-flight must not abort the sweep (re-login
+  // would be a pointless remediation). preflightSso returns `network`, runSweep
+  // logs it and continues into the per-profile loop.
+  const out = await runWithTargets(
+    [target("prod-readonly", {
+      accountId: ACCOUNT_ALPHA,
+      perRegion: {
+        "us-east-1": {
+          instances: [{
+            DBInstanceIdentifier: "live-db",
+            DBInstanceClass: "db.r7g.large",
+            Engine: "postgres",
+            DBInstanceStatus: "available",
+          }],
+        },
+      },
+    })],
+    ["us-east-1"],
+    {
+      requiredProfileSuffix: "-readonly",
+      ssoSession: "fleet-sso",
+      ssoRegion: "us-east-1",
+      resolveSsoToken: () =>
+        Promise.reject(
+          new Error("getaddrinfo ENOTFOUND oidc.us-east-1.amazonaws.com"),
+        ),
+    },
+  );
+
+  // The sweep ran: the instance was swept and no scan_error was written.
+  assertEquals(out.result.instanceCount, 1);
+  assertEquals(out.result.errorCount, 0);
 });
 
 Deno.test("smoke: empty fleet across every region writes nothing", async () => {

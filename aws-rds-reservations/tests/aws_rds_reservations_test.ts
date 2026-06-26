@@ -93,6 +93,21 @@ Deno.test("classifyError: SSO role ARN in AccessDenied does NOT misfire to auth_
   assertEquals(classifyError(err).kind, "access_denied");
 });
 
+Deno.test("classifyError: a transient network failure classifies as network (before auth_expired)", () => {
+  // The SDK wraps a DNS/socket failure during credential resolution in a
+  // "could not load credentials" CredentialsProviderError, which would otherwise
+  // read as auth_expired. The canonical classifier checks network FIRST so a
+  // transient blip does not demand a needless re-login.
+  const wrapped = new Error(
+    "Could not load credentials from any providers",
+  );
+  wrapped.name = "CredentialsProviderError";
+  wrapped.cause = new Error(
+    "getaddrinfo ENOTFOUND sts.us-east-1.amazonaws.com",
+  );
+  assertEquals(classifyError(wrapped).kind, "network");
+});
+
 Deno.test("resolveBootstrapRegion: first configured region wins", () => {
   assertEquals(
     resolveBootstrapRegion(["us-east-1"], () => undefined),
@@ -363,8 +378,8 @@ Deno.test("runSweep: DescribeDBInstances error in one region does not abort; res
   assertEquals(err.kind, "access_denied");
 });
 
-Deno.test("runSweep: credential failure writes one scan_error and skips the account", async () => {
-  const { context } = createModelTestContext({});
+Deno.test("runSweep: credential failure writes one sts-tagged scan_error and skips the account", async () => {
+  const { context, getWrittenResources } = createModelTestContext({});
   const expired = new Error("Token has expired");
   expired.name = "ExpiredTokenException";
   const result = await runSweep({
@@ -376,6 +391,13 @@ Deno.test("runSweep: credential failure writes one scan_error and skips the acco
   assertEquals(result.instanceCount, 0);
   assertEquals(result.reservedCount, 0);
   assertEquals(result.errorCount, 1);
+  // The failing service is tagged so the report can name it (sts:GetCallerIdentity
+  // is both the credential probe and what failed here).
+  const err = getWrittenResources().find((w) => w.specName === "scan_error")!
+    .data as Record<string, unknown>;
+  assertEquals(err.service, "sts");
+  assertEquals(err.phase, "credentials");
+  assertEquals(err.kind, "auth_expired");
 });
 
 Deno.test("runSweep: profile failing required-suffix is skipped before any AWS call", async () => {
@@ -1133,7 +1155,7 @@ Deno.test("runSweep: instance missing DBInstanceIdentifier -> malformed_db_insta
   assertEquals(written.filter((w) => w.specName === "instance").length, 0);
   const err = written.find((w) => w.specName === "scan_error")!
     .data as Record<string, unknown>;
-  assertEquals(err.phase, "malformed_db_instance");
+  assertStringIncludes(err.phase as string, "malformed_db_instance");
   assertEquals(err.kind, "other");
   assertStrictEquals(
     (err.message as string).includes("DBInstanceIdentifier"),
@@ -1168,7 +1190,7 @@ Deno.test("runSweep: instance missing DBInstanceClass -> malformed_db_instance s
   assertEquals(written.filter((w) => w.specName === "instance").length, 0);
   const err = written.find((w) => w.specName === "scan_error")!
     .data as Record<string, unknown>;
-  assertEquals(err.phase, "malformed_db_instance");
+  assertStringIncludes(err.phase as string, "malformed_db_instance");
   assertStrictEquals((err.message as string).includes("DBInstanceClass"), true);
 });
 
@@ -1199,7 +1221,7 @@ Deno.test("runSweep: instance missing Engine -> malformed_db_instance scan_error
   assertEquals(written.filter((w) => w.specName === "instance").length, 0);
   const err = written.find((w) => w.specName === "scan_error")!
     .data as Record<string, unknown>;
-  assertEquals(err.phase, "malformed_db_instance");
+  assertStringIncludes(err.phase as string, "malformed_db_instance");
   assertStrictEquals((err.message as string).includes("Engine"), true);
 });
 
@@ -1232,7 +1254,10 @@ Deno.test("runSweep: reserved missing ReservedDBInstanceId -> malformed_reserved
   assertEquals(written.filter((w) => w.specName === "reserved").length, 0);
   const err = written.find((w) => w.specName === "scan_error")!
     .data as Record<string, unknown>;
-  assertEquals(err.phase, "malformed_reserved_db_instance");
+  assertStringIncludes(
+    err.phase as string,
+    "malformed_reserved_db_instance",
+  );
   assertEquals(err.kind, "other");
   assertStrictEquals(
     (err.message as string).includes("ReservedDBInstanceId"),
@@ -1269,7 +1294,10 @@ Deno.test("runSweep: reserved missing DBInstanceCount -> malformed_reserved_db_i
   assertEquals(written.filter((w) => w.specName === "reserved").length, 0);
   const err = written.find((w) => w.specName === "scan_error")!
     .data as Record<string, unknown>;
-  assertEquals(err.phase, "malformed_reserved_db_instance");
+  assertStringIncludes(
+    err.phase as string,
+    "malformed_reserved_db_instance",
+  );
   assertStrictEquals((err.message as string).includes("DBInstanceCount"), true);
 });
 
@@ -1302,7 +1330,10 @@ Deno.test("runSweep: reserved missing ProductDescription -> malformed_reserved_d
   assertEquals(written.filter((w) => w.specName === "reserved").length, 0);
   const err = written.find((w) => w.specName === "scan_error")!
     .data as Record<string, unknown>;
-  assertEquals(err.phase, "malformed_reserved_db_instance");
+  assertStringIncludes(
+    err.phase as string,
+    "malformed_reserved_db_instance",
+  );
   assertStrictEquals(
     (err.message as string).includes("ProductDescription"),
     true,
@@ -1396,9 +1427,16 @@ Deno.test("runSweep: two malformed instance rows (hyphenated ids) in same region
   const keys = errs.map((w) => w.name);
   // Distinct keys -> the keyed store would persist BOTH, not collapse to one.
   assertEquals(new Set(keys).size, 2);
-  // Each key carries its row id behind the established `--` boundary.
-  assertStrictEquals(keys.some((k) => k.endsWith("--0-orders-db")), true);
-  assertStrictEquals(keys.some((k) => k.endsWith("--1-billing-db")), true);
+  // The canonical key folds the per-row discriminator into the trailing phase
+  // segment, so each key ends with `<base phase>:<ordinal>:<row id>`.
+  assertStrictEquals(
+    keys.some((k) => k.endsWith("malformed_db_instance:0:orders-db")),
+    true,
+  );
+  assertStrictEquals(
+    keys.some((k) => k.endsWith("malformed_db_instance:1:billing-db")),
+    true,
+  );
 });
 
 Deno.test("runSweep: two malformed reserved rows in same region -> distinct scan_error keys", async () => {
@@ -1473,8 +1511,15 @@ Deno.test("runSweep: WORST CASE - two id-less malformed rows in same region -> d
   const errs = getWrittenResources().filter((w) => w.specName === "scan_error");
   assertEquals(errs.length, 2);
   const keys = errs.map((w) => w.name);
-  // The ordinal fallback keeps two id-less rows distinct.
+  // The ordinal fallback keeps two id-less rows distinct: with no row id the
+  // discriminated phase falls back to `<base phase>:<ordinal>:noid`.
   assertEquals(new Set(keys).size, 2);
-  assertStrictEquals(keys.some((k) => k.endsWith("--0-noid")), true);
-  assertStrictEquals(keys.some((k) => k.endsWith("--1-noid")), true);
+  assertStrictEquals(
+    keys.some((k) => k.endsWith("malformed_db_instance:0:noid")),
+    true,
+  );
+  assertStrictEquals(
+    keys.some((k) => k.endsWith("malformed_db_instance:1:noid")),
+    true,
+  );
 });

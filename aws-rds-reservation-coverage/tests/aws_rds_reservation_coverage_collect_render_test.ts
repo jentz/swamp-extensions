@@ -189,6 +189,7 @@ const scanErrorFixture: ModelScanError = {
   profile: "stale-readonly",
   accountId: ACCOUNT_BETA,
   region: "ap-southeast-2",
+  service: "rds",
   phase: "describe_db_instances",
   kind: "access_denied",
   message: "User is not authorized to perform rds:DescribeDBInstances",
@@ -229,6 +230,48 @@ Deno.test("collect: producer-shaped instance/reserved/error rows all decode with
   // skipped === 0 is the agreement assertion: the consumer schema accepted
   // every producer-shaped record. Any drift would have skipped them.
   assertEquals(collected.skipped, 0);
+});
+
+Deno.test("collect/report: a synthetic network scan_error decodes, is counted (not skipped), and renders", async () => {
+  // The canonical twin adds the `network` kind and the `service` tag. A
+  // network-kind row must parse into errors (not fail safeParse and land in
+  // skipped), land in errorsByKind.network, and render in the transient-network
+  // section rather than being miscounted as a malformed/other failure.
+  const networkError: ModelScanError = {
+    profile: "prod-readonly",
+    accountId: ACCOUNT_GAMMA,
+    region: "eu-west-1",
+    service: "rds",
+    phase: "describe_db_instances",
+    kind: "network",
+    message: "getaddrinfo ENOTFOUND rds.eu-west-1.amazonaws.com",
+    scannedAt: "2026-06-05T00:00:00.000Z",
+  };
+  const { context } = stubContext([
+    {
+      name: "net-err",
+      version: 1,
+      specName: SCAN_ERROR_SPEC,
+      json: networkError,
+    },
+  ]);
+
+  const collected = await collect(context);
+  assertEquals(collected.errors.length, 1);
+  assertEquals(collected.skipped, 0);
+  assertEquals(collected.errors[0].kind, "network");
+  assertEquals(collected.errors[0].service, "rds");
+
+  const result = await report.execute({
+    ...(context as Record<string, unknown>),
+    workflowName: "coverage-test",
+  });
+  assertEquals(result.json.errorsByKind.network, 1);
+  // The row renders in the transient-network section and surfaces service/region.
+  assertStringIncludes(result.markdown, "Transient network errors");
+  assertStringIncludes(result.markdown, "`rds` in `eu-west-1`");
+  // It is counted as a coverage gap of its own kind, not folded into "other".
+  assertStringIncludes(result.markdown, "**1** transient network error(s)");
 });
 
 Deno.test("collect: decoded field values survive the round-trip", async () => {
@@ -850,7 +893,12 @@ Deno.test("report.execute: a post-collect throw yields a coherent, all-empty deg
   assertEquals(j.accountCount, 0);
   assertEquals(j.regionCount, 0);
   assertEquals(j.skipped, 0);
-  assertEquals(j.errorsByKind, { auth_expired: 0, access_denied: 0, other: 0 });
+  assertEquals(j.errorsByKind, {
+    network: 0,
+    auth_expired: 0,
+    access_denied: 0,
+    other: 0,
+  });
   assertEquals(j.totalRunningLargeEq, 0);
   assertEquals(j.totalReservedLargeEq, 0);
   assertEquals(j.largeEqToBuy, 0);
@@ -874,6 +922,7 @@ Deno.test("report.execute: a no_regions scan_error degrades the report, no healt
     profile: "",
     accountId: "",
     region: "",
+    service: "",
     phase: "no_regions",
     kind: "other",
     message:

@@ -120,6 +120,13 @@
  */
 
 import { z } from "npm:zod@4.4.3";
+import {
+  errorBucket,
+  type ScanError,
+  ScanErrorSchema,
+} from "./_lib/scan_error.ts";
+
+export type { ScanError };
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -197,15 +204,12 @@ const ReservedRecordSchema = z.object({
   scannedAt: z.iso.datetime(),
 });
 
-const ScanErrorSchema = z.object({
-  profile: z.string(),
-  accountId: z.string(),
-  region: z.string(),
-  phase: z.string(),
-  kind: z.enum(["auth_expired", "access_denied", "other"]),
-  message: z.string(),
-  scannedAt: z.iso.datetime(),
-});
+// The `scan_error` shape (schema + `ScanError` interface) is imported from the
+// shared `./_lib/scan_error.ts` twin (above), so a `network`-kind row and the
+// `service` tag decode strictly rather than being dropped as malformed. The
+// `instance` / `reserved` shapes stay hand-mirrored here: they carry no shared
+// fleet machinery, and the producer-import drift tripwire in the tests still
+// guards them.
 
 // Explicit interfaces (not `z.infer`) keep the public API free of slow types:
 // a `z.infer` export leaks the private schema const and zod's internal `output`
@@ -280,24 +284,6 @@ export interface ReservedRecord {
   /** ISO 8601 reservation start time, or `""` if unknown. */
   startTime: string;
   /** ISO 8601 sweep timestamp. */
-  scannedAt: string;
-}
-
-/** A decoded scan-error row. */
-export interface ScanError {
-  /** Profile being swept; `""` for ambient. */
-  profile: string;
-  /** Account id if known by the time of failure; `""` otherwise. */
-  accountId: string;
-  /** Region being swept; `""` for account-level failures. */
-  region: string;
-  /** Stage that failed: `credentials`, `describe_db_instances`, … */
-  phase: string;
-  /** Coarse classification driving the operator's next action. */
-  kind: "auth_expired" | "access_denied" | "other";
-  /** Error detail. */
-  message: string;
-  /** ISO 8601 timestamp. */
   scannedAt: string;
 }
 
@@ -1995,6 +1981,7 @@ export function renderMarkdown(
   workflowName: string,
 ): string {
   const { errors } = collected;
+  const networkErrors = errors.filter((e) => e.kind === "network");
   const authExpired = errors.filter((e) => e.kind === "auth_expired");
   const accessDenied = errors.filter((e) => e.kind === "access_denied");
   const otherErrors = errors.filter((e) => e.kind === "other");
@@ -2059,6 +2046,9 @@ export function renderMarkdown(
     `- Coverage gaps: **${authExpired.length}** scan(s) need ` +
       "`aws sso login`, " +
       `**${accessDenied.length}** blocked by SCP/IAM` +
+      (networkErrors.length
+        ? `, **${networkErrors.length}** transient network error(s)`
+        : "") +
       (otherErrors.length ? `, **${otherErrors.length}** other error(s)` : ""),
   );
   lines.push("");
@@ -2378,6 +2368,29 @@ export function renderMarkdown(
     lines.push("");
   }
 
+  if (networkErrors.length > 0) {
+    lines.push(
+      `## 🌐 Transient network errors (\`${errorBucket("network")}\`)`,
+    );
+    lines.push("");
+    lines.push(
+      `${networkErrors.length} scan(s) hit a transient DNS/socket failure and ` +
+        "could not be assessed — re-run the sweep to clear them. Affected " +
+        "service/region pairs:",
+    );
+    lines.push("");
+    const seen = new Set<string>();
+    for (const e of networkErrors) {
+      const svc = e.service || "<unknown>";
+      const reg = e.region || "<account>";
+      const key = `${svc}/${reg}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      lines.push(`- \`${svc}\` in \`${reg}\``);
+    }
+    lines.push("");
+  }
+
   return lines.join("\n") + "\n";
 }
 
@@ -2619,6 +2632,7 @@ export const report = {
     }
 
     const errorsByKind: Record<string, number> = {
+      network: 0,
       auth_expired: 0,
       access_denied: 0,
       other: 0,
