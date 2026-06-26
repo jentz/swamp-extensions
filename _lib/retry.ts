@@ -1,7 +1,3 @@
-// Auto-generated from _lib/retry.ts by scripts/sync-lib.ts.
-// Do not edit manually. Re-generate with:
-//   deno run --allow-read --allow-write scripts/sync-lib.ts
-
 /**
  * Exponential-backoff retry helper for AWS RDS API calls.
  *

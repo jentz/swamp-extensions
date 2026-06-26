@@ -821,7 +821,7 @@ export async function runListClusters(
  */
 export const model = {
   type: "@jentz/aws-rds-inventory",
-  version: "2026.06.22.0",
+  version: "2026.06.26.0",
   globalArguments: GlobalArgsSchema,
   // The 2026.06.05.1, 2026.06.06.1, 2026.06.07.1, and 2026.06.07.2 releases
   // changed only internals (server-side DescribeDBInstances filtering, AWS SDK
@@ -859,6 +859,13 @@ export const model = {
     {
       toVersion: "2026.06.22.0",
       description: "Dependency refresh, no globalArguments schema changes",
+      upgradeAttributes: (old: Record<string, unknown>) => old,
+    },
+    {
+      toVersion: "2026.06.26.0",
+      description:
+        "Shared retry helper regenerated from canonical _lib (generated " +
+        "header only); no globalArguments schema or runtime changes",
       upgradeAttributes: (old: Record<string, unknown>) => old,
     },
   ],

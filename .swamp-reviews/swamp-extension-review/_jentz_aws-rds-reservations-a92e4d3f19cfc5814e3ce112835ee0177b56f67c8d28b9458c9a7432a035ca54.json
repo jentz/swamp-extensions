@@ -1,0 +1,82 @@
+{
+  "extension": "@jentz/aws-rds-reservations",
+  "version": "2026.06.26.0",
+  "reviewedAt": "2026-06-26T15:58:32Z",
+  "dimensions": [
+    {
+      "id": "credentials-secrets",
+      "verdict": "pass",
+      "note": "Change is comment-only plus a version bump: the shared `_lib/retry.ts` twin gains a generated header and drops a stale SYNC note, and model.version aligns to 2026.06.26.0 with a no-op upgrade entry. No credential paths added or altered; the sweep still resolves AWS credentials via environment/profile."
+    },
+    {
+      "id": "logging-quality",
+      "verdict": "pass",
+      "note": "No logging calls changed. The retry helper's onRetry surface and its structured fields are byte-identical below the new comment header."
+    },
+    {
+      "id": "error-handling",
+      "verdict": "pass",
+      "note": "No control-flow or catch/throw behavior changed. isThrottlingError matching and withRetry full-jitter backoff are byte-identical; only comments differ. The per-(profile,region) scan_error handling in the model is untouched."
+    },
+    {
+      "id": "testing-completeness",
+      "verdict": "pass",
+      "note": "Existing retry and metadata/upgrade-chain unit suites stay green; the canonical _lib/ adds its own unit suites run by deno task check. Comment + version-alignment change needs no new tests."
+    },
+    {
+      "id": "idempotency-resilience",
+      "verdict": "pass",
+      "note": "No method semantics changed; the sweep remains read-only (Describe* + GetCallerIdentity). Retry behavior (attempts, base/ceiling, jitter) is unchanged."
+    },
+    {
+      "id": "api-contracts",
+      "verdict": "pass",
+      "note": "No AWS request/response mapping changed. SDK client pins are unchanged (@aws-sdk/* at 3.1073.0); DescribeDBInstances/DescribeReservedDBInstances usage is untouched."
+    },
+    {
+      "id": "resource-management",
+      "verdict": "pass",
+      "note": "No new files, handles, or network clients. The retry helper still injects deps (random/delay) and opens no resources of its own."
+    },
+    {
+      "id": "published-surface-hygiene",
+      "verdict": "pass",
+      "note": "Manifest and model.version aligned at 2026.06.26.0; the version was bumped because the generated comment header in the shipped raw _lib/retry.ts alters the published bundle content hash. No new files added to the package surface; the retry helper's exported symbols (incl. re-exported RetryDeps/RetryEvent) are unchanged."
+    },
+    {
+      "id": "schema-strictness",
+      "verdict": "pass",
+      "note": "Mechanical schema/write review: no schema or writeResource payload shape changed. The comment-only retry.ts change and the no-op upgrade entry touch no spec definitions; existing strict instance/reserved/scan_error schemas retained."
+    },
+    {
+      "id": "lifetime-gc",
+      "verdict": "pass",
+      "note": "Resource lifetime and garbage-collection settings on instance/reserved/scan_error specs unchanged."
+    },
+    {
+      "id": "crud-completeness",
+      "verdict": "na",
+      "note": "No CRUD lifecycle surface; the model is a read-only fan-out sweep. No new lifecycle methods introduced."
+    },
+    {
+      "id": "preflight-checks",
+      "verdict": "pass",
+      "note": "Existing check definitions unchanged; the generated header and version bump do not bypass or alter any preflight logic."
+    },
+    {
+      "id": "instance-names",
+      "verdict": "pass",
+      "note": "Mechanical instance-name review: no writeResource instance-name logic changed (instance/reserved/scan_error key derivation untouched), so resource naming consistency is preserved."
+    },
+    {
+      "id": "data-access",
+      "verdict": "pass",
+      "note": "No readResource/dataRepository access patterns changed; the companion report's data dependencies remain the same."
+    },
+    {
+      "id": "version-upgrades",
+      "verdict": "pass",
+      "note": "Version bumped 2026.06.22.0 -> 2026.06.26.0 for the bundle-affecting comment header; a matching no-op upgrade entry (toVersion 2026.06.26.0, upgradeAttributes identity) was appended, mirroring the existing no-op chain. swamp upgrades transform stored globalArguments only, never resource artifacts; no resource migration. Runtime behavior is byte-identical."
+    }
+  ]
+}

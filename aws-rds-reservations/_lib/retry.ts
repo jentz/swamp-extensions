@@ -1,3 +1,7 @@
+// Auto-generated from _lib/retry.ts by scripts/sync-lib.ts.
+// Do not edit manually. Re-generate with:
+//   deno run --allow-read --allow-write scripts/sync-lib.ts
+
 /**
  * Exponential-backoff retry helper for AWS RDS API calls.
  *
@@ -5,14 +9,6 @@
  * has its own retry logic, but on busy accounts the paginated
  * DescribeDBClusters/DescribeDBInstances calls can outpace the SDK's defaults,
  * so we layer our own throttling-aware retry on top.
- *
- * SYNC: this file is maintained as byte-identical twins in two sibling
- * extensions — `aws-rds-inventory/_lib/retry.ts` and
- * `aws-rds-reservations/_lib/retry.ts`. Per-extension bundle roots mean each
- * extension needs its own copy rather than a shared import. Keep the two
- * copies identical (`diff` them) — change both or neither. Extraction into a
- * shared library is deferred until a third AWS-paginating consumer appears
- * (task-60).
  *
  * @module
  */

@@ -26,6 +26,11 @@ deno fmt --check
 # 2. Lint.
 deno lint
 
+# 2b. Shared `_lib` codegen drift gate. Placed early, before the heavy
+# per-extension gates, so a stale generated copy fails fast. Mirrors the
+# `sync-lib drift` step in CI.
+deno run --allow-read --allow-write scripts/sync-lib.ts --check
+
 # Discover extension dirs (parent of each manifest.yaml), matching CI verbatim.
 extension_dirs=()
 while IFS= read -r -d '' manifest; do
@@ -54,6 +59,11 @@ if [ ! -s "$check_files" ]; then
 fi
 xargs -0 -n 50 deno check < "$check_files"
 
+# 3b. Type-check the canonical shared `_lib/` (repo-root, no manifest, so the
+# per-extension enumeration above does not reach it). Mirrors CI's
+# "canonical _lib check" step.
+deno check _lib/*.ts
+
 # 4. Doc lint: same enumeration, every exported symbol including `_lib`.
 find -- "${extension_dirs[@]}" -type f \( -name '*.ts' -o -name '*.tsx' \) \
   -print0 > "$doc_files"
@@ -62,6 +72,10 @@ if [ ! -s "$doc_files" ]; then
   exit 1
 fi
 xargs -0 -n 50 deno doc --lint < "$doc_files"
+
+# 4b. Doc lint the canonical shared `_lib/` source modules (test files carry no
+# doc surface). Mirrors CI's "canonical _lib doc lint" step.
+deno doc --lint _lib/scan_error.ts _lib/aws_credentials.ts _lib/retry.ts
 
 # Discover manifests (the files themselves) for the swamp gates.
 manifests=()
@@ -139,6 +153,8 @@ fi
 # 7. Tests. Keep --no-check (type checking is gate 3). Coverage is
 # intentionally omitted: CI's --coverage/`deno coverage` step is
 # observability-only and cannot fail the build, so it is not a gate here.
+# The canonical `_lib/` is included explicitly (no manifest, so it is not in
+# the enumerated extension dirs) so its unit suites run here and in CI.
 deno test \
   --allow-read --allow-write --allow-env --allow-net --no-check \
-  "${extension_dirs[@]}"
+  _lib/ "${extension_dirs[@]}"

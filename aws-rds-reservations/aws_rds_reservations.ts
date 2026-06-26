@@ -1317,7 +1317,7 @@ export async function runSweep(deps: SweepDeps): Promise<SweepResult> {
  */
 export const model = {
   type: "@jentz/aws-rds-reservations",
-  version: "2026.06.22.0",
+  version: "2026.06.26.0",
   globalArguments: GlobalArgsSchema,
   // First publish. swamp model upgrades transform stored globalArguments, not
   // historical resource artifacts, so there is nothing to migrate here: the
@@ -1345,6 +1345,13 @@ export const model = {
     {
       toVersion: "2026.06.22.0",
       description: "Dependency refresh, no globalArguments schema changes",
+      upgradeAttributes: (old: Record<string, unknown>) => old,
+    },
+    {
+      toVersion: "2026.06.26.0",
+      description:
+        "Shared retry helper regenerated from canonical _lib (generated " +
+        "header only); no globalArguments schema or runtime changes",
       upgradeAttributes: (old: Record<string, unknown>) => old,
     },
   ] as Array<{
