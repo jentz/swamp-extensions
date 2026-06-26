@@ -42,9 +42,21 @@ import {
   STSClient,
 } from "npm:@aws-sdk/client-sts@3.1073.0";
 import { fromIni } from "npm:@aws-sdk/credential-providers@3.1073.0";
+import {
+  classifyError,
+  type ScanError,
+  scanErrorKey,
+  ScanErrorSchema,
+} from "./_lib/scan_error.ts";
+import {
+  type CredentialProvider,
+  preflightSso,
+  SHARED_RETRY,
+  ssoRemediation,
+} from "./_lib/aws_credentials.ts";
 
-/** Credential provider as returned by `fromIni`; `undefined` means the ambient chain. */
-type CredentialProvider = ReturnType<typeof fromIni>;
+export { classifyError, scanErrorKey };
+export type { ScanError };
 
 // ---------------------------------------------------------------------------
 // Schemas
@@ -66,6 +78,14 @@ const GlobalArgsSchema = z.object({
       "'-readonly' to enforce read-only profiles for the inventory. Default " +
       "'' disables the check.",
   ),
+  ssoSession: z.string().default("").describe(
+    "Name of the shared AWS SSO session backing the swept profiles (the " +
+      "`[sso-session <name>]` block in ~/.aws/config). When set, the scan " +
+      "pre-flights this session's cached token once before the per-profile " +
+      "loop: a genuinely expired token short-circuits the whole sweep with a " +
+      "single 'run aws sso login' error rather than failing every profile. " +
+      "Empty (default) skips the pre-flight entirely.",
+  ),
 });
 
 const TagsSchema = z.record(z.string(), z.string()).default({});
@@ -82,16 +102,6 @@ const VpcRecordSchema = z.object({
   isSharedIn: z.boolean(),
   cidrBlocks: z.array(z.string()),
   vpcTags: TagsSchema,
-  scannedAt: z.iso.datetime(),
-});
-
-const ScanErrorSchema = z.object({
-  profile: z.string(),
-  accountId: z.string(),
-  region: z.string(),
-  phase: z.string(),
-  kind: z.enum(["auth_expired", "access_denied", "other"]),
-  message: z.string(),
   scannedAt: z.iso.datetime(),
 });
 
@@ -132,24 +142,6 @@ export interface VpcRecord {
   /** All VPC tags, flattened. */
   vpcTags: Record<string, string>;
   /** ISO 8601 scan timestamp. */
-  scannedAt: string;
-}
-
-/** A (profile, region) pair that could not be assessed. */
-export interface ScanError {
-  /** Profile being swept; `""` for ambient. */
-  profile: string;
-  /** Account id if known by the time of failure; `""` otherwise. */
-  accountId: string;
-  /** Region being scanned; `""` for account-level failures. */
-  region: string;
-  /** Stage that failed: `credentials`, `describe_regions`, `describe_vpcs`, … */
-  phase: string;
-  /** Coarse classification driving the operator's next action. */
-  kind: "auth_expired" | "access_denied" | "other";
-  /** Error detail. */
-  message: string;
-  /** ISO 8601 timestamp. */
   scannedAt: string;
 }
 
@@ -199,46 +191,6 @@ export function accountNameFromProfile(
 }
 
 /**
- * Classify an AWS SDK error into the coarse `kind` the operator report uses to
- * decide a next action. SSO/token/credential failures map to `auth_expired`
- * (operator runs `aws sso login`); authorization failures map to
- * `access_denied` (the role lacks a describe permission, or an SCP denies the
- * region); everything else is `other`.
- */
-export function classifyError(err: unknown): {
-  kind: "auth_expired" | "access_denied" | "other";
-  message: string;
-} {
-  const message = err instanceof Error ? err.message : String(err);
-  const name = (err as { name?: string } | null)?.name ?? "";
-  const haystack = `${name} ${message}`.toLowerCase();
-  // Credential / SSO-token expiry — operator action is `aws sso login`. Match
-  // precise signals only: a bare "sso" substring misfires because an SSO role
-  // ARN (`...AWSReservedSSO...`) appears verbatim in unrelated AccessDenied
-  // messages. Authorization denials are checked first for the same reason.
-  const isAuthExpired = name.toLowerCase().includes("expiredtoken") ||
-    name.toLowerCase().includes("credentialsprovidererror") ||
-    haystack.includes("token has expired") ||
-    haystack.includes("token is expired") ||
-    haystack.includes("token included in the request is expired") ||
-    haystack.includes("sso session") ||
-    haystack.includes("session associated with this profile has expired") ||
-    haystack.includes("could not load credentials") ||
-    haystack.includes("failed to refresh");
-  const isAccessDenied = haystack.includes("not authorized") ||
-    haystack.includes("unauthorizedoperation") ||
-    haystack.includes("accessdenied") ||
-    haystack.includes("access denied") ||
-    haystack.includes("explicit deny") ||
-    haystack.includes("forbidden");
-  // Access-denied wins: an AccessDenied/SCP message can embed an SSO role ARN,
-  // and the operator action differs (fix permissions, not `aws sso login`).
-  if (isAccessDenied) return { kind: "access_denied", message };
-  if (isAuthExpired) return { kind: "auth_expired", message };
-  return { kind: "other", message };
-}
-
-/**
  * Strict bootstrap-region resolver for the account-level calls
  * (sts:GetCallerIdentity, ec2:DescribeRegions) that must target *some*
  * region before per-region scanning begins. Order: first configured region →
@@ -267,15 +219,6 @@ export function vpcKey(
   vpcId: string,
 ): string {
   return `vpc-${accountId}-${region}-${vpcId}`;
-}
-
-/** Build a stable storage key for a scan error. */
-export function scanErrorKey(
-  profileLabel: string,
-  region: string,
-  phase: string,
-): string {
-  return `error-${profileLabel || "ambient"}-${region || "account"}-${phase}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -323,21 +266,19 @@ export interface AwsApi {
 // SDK-backed facade
 // ---------------------------------------------------------------------------
 
-const CLIENT_RETRY = { maxAttempts: 5 } as const;
-
 function sdkApi(
   credentials: CredentialProvider | undefined,
   bootstrapRegion: string,
 ): AwsApi {
   const ec2For = (region: string) =>
-    new EC2Client({ region, credentials, ...CLIENT_RETRY });
+    new EC2Client({ region, credentials, ...SHARED_RETRY });
 
   return {
     getAccountId: async () => {
       const sts = new STSClient({
         region: bootstrapRegion,
         credentials,
-        ...CLIENT_RETRY,
+        ...SHARED_RETRY,
       });
       const resp = await sts.send(new GetCallerIdentityCommand({}));
       return resp.Account ?? "";
@@ -421,6 +362,19 @@ export interface ScanDeps {
    */
   ambientProfile: string;
   /**
+   * Shared AWS SSO session name to pre-flight once before the per-profile loop;
+   * `""` (default) skips the pre-flight entirely.
+   */
+  ssoSession?: string;
+  /** SSO region for the pre-flight token resolve (derived from the regions). */
+  ssoRegion?: string;
+  /**
+   * SSO-token resolver injected into the pre-flight. Defaults (when omitted) to
+   * the lib's on-disk cache reader; tests pass a fake to drive the
+   * expired/ok/network branches without touching disk or the SDK.
+   */
+  resolveSsoToken?: (session: string, region: string) => Promise<unknown>;
+  /**
    * Swamp method-execution context. Typed `any` because the host injects the
    * real type at runtime.
    */
@@ -450,6 +404,8 @@ export interface ScanResult {
 export async function runScan(deps: ScanDeps): Promise<ScanResult> {
   const { targets, configuredRegions, requiredProfileSuffix, context } = deps;
   const ambientProfile = deps.ambientProfile ?? "";
+  const ssoSession = deps.ssoSession ?? "";
+  const ssoRegion = deps.ssoRegion ?? "";
   const handles: unknown[] = [];
   let vpcCount = 0;
   let errorCount = 0;
@@ -460,11 +416,50 @@ export async function runScan(deps: ScanDeps): Promise<ScanResult> {
     handles.push(
       await context.writeResource(
         "scan_error",
-        scanErrorKey(e.profile, e.region, e.phase),
+        scanErrorKey(e.profile, e.region, e.service, e.phase),
         e,
       ),
     );
   };
+
+  // Pre-flight the shared SSO session once, before the per-profile loop. A
+  // single SSO session backs every profile, so a genuinely expired token would
+  // fail every profile identically; resolving it up front lets one actionable
+  // error replace that wasteful loop. Skipped entirely when no session is
+  // configured (today's behavior). A `network` blip must NOT short-circuit —
+  // the same transient failure would otherwise abort the whole sweep and demand
+  // a needless re-login — so only `expired` returns early.
+  if (ssoSession.length > 0) {
+    const pre = await preflightSso(ssoSession, ssoRegion, deps.resolveSsoToken);
+    if (pre.status === "expired") {
+      context.logger.warn(
+        "SSO pre-flight failed for session {session}: {message}",
+        { session: ssoSession, message: pre.message },
+      );
+      await writeError({
+        profile: "",
+        accountId: "",
+        region: "",
+        service: "sso",
+        phase: "preflight_sso",
+        kind: "auth_expired",
+        message: ssoRemediation(ssoSession),
+        scannedAt,
+      });
+      context.logger.info(
+        "vpc-inventory complete: {vpcs} VPC(s), {errors} error(s)",
+        { vpcs: vpcCount, errors: errorCount },
+      );
+      return { dataHandles: handles, vpcCount, errorCount };
+    }
+    if (pre.status === "network") {
+      context.logger.warn(
+        "SSO pre-flight hit a transient network error; proceeding with the " +
+          "per-profile sweep: {message}",
+        { message: pre.message },
+      );
+    }
+  }
 
   for (const target of targets) {
     const profileLabel = target.profile;
@@ -492,6 +487,8 @@ export async function runScan(deps: ScanDeps): Promise<ScanResult> {
         profile: profileLabel,
         accountId: "",
         region: "",
+        // No AWS service is involved — the profile is refused before any call.
+        service: "",
         phase: "profile_suffix_check",
         kind: "other",
         message: `Profile '${shownLabel}' does not end with required suffix ` +
@@ -515,6 +512,8 @@ export async function runScan(deps: ScanDeps): Promise<ScanResult> {
         profile: profileLabel,
         accountId: "",
         region: "",
+        // sts:GetCallerIdentity is what failed (also the credential probe).
+        service: "sts",
         phase: "credentials",
         kind,
         message,
@@ -534,6 +533,8 @@ export async function runScan(deps: ScanDeps): Promise<ScanResult> {
           profile: profileLabel,
           accountId,
           region: "",
+          // ec2:DescribeRegions is what failed.
+          service: "ec2",
           phase: "describe_regions",
           kind,
           message,
@@ -600,6 +601,8 @@ export async function runScan(deps: ScanDeps): Promise<ScanResult> {
           profile: profileLabel,
           accountId,
           region,
+          // ec2:DescribeVpcs is what failed.
+          service: "ec2",
           phase: "describe_vpcs",
           kind,
           message,
@@ -630,13 +633,13 @@ export async function runScan(deps: ScanDeps): Promise<ScanResult> {
  */
 export const model = {
   type: "@jentz/aws-vpc-inventory",
-  version: "2026.06.22.0",
+  version: "2026.06.26.1",
   globalArguments: GlobalArgsSchema,
-  // First published release. The single no-op upgrade advances the stored
-  // typeVersion on existing instances so any future schema-changing upgrade
-  // chains cleanly from here. swamp registry/host loading also rejects a model
-  // whose final upgrades entry toVersion drifts from model.version, so this
-  // entry must stay equal to version above.
+  // The upgrade chain's tail toVersion must equal model.version — swamp
+  // registry/host loading rejects a model where the two drift. The no-op
+  // upgrades advance the stored typeVersion on existing instances so the chain
+  // stays clean: the new `service` field on `scan_error` defaults to `""` on
+  // reads, so pre-existing stored rows still parse without a data migration.
   upgrades: [
     {
       toVersion: "2026.06.13.0",
@@ -646,6 +649,15 @@ export const model = {
     {
       toVersion: "2026.06.22.0",
       description: "Dependency refresh, no globalArguments schema changes",
+      upgradeAttributes: (old: Record<string, unknown>) => old,
+    },
+    {
+      toVersion: "2026.06.26.1",
+      description:
+        "Adopt shared scan-error/credential libs: add `service` tag to " +
+        "scan_error, `network` classification, optional ssoSession pre-flight, " +
+        "and adaptive retry. `service` reads default '' so stored rows still " +
+        "parse; no row migration needed.",
       upgradeAttributes: (old: Record<string, unknown>) => old,
     },
   ],
@@ -703,6 +715,11 @@ export const model = {
           configuredRegions: g.regions,
           requiredProfileSuffix: g.requiredProfileSuffix,
           ambientProfile,
+          // Pre-flight the shared SSO session (if configured) once, against the
+          // same bootstrap region the account-level calls target. The default
+          // (disk-cache) resolver is used in production; tests inject a fake.
+          ssoSession: g.ssoSession,
+          ssoRegion: bootstrapRegion,
           context,
         });
       },

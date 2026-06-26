@@ -1,0 +1,82 @@
+{
+  "extension": "@jentz/aws-vpc-inventory",
+  "version": "2026.06.26.1",
+  "reviewedAt": "2026-06-26T20:27:38Z",
+  "dimensions": [
+    {
+      "id": "credentials-secrets",
+      "verdict": "pass",
+      "note": "Read-only AWS inventory; credentials resolved via fromIni (SSO token cache) / ambient chain, never vaulted or logged. The new ssoSession global arg is a session NAME (an ~/.aws/config block label), not a secret; the cached token itself is read by the SDK token loader and never surfaced. Remediation messages quote only the session name."
+    },
+    {
+      "id": "logging-quality",
+      "verdict": "pass",
+      "note": "Structured placeholders throughout. The new SSO pre-flight logs warn on expired (session name + remediation message, no token) and warn on a transient network blip before proceeding. No secret/token values are interpolated into any message."
+    },
+    {
+      "id": "error-handling",
+      "verdict": "pass",
+      "note": "Classification now delegates to the shared classifyError (network checked before auth_expired, so a DNS blip wrapped in a CredentialsProviderError is no longer mis-sent to `aws sso login`). Per-target/per-region failures still degrade to a recorded scan_error rather than aborting the sweep. Pre-flight only short-circuits on a genuinely expired token; a `network` pre-flight result deliberately does NOT short-circuit (a transient blip must not abort the whole fleet)."
+    },
+    {
+      "id": "testing-completeness",
+      "verdict": "pass",
+      "note": "New cases driven through the existing injectable scan seam: ScanDeps.resolveSsoToken fakes the expired/ok/network pre-flight branches with no disk/SDK; a tripwire AwsApi (3-method facade) proves the per-profile loop never runs on an expired pre-flight; service-tag and network-classification cases added. The full local gate suite passes."
+    },
+    {
+      "id": "idempotency-resilience",
+      "verdict": "pass",
+      "note": "Read-only; storage keys are deterministic (scanErrorKey now 4-arg incl. service, vpcKey unchanged) so re-runs overwrite the same rows. The expired-pre-flight short-circuit writes exactly one scan_error then returns, leaving the sweep re-runnable once the operator re-logs in."
+    },
+    {
+      "id": "api-contracts",
+      "verdict": "pass",
+      "note": "ec2:DescribeVpcs / DescribeRegions paginate exhaustively on NextToken (no silent cap). SDK clients now spread SHARED_RETRY (adaptive, maxAttempts:3) replacing the prior inline {maxAttempts:5}, so sustained throttling backs off rather than hammering. SDK version pins held at 3.1073.0 (no regression)."
+    },
+    {
+      "id": "resource-management",
+      "verdict": "pass",
+      "note": "No new file handles or long-lived connections; SDK clients are per-call and GC'd. The pre-flight token resolve adds no handle to clean up (delegated to the SDK loader). No partial-write paths introduced."
+    },
+    {
+      "id": "published-surface-hygiene",
+      "verdict": "pass",
+      "note": "manifest version, model.version, and the upgrade-chain tail are all aligned at 2026.06.26.1. The generated _lib twins (scan_error.ts, aws_credentials.ts) carry an auto-generated do-not-edit header and use placeholder identifiers; no real account IDs / IPs / hostnames in source or fixtures (test data uses 1111.../999... placeholders and RFC-1918 CIDRs)."
+    },
+    {
+      "id": "schema-strictness",
+      "verdict": "pass",
+      "note": "MECHANICAL Schema-Write Conformance + Field Coverage: both specs use plain z.object (no .passthrough). scan_error (shared ScanErrorSchema) has 8 fields {profile, accountId, region, service, phase, kind, message, scannedAt}; all 5 writeError call sites populate every field, with service tagged sso/sts/ec2/'' per the failing API. The new `service` reads with default '' for back-compat but the kind enum stays strict (unknown kind rejected). vpc spec unchanged and fully written."
+    },
+    {
+      "id": "lifetime-gc",
+      "verdict": "pass",
+      "note": "Both vpc and scan_error keep lifetime: infinite, garbageCollection: 10 — unchanged and appropriate for an inventory worklist that should persist until the next sweep overwrites it."
+    },
+    {
+      "id": "crud-completeness",
+      "verdict": "na",
+      "note": "Read-only inventory model with a single `scan` method; it discovers and reports, it does not own a create/update/delete/sync lifecycle over external resources, so CRUD completeness does not apply."
+    },
+    {
+      "id": "preflight-checks",
+      "verdict": "pass",
+      "note": "This is a read-only scan, so the mutating-method preflight-label convention does not strictly apply; nonetheless the new SSO pre-flight is a genuine fail-fast guard that short-circuits the whole sweep with one actionable error before any per-profile work, and the existing requiredProfileSuffix gate still fails closed before any AWS call."
+    },
+    {
+      "id": "instance-names",
+      "verdict": "pass",
+      "note": "MECHANICAL Instance Name Consistency: scan_error rows are keyed only by scanErrorKey, now 4-arg so two failures in the same (profile, region, phase) but different services no longer collide. vpc rows keyed by vpcKey (account, region, vpcId). Single method, no cross-method name collision."
+    },
+    {
+      "id": "data-access",
+      "verdict": "na",
+      "note": "The scan method only writes (context.writeResource); it does not read back stored state, so the readResource-over-dataRepository guidance does not apply. (Source-side reconcile via ScanErrorStore exists in the shared lib but is not wired into this method in this slice.)"
+    },
+    {
+      "id": "version-upgrades",
+      "verdict": "pass",
+      "note": "model.version bumped 2026.06.22.0 -> 2026.06.26.1 with a matching appended upgrade entry (chain tail == model.version, as the host loader requires). The entry is a no-op upgradeAttributes: the new scan_error.service field defaults to '' on reads, so pre-existing stored rows parse without a data migration."
+    }
+  ]
+}

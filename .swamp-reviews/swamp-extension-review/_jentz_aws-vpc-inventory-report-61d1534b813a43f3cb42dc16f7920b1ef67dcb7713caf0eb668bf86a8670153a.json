@@ -1,0 +1,47 @@
+{
+  "extension": "@jentz/aws-vpc-inventory-report",
+  "version": "2026.06.26.1",
+  "reviewedAt": "2026-06-26T20:27:38Z",
+  "dimensions": [
+    {
+      "id": "credentials-secrets",
+      "verdict": "pass",
+      "note": "Report-only: pure data shaping over workflow artifacts, no credentials, no AWS API, no secrets. The bundle is SDK-free — it imports only the pure ./_lib/scan_error.ts twin (zod-only) and never receives the SDK-bearing aws_credentials.ts twin; verified no aws-sdk/smithy import in the report dir."
+    },
+    {
+      "id": "logging-quality",
+      "verdict": "pass",
+      "note": "All logging goes through the never-throws tryLog wrapper with structured placeholders; no new log lines added in this slice and none carry sensitive data."
+    },
+    {
+      "id": "error-handling",
+      "verdict": "pass",
+      "note": "Unchanged never-throws posture: a bad-JSON or schema-mismatched artifact is counted into skipped, a getContent read failure is a per-handle skip, and an unexpected collection failure degrades to a still-valid report with degraded=true. The fix here is the opposite of swallowing: a `network` scan_error row now decodes (canonical schema) rather than being silently dropped into skipped as malformed."
+    },
+    {
+      "id": "testing-completeness",
+      "verdict": "pass",
+      "note": "New cases driven through the decode seam (synthetic rows): a network row with a service tag decodes (not skipped); a legacy row WITHOUT a service field still parses with service==''; renderMarkdown emits the transient-network section and surfaces service/region; report.execute errorsByKind now counts the network bucket. Existing skip/degrade tests retained."
+    },
+    {
+      "id": "idempotency-resilience",
+      "verdict": "na",
+      "note": "Report-only extension; it renders collected workflow data and creates/updates/deletes no external resources, so idempotency does not apply."
+    },
+    {
+      "id": "api-contracts",
+      "verdict": "na",
+      "note": "No external API client; the report consumes swamp data artifacts only. It validates every decoded artifact with safeParse before use (the canonical ScanErrorSchema is strict on kind), so artifact shape is checked, not assumed."
+    },
+    {
+      "id": "resource-management",
+      "verdict": "pass",
+      "note": "No file handles, sockets, or temp files; a single TextDecoder reused across decodes. No new resources introduced by the schema-import change."
+    },
+    {
+      "id": "published-surface-hygiene",
+      "verdict": "pass",
+      "note": "manifest version bumped to 2026.06.26.1 (report has no model.version to align). The generated _lib/scan_error.ts twin carries the auto-generated do-not-edit header, and its body below that header is byte-identical to the canonical source (drift gate clean). No real account IDs / IPs / hostnames in source, README, or fixtures."
+    }
+  ]
+}
