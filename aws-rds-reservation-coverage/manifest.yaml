@@ -1,6 +1,6 @@
 manifestVersion: 1
 name: "@jentz/aws-rds-reservation-coverage"
-version: "2026.06.22.0"
+version: "2026.06.26.1"
 description: |
   Workflow-scope report that normalizes running and reserved RDS capacity into
   size-flexible "large-equivalent" units and reports the running-minus-reserved

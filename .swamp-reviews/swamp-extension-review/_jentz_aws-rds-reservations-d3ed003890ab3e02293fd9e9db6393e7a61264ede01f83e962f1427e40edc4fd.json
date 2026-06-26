@@ -1,0 +1,82 @@
+{
+  "extension": "@jentz/aws-rds-reservations",
+  "version": "2026.06.26.1",
+  "reviewedAt": "2026-06-26T21:41:06Z",
+  "dimensions": [
+    {
+      "id": "credentials-secrets",
+      "verdict": "pass",
+      "note": "Credential resolution stays delegated to the AWS SDK via env/profile (fromIni); no secrets are vaulted or logged. The new ssoSession argument is a session NAME (not a token); the pre-flight resolves the cached token through the shared lib's injected resolver and only its remediation message (no token bytes) is surfaced. SHARED_RETRY/preflightSso/ssoRemediation come from the SDK-bearing _lib/aws_credentials.ts twin, generated only into this producer (the report bundle stays SDK-free)."
+    },
+    {
+      "id": "logging-quality",
+      "verdict": "pass",
+      "note": "New pre-flight branch logs at warn with structured placeholders ({session}, {message}) for both the expired short-circuit and the proceed-on-network case, mirroring the default-sg tracer. The completion info log is emitted on both the short-circuit return and the normal return. No credential/token values appear in any message."
+    },
+    {
+      "id": "error-handling",
+      "verdict": "pass",
+      "note": "classifyError now imported from the canonical _lib and checks `network` BEFORE auth_expired (locked by a new unit test: a getaddrinfo failure wrapped in a CredentialsProviderError classifies network, not auth_expired). Per-(profile,region) phases still throw nothing — every failure becomes a scan_error and the sweep continues. The expired SSO pre-flight short-circuits with one actionable error; a transient network pre-flight deliberately does NOT short-circuit (a re-login would not fix a DNS blip). Each scan_error now carries the failing `service` (rds/sts/sso/'')."
+    },
+    {
+      "id": "testing-completeness",
+      "verdict": "pass",
+      "note": "Smoke suite gains an expired-pre-flight short-circuit case (one sso-tagged scan_error, zero instances swept) and a transient-network pre-flight case (sweep proceeds). Unit suite gains a network-before-auth_expired classifyError case and an sts-tagged credentials-failure assertion. The pinned key smoke tests are rewritten to the canonical 4-arg single-hyphen/ambient/account format with a new distinct-keys-via-discriminated-phase assertion; the malformed-row key-uniqueness tests assert the folded `:ordinal:rowId` phase tail. Success and failure paths both covered; runSweep is driven through createModelTestContext and an in-memory AwsApi replay."
+    },
+    {
+      "id": "idempotency-resilience",
+      "verdict": "pass",
+      "note": "Sweep remains read-only (Describe* + GetCallerIdentity) and re-runnable; rows are keyed deterministically so a re-sweep overwrites in place. A single bad account/region/row still degrades to a scan_error rather than aborting. The SSO pre-flight is resolve-only (no mutation) and an empty ssoSession preserves today's behavior exactly."
+    },
+    {
+      "id": "api-contracts",
+      "verdict": "pass",
+      "note": "No AWS request/response mapping changed. SDK client retry config moved from the local CLIENT_RETRY {maxAttempts:5} to the shared SHARED_RETRY {retryMode:'adaptive', maxAttempts:3} spread into both the RDS and STS clients — adaptive mode adds client-side rate limiting so sustained throttling backs off. The orthogonal page-level withRetry/paginate backoff (a separate concern) and the STS GetCallerIdentity withRetry wrap are KEPT unchanged. SDK pins unchanged at 3.1073.0."
+    },
+    {
+      "id": "resource-management",
+      "verdict": "pass",
+      "note": "Per-client safeDestroy() in the finally chains is unchanged; the pre-flight opens no SDK client of its own (token resolution is delegated to the injected resolver / shared-ini loader). No new file handles or network clients introduced by this change."
+    },
+    {
+      "id": "published-surface-hygiene",
+      "verdict": "pass",
+      "note": "Manifest and model.version aligned at 2026.06.26.1. README updated for the new network kind, the service tag, the ssoSession pre-flight, and the canonical scan_error key (the stale `error--<profile>--<region>--<phase>` description is replaced with the single-hyphen ambient/account form). Test fixtures use fictional placeholders (orders-db, prod-readonly, ACCT_*); the one 12-digit literal in the instance/reserved key test is the documented self-delimiting-account-id contract."
+    },
+    {
+      "id": "schema-strictness",
+      "verdict": "pass",
+      "note": "MECHANICAL Schema-Write Conformance: scan_error now uses the canonical ScanErrorSchema (profile, accountId, region, service:default(''), phase, kind incl `network`, message, scannedAt) — strict z.object, no passthrough. Every writeError call site builds all 8 fields with a `service` tag; the canonical scanErrorKey is built from (profile, region, service, phase). instance/reserved schemas unchanged and still strict. No placeholder-laundering: the validate* gates still reject coverage-critical-missing rows before a record is written."
+    },
+    {
+      "id": "lifetime-gc",
+      "verdict": "pass",
+      "note": "instance/reserved/scan_error all keep lifetime 'infinite' and garbageCollection 10 — unchanged."
+    },
+    {
+      "id": "crud-completeness",
+      "verdict": "na",
+      "note": "Read-only fan-out sweep, not a CRUD lifecycle model; no create/update/delete surface to complete. Unchanged by this slice."
+    },
+    {
+      "id": "preflight-checks",
+      "verdict": "pass",
+      "note": "The new SSO pre-flight is an opt-in (ssoSession non-empty) check that runs once before the per-profile loop, with an injected resolver seam so the expired/ok/network branches are unit-testable without disk/SDK. It is read-only (token resolve), so it adds no mutation gate; the existing requiredProfileSuffix refusal still fires before any AWS call."
+    },
+    {
+      "id": "instance-names",
+      "verdict": "pass",
+      "note": "MECHANICAL Instance-Name review: scan_error is written only by writeError. The two per-row malformed phases fold a `:ordinal:rowId` discriminator into the `phase` segment, so the canonical key (which includes service+phase) is distinct per malformed row — verified by the same-region distinct-keys tests (hyphenated ids, reserved rows, and the id-less ordinal-fallback worst case). instance/reserved keys (instanceKey/reservedKey, `--`-joined) are unchanged and collision-free across account/region/id."
+    },
+    {
+      "id": "data-access",
+      "verdict": "pass",
+      "note": "The sweep only writeResource()s; it does not readResource. No data-access pattern changed; the companion report's data dependency on instance/reserved/scan_error is preserved (scan_error gains additive `service`/`network`, read tolerantly downstream)."
+    },
+    {
+      "id": "version-upgrades",
+      "verdict": "pass",
+      "note": "model.version bumped 2026.06.26.0 -> 2026.06.26.1 with a matching no-op upgrade entry appended (toVersion 2026.06.26.1, upgradeAttributes identity) so the chain tail equals model.version (verified by inspection; unlike its sibling producers this extension has no dedicated upgrade-chain metadata test yet — tracked as a follow-up). swamp upgrades transform stored globalArguments only; the new scan_error `service` field defaults to '' on reads so pre-existing stored rows still parse with no data migration."
+    }
+  ]
+}

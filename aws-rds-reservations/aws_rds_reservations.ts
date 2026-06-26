@@ -42,6 +42,20 @@ import {
 } from "npm:@aws-sdk/client-sts@3.1073.0";
 import { fromIni } from "npm:@aws-sdk/credential-providers@3.1073.0";
 import { type RetryDeps, withRetry } from "./_lib/retry.ts";
+import {
+  classifyError,
+  type ScanError,
+  scanErrorKey,
+  ScanErrorSchema,
+} from "./_lib/scan_error.ts";
+import {
+  preflightSso,
+  SHARED_RETRY,
+  ssoRemediation,
+} from "./_lib/aws_credentials.ts";
+
+export { classifyError, scanErrorKey };
+export type { ScanError };
 
 // Re-exported so the public `paginate` signature does not leak private types
 // (`RetryDeps.onRetry` carries a `RetryEvent`).
@@ -105,6 +119,14 @@ const GlobalArgsSchema = z.object({
       "when profiles is [] or pass an explicit named profile instead. Default " +
       "'' disables the check.",
   ),
+  ssoSession: z.string().default("").describe(
+    "Name of the shared AWS SSO session backing the swept profiles (the " +
+      "`[sso-session <name>]` block in ~/.aws/config). When set, the sweep " +
+      "pre-flights this session's cached token once before the per-profile " +
+      "loop: a genuinely expired token short-circuits the whole sweep with a " +
+      "single 'run aws sso login' error rather than failing every profile. " +
+      "Empty (default) skips the pre-flight entirely.",
+  ),
 });
 
 const TagsSchema = z.record(z.string(), z.string()).default({});
@@ -144,15 +166,12 @@ const ReservedRecordSchema = z.object({
   scannedAt: z.iso.datetime(),
 });
 
-const ScanErrorSchema = z.object({
-  profile: z.string(),
-  accountId: z.string(),
-  region: z.string(),
-  phase: z.string(),
-  kind: z.enum(["auth_expired", "access_denied", "other"]),
-  message: z.string(),
-  scannedAt: z.iso.datetime(),
-});
+// The `scan_error` stored-row shape (schema + `ScanError` interface) is the
+// canonical fleet shape imported from `./_lib/scan_error.ts` above: it carries a
+// `service` tag and a `network` kind on top of the original auth_expired /
+// access_denied / other classification. RDS is region-scoped, so the canonical
+// `(profile, accountId, region, service, phase, kind, message, scannedAt)` shape
+// maps cleanly with no local fields to add.
 
 // ---------------------------------------------------------------------------
 // Public resource shapes (explicit interfaces — deno doc --lint friendly)
@@ -232,30 +251,6 @@ export interface ReservedRecord {
   scannedAt: string;
 }
 
-/**
- * A failure recorded during the sweep. Most phases describe a (profile, region)
- * pair that could not be assessed and emit at most one `scan_error`; the per-row
- * malformed phases (`malformed_db_instance`, `malformed_reserved_db_instance`)
- * instead emit one `scan_error` per malformed row (keyed uniquely; see
- * scanErrorKey).
- */
-export interface ScanError {
-  /** Profile being swept; `""` for ambient. */
-  profile: string;
-  /** Account id if known by the time of failure; `""` otherwise. */
-  accountId: string;
-  /** Region being swept; `""` for account-level failures. */
-  region: string;
-  /** Stage that failed: `credentials`, `describe_db_instances`, … */
-  phase: string;
-  /** Coarse classification driving the operator's next action. */
-  kind: "auth_expired" | "access_denied" | "other";
-  /** Error detail. */
-  message: string;
-  /** ISO 8601 timestamp. */
-  scannedAt: string;
-}
-
 // ---------------------------------------------------------------------------
 // Pure helpers (exported for unit-test access)
 // ---------------------------------------------------------------------------
@@ -302,40 +297,6 @@ export function accountNameFromProfile(
 }
 
 /**
- * Classify an AWS SDK error into the coarse `kind` the operator report uses to
- * decide a next action. SSO/token/credential failures map to `auth_expired`
- * (operator runs `aws sso login`); authorization failures map to
- * `access_denied` (the role lacks a describe permission, or an SCP denies the
- * region); everything else is `other`.
- */
-export function classifyError(err: unknown): {
-  kind: "auth_expired" | "access_denied" | "other";
-  message: string;
-} {
-  const message = err instanceof Error ? err.message : String(err);
-  const name = (err as { name?: string } | null)?.name ?? "";
-  const haystack = `${name} ${message}`.toLowerCase();
-  const isAuthExpired = name.toLowerCase().includes("expiredtoken") ||
-    name.toLowerCase().includes("credentialsprovidererror") ||
-    haystack.includes("token has expired") ||
-    haystack.includes("token is expired") ||
-    haystack.includes("token included in the request is expired") ||
-    haystack.includes("sso session") ||
-    haystack.includes("session associated with this profile has expired") ||
-    haystack.includes("could not load credentials") ||
-    haystack.includes("failed to refresh");
-  const isAccessDenied = haystack.includes("not authorized") ||
-    haystack.includes("unauthorizedoperation") ||
-    haystack.includes("accessdenied") ||
-    haystack.includes("access denied") ||
-    haystack.includes("explicit deny") ||
-    haystack.includes("forbidden");
-  if (isAuthExpired) return { kind: "auth_expired", message };
-  if (isAccessDenied) return { kind: "access_denied", message };
-  return { kind: "other", message };
-}
-
-/**
  * Resolve the bootstrap region for the per-account sts:GetCallerIdentity call.
  * Order: first configured region → `AWS_REGION` → `AWS_DEFAULT_REGION` →
  * `us-east-1` (a global-ish default enabled on every account, used only for
@@ -353,32 +314,23 @@ export function resolveBootstrapRegion(
 }
 
 // Storage-key separator convention (locked task-57, before first publish).
-// Free identifiers are joined with a DOUBLE hyphen `--`, adopting the same
-// separator token as the sibling `@jentz/aws-rds-inventory`
+// `instance`/`reserved` free identifiers are joined with a DOUBLE hyphen `--`,
+// adopting the same separator token as the sibling `@jentz/aws-rds-inventory`
 // (`instance-<cluster>--<instance>`); the overall key shapes differ (we also
 // carry account id and region), so this is the shared convention, not an
-// identical layout.
+// identical layout. account id is fixed 12 digits and region is a closed AWS
+// set (both self-delimiting with single `-`); the only free component is the
+// trailing identifier, and RDS forbids consecutive hyphens in identifiers, so
+// the lone `--` marks its boundary unambiguously.
 //
-// Why each key is unambiguous — the argument is per-key, not "no component ever
-// contains `--`":
-//   - instanceKey / reservedKey: account id is fixed 12 digits and region is a
-//     closed AWS set (both self-delimiting with single `-`); the only free
-//     component is the trailing identifier, and RDS forbids consecutive hyphens
-//     in identifiers, so the lone `--` marks its boundary unambiguously.
-//   - scanErrorKey: `profile` IS a free operator string and MAY contain `--`,
-//     so safety does not come from the separator. It comes from position: the
-//     two trailing fields `region` (closed set) and `phase` (internal constant,
-//     underscore-only, hyphen-free) contain no `--`, so the value decodes
-//     unambiguously from the right regardless of `profile`. This holds ONLY
-//     while region/phase stay closed-set — do not move a free field to the tail.
-//     Empty segments (not word-sentinels) mark the ambient chain / account-level
-//     failure, so a profile literally named `ambient` cannot impersonate them.
-//     Per-row malformed phases fire once PER ROW, so they append a trailing
-//     `--${ordinal}-${rowId}` discriminator. It is the new tail, so it too must
-//     stay `--`-free: `ordinal` is digits-only and `rowId` is an RDS identifier
-//     (no consecutive hyphens). Decode still reads right-to-left
-//     (discriminator, phase, region, profile). The `ordinal` prefix keeps two
-//     id-less rows in the same region distinct when there is no `rowId`.
+// `scan_error` rows are keyed by the canonical fleet `scanErrorKey`
+// (`error-<profile|ambient>-<region|account>-<service>-<phase>`, single-hyphen,
+// imported from `./_lib/scan_error.ts`), NOT this `--` convention. The per-row
+// malformed phases — which fire once PER ROW and would otherwise collide on the
+// shared (profile, region, service, phase) tuple — preserve per-row uniqueness
+// by folding a row discriminator into the `phase` segment (see
+// `discriminatedPhase` / `writeError` below) rather than by appending a key
+// suffix, since the canonical key has no discriminator slot.
 
 /** Build a stable storage key for an instance row (unique across account/region). */
 export function instanceKey(
@@ -399,33 +351,35 @@ export function reservedKey(
 }
 
 /**
- * Build a stable storage key for a scan error.
+ * Build the discriminated `phase` value for a per-row malformed `scan_error`.
  *
- * Once-per-(profile, region) phases (credentials, describe_db_instances,
- * no_regions, …) omit `rowDiscriminator`: the trailing `phase` is an internal
- * constant (closed set, hyphen-free), so the key decodes unambiguously from the
- * right regardless of a `--`-containing `profile`.
+ * The per-row malformed phases (`malformed_db_instance`,
+ * `malformed_reserved_db_instance`) fire ONCE PER ROW, so without a per-row
+ * discriminator every malformed row in one (profile, region) would collide on
+ * the shared canonical key and the keyed store would collapse N rows into one
+ * (last-write-wins). The canonical {@link scanErrorKey} has no discriminator
+ * slot, so uniqueness is folded into the `phase` segment instead: the returned
+ * value is used BOTH as the `phase` argument to `scanErrorKey` (making the key
+ * distinct) AND as the stored `phase` attribute on the row (so the operator can
+ * see which row was malformed).
  *
- * Per-row malformed phases (malformed_db_instance,
- * malformed_reserved_db_instance) fire ONCE PER ROW, so they MUST pass a
- * `rowDiscriminator` to avoid colliding on the shared (profile, region, phase)
- * triple. The discriminator is appended after `phase` with `--`, mirroring how
- * `instanceKey`/`reservedKey` place their free identifier behind a `--`. The
- * discriminator itself is `${ordinal}-${rowId}` where `ordinal` is digits-only
- * (built by the caller) and `rowId` is an RDS identifier; RDS forbids
- * consecutive hyphens, so the discriminator never contains `--` and the
- * right-to-left decode (rowDiscriminator, then phase, then region, then
- * profile) stays unambiguous. The leading `ordinal` also guarantees distinct
- * keys for two id-less rows in the same region (see writeError caller).
+ * The discriminator is `${ordinal}:${rowId}` where `ordinal` is the loop index
+ * (digits-only) and `rowId` is the RDS identifier (or `noid` when the missing
+ * field IS the identifier). The leading `ordinal` keeps two id-less rows in the
+ * same region distinct. A `:` joins the base phase to the discriminator — it
+ * does not appear in the closed-set base phases, so the discriminated value
+ * stays unambiguous and human-readable (`malformed_db_instance:0:orders-db`).
+ *
+ * @param basePhase The malformed phase name (closed-set constant).
+ * @param ordinal The row's loop index.
+ * @param rowId The row's RDS identifier, or `"noid"` when absent.
  */
-export function scanErrorKey(
-  profileLabel: string,
-  region: string,
-  phase: string,
-  rowDiscriminator?: string,
+export function discriminatedPhase(
+  basePhase: string,
+  ordinal: number,
+  rowId: string,
 ): string {
-  const base = `error--${profileLabel}--${region}--${phase}`;
-  return rowDiscriminator === undefined ? base : `${base}--${rowDiscriminator}`;
+  return `${basePhase}:${ordinal}:${rowId}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -621,8 +575,6 @@ export interface AwsApi {
 // SDK-backed facade
 // ---------------------------------------------------------------------------
 
-const CLIENT_RETRY = { maxAttempts: 5 } as const;
-
 /**
  * Build the {@link RetryDeps} the {@link paginate} loop uses for production
  * (real `Math.random` jitter, real `setTimeout` waits), logging each retry at
@@ -801,9 +753,9 @@ function sdkApi(
   // deno-lint-ignore no-explicit-any
   logger: any,
   rdsClientFactory: RdsClientFactory = (region) =>
-    new RDSClient({ region, credentials, ...CLIENT_RETRY }),
+    new RDSClient({ region, credentials, ...SHARED_RETRY }),
   stsClientFactory: StsClientFactory = () =>
-    new STSClient({ region: bootstrapRegion, credentials, ...CLIENT_RETRY }),
+    new STSClient({ region: bootstrapRegion, credentials, ...SHARED_RETRY }),
 ): AwsApi {
   const deps = retryDeps(logger);
 
@@ -965,6 +917,19 @@ export interface SweepDeps {
   /** Required profile suffix; `""` disables the check. */
   requiredProfileSuffix: string;
   /**
+   * Shared AWS SSO session name to pre-flight once before the per-profile loop;
+   * `""` (default) skips the pre-flight entirely.
+   */
+  ssoSession?: string;
+  /** SSO region for the pre-flight token resolve (derived from the regions). */
+  ssoRegion?: string;
+  /**
+   * SSO-token resolver injected into the pre-flight. Defaults (when omitted) to
+   * the lib's on-disk cache reader; tests pass a fake to drive the
+   * expired/ok/network branches without touching disk or the SDK.
+   */
+  resolveSsoToken?: (session: string, region: string) => Promise<unknown>;
+  /**
    * Swamp method-execution context. Typed `any` because the host injects the
    * real type at runtime.
    */
@@ -1009,29 +974,72 @@ export async function runSweep(deps: SweepDeps): Promise<SweepResult> {
     context,
     now = () => new Date(),
   } = deps;
+  const ssoSession = deps.ssoSession ?? "";
+  const ssoRegion = deps.ssoRegion ?? "";
   const handles: unknown[] = [];
   let instanceCount = 0;
   let reservedCount = 0;
   let errorCount = 0;
   const scannedAt = now().toISOString();
 
-  // `rowDiscriminator` is supplied ONLY by per-row malformed phases, which fire
-  // once per malformed row and would otherwise collide on the shared
-  // (profile, region, phase) key. It is a key-only concern, so it stays out of
-  // the persisted ScanError resource shape.
-  const writeError = async (
-    e: ScanError,
-    rowDiscriminator?: string,
-  ): Promise<void> => {
+  // Per-row uniqueness is folded into the row's `phase` (see
+  // `discriminatedPhase`) BEFORE writeError, so the canonical key built from
+  // (profile, region, service, phase) is already distinct per malformed row and
+  // writeError needs no separate discriminator argument.
+  const writeError = async (e: ScanError): Promise<void> => {
     errorCount++;
     handles.push(
       await context.writeResource(
         "scan_error",
-        scanErrorKey(e.profile, e.region, e.phase, rowDiscriminator),
+        scanErrorKey(e.profile, e.region, e.service, e.phase),
         e,
       ),
     );
   };
+
+  // Pre-flight the shared SSO session once, before the per-profile loop. A
+  // single SSO session backs every profile, so a genuinely expired token would
+  // fail every profile identically; resolving it up front lets one actionable
+  // error replace that wasteful loop. Skipped entirely when no session is
+  // configured (today's behavior). A `network` blip must NOT short-circuit —
+  // the same transient failure would otherwise abort the whole sweep and demand
+  // a needless re-login — so only `expired` returns early.
+  if (ssoSession.length > 0) {
+    const pre = await preflightSso(ssoSession, ssoRegion, deps.resolveSsoToken);
+    if (pre.status === "expired") {
+      context.logger.warn(
+        "SSO pre-flight failed for session {session}: {message}",
+        { session: ssoSession, message: pre.message },
+      );
+      await writeError({
+        profile: "",
+        accountId: "",
+        region: "",
+        service: "sso",
+        phase: "preflight_sso",
+        kind: "auth_expired",
+        message: ssoRemediation(ssoSession),
+        scannedAt,
+      });
+      context.logger.info(
+        "aws-rds-reservations sweep complete: {instances} instance(s), " +
+          "{reserved} reservation(s), {errors} error(s)",
+        {
+          instances: instanceCount,
+          reserved: reservedCount,
+          errors: errorCount,
+        },
+      );
+      return { dataHandles: handles, instanceCount, reservedCount, errorCount };
+    }
+    if (pre.status === "network") {
+      context.logger.warn(
+        "SSO pre-flight hit a transient network error; proceeding with the " +
+          "per-profile sweep: {message}",
+        { message: pre.message },
+      );
+    }
+  }
 
   // Regions are required: RDS describe calls are region-scoped and there is no
   // enabled-region discovery here. An empty list would otherwise resolve each
@@ -1044,6 +1052,8 @@ export async function runSweep(deps: SweepDeps): Promise<SweepResult> {
       profile: "",
       accountId: "",
       region: "",
+      // No AWS service is involved — the sweep refuses before any call.
+      service: "",
       phase: "no_regions",
       kind: "other",
       message:
@@ -1074,6 +1084,8 @@ export async function runSweep(deps: SweepDeps): Promise<SweepResult> {
         profile: profileLabel,
         accountId: "",
         region: "",
+        // No AWS service is involved — the profile is refused before any call.
+        service: "",
         phase: "profile_suffix_check",
         kind: "other",
         message:
@@ -1100,6 +1112,8 @@ export async function runSweep(deps: SweepDeps): Promise<SweepResult> {
         profile: profileLabel,
         accountId: "",
         region: "",
+        // sts:GetCallerIdentity is what failed (also the credential probe).
+        service: "sts",
         phase: "credentials",
         kind,
         message,
@@ -1139,24 +1153,29 @@ export async function runSweep(deps: SweepDeps): Promise<SweepResult> {
               "Malformed DB instance {id} in {region}; missing {fields}",
               { id: label, region, fields: valid.missing.join(", ") },
             );
-            // Per-row key: the row id discriminates rows, but when the missing
-            // field IS the identifier there is no id, so the loop ordinal is a
-            // stable fallback that keeps two id-less rows distinct. The ordinal
-            // is digits-only and the id contains no `--` (RDS forbids
-            // consecutive hyphens), so the discriminator stays `--`-free and the
-            // right-to-left key decode is preserved.
+            // Per-row uniqueness: the row id discriminates rows, but when the
+            // missing field IS the identifier there is no id, so the loop
+            // ordinal is a stable fallback that keeps two id-less rows distinct.
+            // The discriminator is folded into the `phase` (see
+            // `discriminatedPhase`), which is used both for the canonical key
+            // and as the stored `phase` so the operator sees which row failed.
             await writeError({
               profile: profileLabel,
               accountId,
               region,
-              phase: "malformed_db_instance",
+              service: "rds",
+              phase: discriminatedPhase(
+                "malformed_db_instance",
+                index,
+                hasId ? db.DBInstanceIdentifier! : "noid",
+              ),
               kind: "other",
               message: `Malformed DB instance in account ${accountId} region ` +
                 `${region} (id=${label}): missing or invalid required ` +
                 `field(s): ${valid.missing.join(", ")}. Row not written as a ` +
                 `resource to avoid laundering an empty/placeholder instance.`,
               scannedAt,
-            }, `${index}-${hasId ? db.DBInstanceIdentifier! : "noid"}`);
+            });
             continue;
           }
           const id = db.DBInstanceIdentifier ?? "";
@@ -1196,6 +1215,7 @@ export async function runSweep(deps: SweepDeps): Promise<SweepResult> {
           profile: profileLabel,
           accountId,
           region,
+          service: "rds",
           phase: "describe_db_instances",
           kind,
           message,
@@ -1219,14 +1239,20 @@ export async function runSweep(deps: SweepDeps): Promise<SweepResult> {
               "Malformed reserved DB instance {id} in {region}; missing {fields}",
               { id: label, region, fields: valid.missing.join(", ") },
             );
-            // Per-row key: see the provisioned-instance phase above. The id
-            // discriminates rows; the loop ordinal is the id-less fallback so
-            // two id-less reserved rows in the same region stay distinct.
+            // Per-row uniqueness: see the provisioned-instance phase above. The
+            // id discriminates rows; the loop ordinal is the id-less fallback so
+            // two id-less reserved rows in the same region stay distinct. The
+            // discriminator is folded into the `phase` (see `discriminatedPhase`).
             await writeError({
               profile: profileLabel,
               accountId,
               region,
-              phase: "malformed_reserved_db_instance",
+              service: "rds",
+              phase: discriminatedPhase(
+                "malformed_reserved_db_instance",
+                index,
+                hasId ? r.ReservedDBInstanceId! : "noid",
+              ),
               kind: "other",
               message:
                 `Malformed reserved DB instance in account ${accountId} ` +
@@ -1234,7 +1260,7 @@ export async function runSweep(deps: SweepDeps): Promise<SweepResult> {
                 `field(s): ${valid.missing.join(", ")}. Row not written as a ` +
                 `resource to avoid understating reservation coverage.`,
               scannedAt,
-            }, `${index}-${hasId ? r.ReservedDBInstanceId! : "noid"}`);
+            });
             continue;
           }
           const rid = r.ReservedDBInstanceId ?? "";
@@ -1275,6 +1301,7 @@ export async function runSweep(deps: SweepDeps): Promise<SweepResult> {
           profile: profileLabel,
           accountId,
           region,
+          service: "rds",
           phase: "describe_reserved_db_instances",
           kind,
           message,
@@ -1317,15 +1344,15 @@ export async function runSweep(deps: SweepDeps): Promise<SweepResult> {
  */
 export const model = {
   type: "@jentz/aws-rds-reservations",
-  version: "2026.06.26.0",
+  version: "2026.06.26.1",
   globalArguments: GlobalArgsSchema,
-  // First publish. swamp model upgrades transform stored globalArguments, not
-  // historical resource artifacts, so there is nothing to migrate here: the
-  // globalArguments schema (profiles, regions, requiredProfileSuffix) is the
-  // initial shape. The no-op entry mirrors the sibling
-  // @jentz/aws-rds-inventory convention so any future schema-changing upgrade
-  // chains cleanly from this baseline. New resource fields such as
-  // instance.licenseModel are populated by re-sweeping, never by an upgrade.
+  // swamp model upgrades transform stored globalArguments, not historical
+  // resource artifacts, so there is nothing to migrate here. The no-op chain
+  // mirrors the sibling @jentz/aws-rds-inventory convention so any future
+  // schema-changing upgrade chains cleanly from this baseline. New resource
+  // fields such as instance.licenseModel — and the new scan_error `service`
+  // tag, which defaults to "" on reads so stored rows still parse — are
+  // populated by re-sweeping, never by an upgrade.
   upgrades: [
     {
       toVersion: "2026.06.07.1",
@@ -1352,6 +1379,15 @@ export const model = {
       description:
         "Shared retry helper regenerated from canonical _lib (generated " +
         "header only); no globalArguments schema or runtime changes",
+      upgradeAttributes: (old: Record<string, unknown>) => old,
+    },
+    {
+      toVersion: "2026.06.26.1",
+      description:
+        "Adopt shared scan-error/credential libs: add `service` tag to " +
+        "scan_error, `network` classification, optional ssoSession pre-flight, " +
+        "and adaptive retry. `service` reads default '' so stored rows still " +
+        "parse; no row migration needed.",
       upgradeAttributes: (old: Record<string, unknown>) => old,
     },
   ] as Array<{
@@ -1413,6 +1449,11 @@ export const model = {
           targets,
           regions: g.regions,
           requiredProfileSuffix: g.requiredProfileSuffix,
+          // Pre-flight the shared SSO session (if configured) once, against the
+          // same bootstrap region the account-level calls target. The default
+          // (disk-cache) resolver is used in production; tests inject a fake.
+          ssoSession: g.ssoSession,
+          ssoRegion: bootstrapRegion,
           context,
         });
       },

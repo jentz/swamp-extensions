@@ -52,10 +52,21 @@ it writes:
 
 An expired SSO token, an SCP-denied region, or a malformed response is recorded
 as a `scan_error` and the sweep continues. A single bad account or region can
-never blank out the rest of the fleet. Errors are classified into
-`auth_expired` (operator runs `aws sso login`), `access_denied` (IAM/SCP), and
-`other`, so the companion report can tell "needs login" apart from "genuinely
-denied".
+never blank out the rest of the fleet. Errors are classified into `network`
+(transient DNS/socket failure — re-run to clear), `auth_expired` (operator runs
+`aws sso login`), `access_denied` (IAM/SCP), and `other`, so the companion
+report can tell "needs login" apart from "genuinely denied" apart from "blip".
+The `network` bucket is checked first, so a DNS/socket failure wrapped in a
+"could not load credentials" error is not misread as an expired token. Each row
+also carries the `service` that failed (`rds`, `sts`, `sso`, or `""`).
+
+When the optional `ssoSession` argument names the shared SSO session, the sweep
+pre-flights that session's cached token once before the per-profile loop: a
+genuinely expired token short-circuits the whole sweep with a single
+`service: "sso"` / `auth_expired` error ("run `aws sso login`") rather than
+failing every profile identically. A transient network blip during the
+pre-flight does **not** short-circuit — the sweep proceeds, since a re-login
+would not fix a DNS hiccup.
 
 Individual malformed AWS rows are handled the same way. The public `instance`
 and `reserved` schemas treat every field as real data, so before a row is
@@ -67,10 +78,11 @@ silently dropped. Instead it becomes a `scan_error` (`malformed_db_instance` or
 `malformed_reserved_db_instance`) naming the account, region, and the
 missing/invalid fields. Unlike the once-per-`(profile, region)` phases, these
 per-row phases emit **one `scan_error` per malformed row**, each with a unique
-key — so when an API shift breaks every row in a region they are all reported,
-not collapsed into one. This keeps a malformed or API-shifted response from
-laundering into an apparently-valid resource with empty/zero placeholders that
-would understate reservation coverage.
+key — the per-row discriminator is folded into the stored `phase` (e.g.
+`malformed_db_instance:0:orders-db`) so when an API shift breaks every row in a
+region they are all reported, not collapsed into one. This keeps a malformed or
+API-shifted response from laundering into an apparently-valid resource with
+empty/zero placeholders that would understate reservation coverage.
 
 ## Installation
 
@@ -95,6 +107,7 @@ The AWS-managed `ReadOnlyAccess` and `SecurityAudit` policies cover all three.
 | `profiles`              | `string[]`        | `[]`    | Named AWS profiles to sweep, one account each. Empty uses the ambient credential chain (whatever `AWS_PROFILE` / env is set) as a single account — handy for testing one account before scaling out. |
 | `regions`               | `string[]`        | `[]`    | Regions to sweep per account. **Required** — RDS describe calls are region-scoped and there is no enabled-region discovery here (an SCP-denied region simply becomes a `scan_error`). Pass your org's approved regions. If empty or omitted, the sweep makes no AWS calls and writes a single `no_regions` `scan_error` (zero `instance`/`reserved` rows) so the misconfiguration is visible, not a silent empty result. |
 | `requiredProfileSuffix` | `string`          | `""`    | If set, every named profile must end with this suffix or it is refused before any AWS call. Set to `-readonly` to enforce read-only profiles. Ambient credentials have no reliable profile label, so leave this empty when `profiles` is `[]` or pass an explicit named profile instead. The suffix is also stripped to derive the friendly `accountName`. Default `""` disables the check. |
+| `ssoSession`            | `string`          | `""`    | Name of the shared AWS SSO session backing the swept profiles (the `[sso-session <name>]` block in `~/.aws/config`). When set, the sweep pre-flights this session's cached token once before the per-profile loop: a genuinely expired token short-circuits the whole sweep with a single `aws sso login` error rather than failing every profile. Empty (default) skips the pre-flight entirely. |
 
 `profiles` and `regions` are arrays — pass them with the `:json=` value suffix:
 
@@ -125,12 +138,14 @@ regions you list).
 
 All three resources have lifetime `infinite` and retain the last 10 versions.
 
-Storage keys join the free identifier with a double hyphen `--` (the same
-separator the sibling `@jentz/aws-rds-inventory` uses). The `accountId` (fixed
-12 digits) and `region` (closed AWS set) prefixes keep single hyphens because
-they are self-delimiting, and RDS forbids consecutive hyphens inside an
-identifier — so the lone `--` always marks the identifier boundary. Treat keys
-as opaque; the format is a published contract, not something to parse.
+The `instance` / `reserved` storage keys join the free identifier with a double
+hyphen `--` (the same separator the sibling `@jentz/aws-rds-inventory` uses). The
+`accountId` (fixed 12 digits) and `region` (closed AWS set) prefixes keep single
+hyphens because they are self-delimiting, and RDS forbids consecutive hyphens
+inside an identifier — so the lone `--` always marks the identifier boundary.
+`scan_error` rows use the shared `@jentz/aws-*` fleet key instead (single
+hyphens, `ambient`/`account` sentinels — see below). Treat keys as opaque; the
+format is a published contract, not something to parse.
 
 ### `instance` resource (factory)
 
@@ -177,21 +192,23 @@ Storage key: `reserved-<accountId>-<region>--<reservedDBInstanceId>`.
 
 ### `scan_error` resource (factory)
 
-Storage key: `error--<profile>--<region>--<phase>`. Components are joined with
-`--`; `profile` and `region` are left empty (rather than substituted with a
-sentinel word) when absent, so the ambient chain (`profile` `""`) and an
-account-level failure (`region` `""`) cannot be impersonated by a profile or
-region literally named `ambient`/`account`.
+Storage key: `error-<profile|ambient>-<region|account>-<service>-<phase>` — the
+shared `@jentz/aws-*` fleet key, single hyphens throughout. An absent profile
+renders as the `ambient` sentinel and an absent region as `account`. The per-row
+malformed phases fold their row discriminator into the `phase` segment (e.g.
+`error-prod-readonly-us-east-1-rds-malformed_db_instance:0:orders-db`) so two
+malformed rows in one (profile, region) get distinct keys.
 
-| Field       | Type                                          | Notes |
-| ----------- | --------------------------------------------- | ----- |
-| `profile`   | `string`                                      | Profile being swept; `""` for ambient. |
-| `accountId` | `string`                                      | Account id if known by the time of failure; `""` otherwise. |
-| `region`    | `string`                                      | Region being swept; `""` for account-level failures. |
-| `phase`     | `string`                                      | `no_regions`, `profile_suffix_check`, `credentials`, `describe_db_instances`, `describe_reserved_db_instances`, `malformed_db_instance`, `malformed_reserved_db_instance`. `no_regions` is the single account-less row written when `regions` is empty (see the `regions` argument). `malformed_db_instance` / `malformed_reserved_db_instance` are written per individual AWS row that is missing a coverage-critical field (the row is not emitted as an `instance`/`reserved` resource). |
-| `kind`      | `"auth_expired" \| "access_denied" \| "other"` | Coarse classification driving the operator's next action. |
-| `message`   | `string`                                      | Error detail. |
-| `scannedAt` | `string`                                      | ISO 8601 timestamp. |
+| Field       | Type                                                        | Notes |
+| ----------- | ----------------------------------------------------------- | ----- |
+| `profile`   | `string`                                                    | Profile being swept; `""` for ambient. |
+| `accountId` | `string`                                                    | Account id if known by the time of failure; `""` otherwise. |
+| `region`    | `string`                                                    | Region being swept; `""` for account-level failures. |
+| `service`   | `string`                                                    | AWS service that failed: `rds`, `sts`, `sso`, or `""` (no AWS call involved). Reads default `""` so rows written before this field existed still parse. |
+| `phase`     | `string`                                                    | `preflight_sso`, `no_regions`, `profile_suffix_check`, `credentials`, `describe_db_instances`, `describe_reserved_db_instances`, `malformed_db_instance`, `malformed_reserved_db_instance`. `preflight_sso` is the single SSO short-circuit row; `no_regions` is the single account-less row written when `regions` is empty (see the `regions` argument). The two `malformed_*` phases are written per individual AWS row that is missing a coverage-critical field (the row is not emitted as an `instance`/`reserved` resource) and carry a `:ordinal:rowId` discriminator. |
+| `kind`      | `"network" \| "auth_expired" \| "access_denied" \| "other"` | Coarse classification driving the operator's next action. `network` (checked first) is a transient DNS/socket failure. |
+| `message`   | `string`                                                    | Error detail. |
+| `scannedAt` | `string`                                                    | ISO 8601 timestamp. |
 
 CEL reference shape (downstream models / reports):
 
