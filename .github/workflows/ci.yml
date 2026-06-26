@@ -22,6 +22,10 @@ jobs:
       - uses: systeminit/setup-swamp@8764f3226a675af5b78708adfdee4e13eaa19aac # v0.1.0
       - run: deno fmt --check
       - run: deno lint
+      - name: sync-lib drift
+        # Fail if any generated per-package `_lib` copy has drifted from its
+        # canonical source under repo-root `_lib/`. Mirrored in scripts/check.sh.
+        run: deno run --allow-read --allow-write scripts/sync-lib.ts --check
       - name: check
         shell: bash
         run: |
@@ -47,6 +51,11 @@ jobs:
             exit 1
           fi
           xargs -0 -n 50 deno check < "$check_files"
+
+          # The canonical shared `_lib/` lives at the repo root with no
+          # manifest.yaml, so the enumeration above does not reach it. Type-check
+          # it explicitly. Mirrored in scripts/check.sh.
+          deno check _lib/*.ts
       - name: doc lint
         shell: bash
         # Scope: every exported symbol in all TypeScript under manifest-owned
@@ -75,6 +84,11 @@ jobs:
             exit 1
           fi
           xargs -0 -n 50 deno doc --lint < "$doc_files"
+
+          # Doc-lint the canonical shared `_lib/` source modules (no manifest,
+          # so the enumeration above does not reach them). Mirrored in
+          # scripts/check.sh.
+          deno doc --lint _lib/scan_error.ts _lib/aws_credentials.ts _lib/retry.ts
       - name: manifest fmt
         shell: bash
         run: |
@@ -202,10 +216,13 @@ jobs:
             exit 1
           fi
 
+          # The canonical `_lib/` is included explicitly (no manifest, so it is
+          # not in the enumerated extension dirs) so its unit suites run here
+          # and in scripts/check.sh.
           deno test \
             --allow-read --allow-write --allow-env --allow-net --no-check \
             --coverage=coverage \
-            "${extension_dirs[@]}"
+            _lib/ "${extension_dirs[@]}"
 
           # Coverage is observability-only: print a summary to logs and the
           # job summary. Enforcing a minimum threshold is intentionally OUT of
