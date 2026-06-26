@@ -41,10 +41,10 @@ const ROOT = dirname(dirname(fromFileUrl(import.meta.url)));
  *
  * SCOPE: a canonical module is generated only into the packages that actually
  * import it, so an SDK-bearing module never leaks into an SDK-free bundle. The
- * pure `scan_error.ts` is generated into both the `aws-default-sg-audit`
- * producer and the `aws-default-sg-audit-report` report; the SDK-bearing
- * `aws_credentials.ts` is generated into the producer only (the report bundle
- * stays SDK-free). Add a key/target here when a package starts consuming a
+ * pure `scan_error.ts` is generated into the producer + report pairs (both the
+ * `aws-default-sg-audit` and `aws-vpc-inventory` families); the SDK-bearing
+ * `aws_credentials.ts` is generated into the producers only (the report bundles
+ * stay SDK-free). Add a key/target here when a package starts consuming a
  * canonical module.
  */
 const TARGETS: Record<string, readonly string[]> = {
@@ -55,9 +55,12 @@ const TARGETS: Record<string, readonly string[]> = {
   "_lib/scan_error.ts": [
     "aws-default-sg-audit/_lib/scan_error.ts",
     "aws-default-sg-audit-report/_lib/scan_error.ts",
+    "aws-vpc-inventory/_lib/scan_error.ts",
+    "aws-vpc-inventory-report/_lib/scan_error.ts",
   ],
   "_lib/aws_credentials.ts": [
     "aws-default-sg-audit/_lib/aws_credentials.ts",
+    "aws-vpc-inventory/_lib/aws_credentials.ts",
   ],
 };
 
