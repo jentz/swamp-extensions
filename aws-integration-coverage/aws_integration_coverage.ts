@@ -231,7 +231,7 @@ export function parseAll<T>(
  */
 export const model = {
   type: "@jentz/aws-integration-coverage",
-  version: "2026.06.22.0",
+  version: "2026.06.26.1",
   globalArguments: GlobalArgsSchema,
   upgrades: [
     {
@@ -248,6 +248,13 @@ export const model = {
     {
       toVersion: "2026.06.22.0",
       description: "Dependency refresh, no globalArguments schema changes",
+      upgradeAttributes: (old: Record<string, unknown>) => old,
+    },
+    {
+      toVersion: "2026.06.26.1",
+      description:
+        "Companion report gains a `network` kind-to-remediation case; no " +
+        "model schema or globalArguments changes",
       upgradeAttributes: (old: Record<string, unknown>) => old,
     },
   ],

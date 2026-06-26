@@ -395,20 +395,37 @@ Deno.test("classifyError: AccessDenied carrying an SSO role ARN is access_denied
   assertEquals(classifyError(err).kind, "access_denied");
 });
 
-Deno.test("classifyError: access_denied wins when a message matches BOTH access-denied and expiry signals (precedence regression)", () => {
-  // This fixture trips BOTH predicates at once: the name yields "accessdenied"
-  // and the message carries "not authorized" (access-denied) while also
-  // containing the literal phrase "sso session" and "token has expired"
-  // (auth-expired). Access-denied must win. If the checks are ever reordered
-  // to return auth-expired first, this assertion flips to "auth_expired" and
-  // the test goes red — pinning the precedence invariant with real teeth.
+Deno.test("classifyError: a genuine expiry phrase wins over access-denied wording (shared-lib precedence)", () => {
+  // The shared classifier checks network → auth_expired → access_denied. A
+  // fixture that trips BOTH predicates at once — the name yields "accessdenied"
+  // and the message reads "not authorized" (access-denied) while also carrying
+  // the genuine expiry phrases "sso session" and "token has expired"
+  // (auth-expired) — is therefore auth_expired: the actionable next step is
+  // `aws sso login`, since an expired token surfaces as a permission-shaped
+  // error. The narrowly-guarded case — a bare `AWSReservedSSO_`/sso role ARN
+  // with NO expiry phrase — stays access_denied (the regression above).
   const err = Object.assign(
     new Error(
       "User is not authorized to perform iam:GetRole; the sso session token has expired",
     ),
     { name: "AccessDeniedException" },
   );
-  assertEquals(classifyError(err).kind, "access_denied");
+  assertEquals(classifyError(err).kind, "auth_expired");
+});
+
+Deno.test("classifyError: network failure classifies as network (before auth_expired)", () => {
+  // A getaddrinfo/ENOTFOUND failure during credential resolution surfaces as a
+  // "Could not load credentials" CredentialsProviderError — which would
+  // otherwise trip auth_expired. The shared lib checks network first, so the
+  // operator is not sent to `aws sso login` for a transient DNS blip.
+  const wrapped = Object.assign(
+    new Error("Could not load credentials from any providers"),
+    {
+      name: "CredentialsProviderError",
+      cause: new Error("getaddrinfo ENOTFOUND iam.us-east-1.amazonaws.com"),
+    },
+  );
+  assertEquals(classifyError(wrapped).kind, "network");
 });
 
 Deno.test("classifyError: unrelated failure is other", () => {

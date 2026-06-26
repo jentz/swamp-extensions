@@ -355,6 +355,7 @@ Deno.test("renderMarkdown: unresolved-profile remediation matches the scan_error
     iamErrors: [
       { profile: "p-expired", kind: "auth_expired" },
       { profile: "p-denied", kind: "access_denied" },
+      { profile: "p-network", kind: "network" },
       { profile: "p-other", kind: "weird" },
     ] as never,
     skipped: 0,
@@ -369,6 +370,12 @@ Deno.test("renderMarkdown: unresolved-profile remediation matches the scan_error
   assertStringIncludes(
     md,
     "`p-denied` — access_denied (check the role's IAM permissions / SCPs)",
+  );
+  // A transient network failure gets a retry hint, not an auth/permission
+  // mislabel — the permissive kind parser accepts the upstream `network` kind.
+  assertStringIncludes(
+    md,
+    "`p-network` — network (transient network failure — retry the scan)",
   );
   assertStringIncludes(
     md,

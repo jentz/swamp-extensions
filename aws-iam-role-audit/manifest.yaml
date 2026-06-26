@@ -1,6 +1,6 @@
 manifestVersion: 1
 name: "@jentz/aws-iam-role-audit"
-version: "2026.06.22.0"
+version: "2026.06.26.1"
 description: |
   Read-only fleet IAM lens for an integration's roles across many accounts. A
   single `audit` method fans out in one locked execution: for each configured

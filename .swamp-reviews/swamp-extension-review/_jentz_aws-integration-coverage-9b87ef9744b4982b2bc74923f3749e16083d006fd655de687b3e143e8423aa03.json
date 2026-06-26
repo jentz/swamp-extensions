@@ -1,0 +1,82 @@
+{
+  "extension": "@jentz/aws-integration-coverage",
+  "version": "2026.06.26.1",
+  "reviewedAt": "2026-06-26T20:59:41Z",
+  "dimensions": [
+    {
+      "id": "credentials-secrets",
+      "verdict": "pass",
+      "note": "Makes no AWS calls and handles no secrets; it only consumes already-captured upstream audit data. The remediation-mapping change adds no credential path."
+    },
+    {
+      "id": "logging-quality",
+      "verdict": "pass",
+      "note": "No logging calls changed; the source edits are a string returned by the report's remediationForKind helper and a model version/upgrade-chain bump."
+    },
+    {
+      "id": "error-handling",
+      "verdict": "pass",
+      "note": "remediationForKind keeps its exhaustive switch with a default arm; the new `network` case is added before default, so an unknown kind still falls through to the generic 'investigate' hint. The report's never-throw degraded-path behavior is unchanged."
+    },
+    {
+      "id": "testing-completeness",
+      "verdict": "pass",
+      "note": "Extended the existing unresolved-profile remediation test with a {kind:'network'} fixture asserting the new 'transient network failure — retry the scan' text renders, alongside the retained auth_expired/access_denied/other cases. The model-metadata test continues to assert model.version equals the manifest version and that the upgrade chain ends at model.version."
+    },
+    {
+      "id": "idempotency-resilience",
+      "verdict": "pass",
+      "note": "Pure rendering change; coalesce semantics and the model's write behavior are unchanged."
+    },
+    {
+      "id": "api-contracts",
+      "verdict": "na",
+      "note": "No direct external API client in this extension; it consumes swamp data/artifacts only."
+    },
+    {
+      "id": "resource-management",
+      "verdict": "pass",
+      "note": "No new files, handles, or clients; the changes are a one-line addition to a pure function plus a model version/upgrade-entry bump."
+    },
+    {
+      "id": "published-surface-hygiene",
+      "verdict": "pass",
+      "note": "Manifest version (2026.06.26.1) matches the bumped model.version. No real identifiers introduced. The new test fixture uses placeholder profile labels (p-network) consistent with the existing ones."
+    },
+    {
+      "id": "schema-strictness",
+      "verdict": "pass",
+      "note": "MECHANICAL: no schema or writeResource payload changed. _lib/coverage.ts IamErrorSchema deliberately keeps `kind: z.string().default('other')` with .passthrough() because it coalesces multiple upstream lenses with differing kind vocabularies; it therefore already accepts the producer's new 'network' kind and ignores the extra `service` field. No new twin was added to this consumer (confirmed against TASK scope)."
+    },
+    {
+      "id": "lifetime-gc",
+      "verdict": "pass",
+      "note": "Resource lifetime and garbage-collection settings unchanged."
+    },
+    {
+      "id": "crud-completeness",
+      "verdict": "na",
+      "note": "Read-only coalescer (single `coalesce` method) plus a workflow-scope report; no CRUD lifecycle surface is intended."
+    },
+    {
+      "id": "preflight-checks",
+      "verdict": "pass",
+      "note": "Non-mutating model; no pre-flight `check` labels apply, and none were changed."
+    },
+    {
+      "id": "instance-names",
+      "verdict": "pass",
+      "note": "MECHANICAL: no writeResource instance-name logic changed; coverage/summary naming is preserved."
+    },
+    {
+      "id": "data-access",
+      "verdict": "pass",
+      "note": "Upstream data-read patterns are unchanged; the report still collects rows from the workflow's step executions and the model still reads via the data repository as before."
+    },
+    {
+      "id": "version-upgrades",
+      "verdict": "pass",
+      "note": "model.version bumped 2026.06.22.0 -> 2026.06.26.1 (required because the report source changed and the model-metadata test ties model.version to the manifest) with a matching no-op upgrades entry whose toVersion equals model.version; upgradeAttributes is the identity transform because no model schema or globalArguments changed."
+    }
+  ]
+}
