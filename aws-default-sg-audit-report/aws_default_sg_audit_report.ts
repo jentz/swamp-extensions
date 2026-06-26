@@ -21,6 +21,13 @@
  */
 
 import { z } from "npm:zod@4.4.3";
+import {
+  errorBucket,
+  type ScanError,
+  ScanErrorSchema,
+} from "./_lib/scan_error.ts";
+
+export type { ScanError };
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -69,20 +76,13 @@ const FindingSchema = z.object({
   scannedAt: z.iso.datetime(),
 });
 
-const ScanErrorSchema = z.object({
-  profile: z.string(),
-  accountId: z.string(),
-  region: z.string(),
-  phase: z.string(),
-  kind: z.enum(["auth_expired", "access_denied", "other"]),
-  message: z.string(),
-  scannedAt: z.iso.datetime(),
-});
-
 // Explicit interfaces (not `z.infer` aliases) so the public API surface stays
 // free of private zod internals — `deno doc --lint` rejects exported types that
-// reference the schema's inferred output type. The schemas above remain the
-// runtime decode/validation source of truth; these mirror their shapes.
+// reference the schema's inferred output type. The `FindingSchema` above remains
+// the runtime decode/validation source of truth; this mirrors its shape. The
+// scan-error shape (schema + `ScanError` interface) is imported from the shared
+// `./_lib/scan_error.ts` twin, so a `network` row and the `service` tag decode
+// rather than being dropped as malformed.
 
 /** EC2.2 remediation verdict for a default security group. */
 export type Verdict =
@@ -139,24 +139,6 @@ export interface Finding {
   /** All VPC tags, flattened. Surfaces owner/team/service for the operator. */
   vpcTags: Record<string, string>;
   /** ISO 8601 scan timestamp. */
-  scannedAt: string;
-}
-
-/** A decoded scan-error row, mirroring the upstream model's `scan_error` resource. */
-export interface ScanError {
-  /** Profile being swept; `""` for ambient. */
-  profile: string;
-  /** Account id if known by the time of failure; `""` otherwise. */
-  accountId: string;
-  /** Region being scanned; `""` for account-level failures. */
-  region: string;
-  /** Stage that failed: `credentials`, `describe_regions`, `describe_security_groups`, … */
-  phase: string;
-  /** Coarse classification driving the operator's next action. */
-  kind: "auth_expired" | "access_denied" | "other";
-  /** Error detail. */
-  message: string;
-  /** ISO 8601 timestamp. */
   scannedAt: string;
 }
 
@@ -422,6 +404,7 @@ export function renderMarkdown(
   const safe = findings.filter((f) => f.verdict === "safe_to_remediate");
   const compliant = findings.filter((f) => f.verdict === "compliant");
 
+  const networkErrors = errors.filter((e) => e.kind === "network");
   const authExpired = errors.filter((e) => e.kind === "auth_expired");
   const accessDenied = errors.filter((e) => e.kind === "access_denied");
   const otherErrors = errors.filter((e) => e.kind === "other");
@@ -448,6 +431,9 @@ export function renderMarkdown(
     `- Coverage gaps: **${authExpired.length}** region(s) need ` +
       "`aws sso login` (expired token), " +
       `**${accessDenied.length}** region(s) blocked by SCP/IAM` +
+      (networkErrors.length
+        ? `, **${networkErrors.length}** transient network error(s)`
+        : "") +
       (otherErrors.length ? `, **${otherErrors.length}** other error(s)` : ""),
   );
   lines.push("");
@@ -495,6 +481,29 @@ export function renderMarkdown(
         "exposed default SGs) can exist there. Regions: " +
         (regions.length ? regions.map((r) => `\`${r}\``).join(", ") : "—"),
     );
+    lines.push("");
+  }
+
+  if (networkErrors.length > 0) {
+    lines.push(
+      `## 🌐 Transient network errors (\`${errorBucket("network")}\`)`,
+    );
+    lines.push("");
+    lines.push(
+      `${networkErrors.length} scan(s) hit a transient DNS/socket failure and ` +
+        "could not be assessed — re-run the sweep to clear them. Affected " +
+        "service/region pairs:",
+    );
+    lines.push("");
+    const seen = new Set<string>();
+    for (const e of networkErrors) {
+      const svc = e.service || "<unknown>";
+      const reg = e.region || "<account>";
+      const key = `${svc}/${reg}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      lines.push(`- \`${svc}\` in \`${reg}\``);
+    }
     lines.push("");
   }
 
@@ -579,6 +588,7 @@ export const report = {
     };
     for (const f of collected.findings) byVerdict[f.verdict]++;
     const errorsByKind: Record<string, number> = {
+      network: 0,
       auth_expired: 0,
       access_denied: 0,
       other: 0,

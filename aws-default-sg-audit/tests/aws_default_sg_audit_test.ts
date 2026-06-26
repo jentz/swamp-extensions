@@ -15,7 +15,7 @@
  * @module
  */
 
-import { assertEquals, assertNotEquals } from "jsr:@std/assert@1";
+import { assert, assertEquals, assertNotEquals } from "jsr:@std/assert@1";
 import { createModelTestContext } from "jsr:@systeminit/swamp-testing@0.20260604.20";
 import {
   type AwsApi,
@@ -104,19 +104,21 @@ Deno.test("classifyError: SSO role ARN in unrelated AccessDenied does NOT trip a
   assertEquals(classifyError(err).kind, "access_denied");
 });
 
-Deno.test("classifyError: access_denied wins when a message matches BOTH access-denied and expiry signals (precedence regression)", () => {
-  // Trips BOTH predicates at once: the name yields "accessdenied" and the
-  // message carries "not authorized" (access-denied) while also containing
-  // "sso session" and "token has expired" (auth-expired). Access-denied must
-  // win. If the returns are reordered to auth-expired first, this flips to
-  // "auth_expired" and the test goes red — pinning the precedence with teeth.
+Deno.test("classifyError: a genuine expiry phrase wins over access-denied wording (shared-lib precedence)", () => {
+  // The shared classifier checks network → auth_expired → access_denied. A
+  // message carrying a *genuine* expiry phrase ("sso session ... token has
+  // expired") is therefore auth_expired even when it also reads "not
+  // authorized": the actionable next step is `aws sso login`, since an expired
+  // token surfaces as a permission-shaped error. The narrowly-guarded case — a
+  // bare `AWSReservedSSO_` role ARN with NO expiry phrase — stays access_denied
+  // (covered by the SSO-role-ARN regression above).
   const err = Object.assign(
     new Error(
       "User is not authorized to perform ec2:DescribeSecurityGroups; the sso session token has expired",
     ),
     { name: "AccessDeniedException" },
   );
-  assertEquals(classifyError(err).kind, "access_denied");
+  assertEquals(classifyError(err).kind, "auth_expired");
 });
 
 Deno.test("classifyError: real expired-token signals are auth_expired", () => {
@@ -195,13 +197,33 @@ Deno.test("findingKey: stable and unique across (account, region, sg)", () => {
 
 Deno.test("scanErrorKey: ambient and account-level fallbacks", () => {
   assertEquals(
-    scanErrorKey("", "", "credentials"),
-    "error-ambient-account-credentials",
+    scanErrorKey("", "", "sts", "credentials"),
+    "error-ambient-account-sts-credentials",
   );
   assertEquals(
-    scanErrorKey("acct-readonly", "eu-west-1", "describe_security_groups"),
-    "error-acct-readonly-eu-west-1-describe_security_groups",
+    scanErrorKey(
+      "acct-readonly",
+      "eu-west-1",
+      "ec2",
+      "describe_security_groups",
+    ),
+    "error-acct-readonly-eu-west-1-ec2-describe_security_groups",
   );
+});
+
+Deno.test("classifyError: network failure classifies as network (before auth_expired)", () => {
+  // A getaddrinfo/ENOTFOUND failure during credential resolution surfaces as a
+  // "Could not load credentials" CredentialsProviderError — which would
+  // otherwise trip auth_expired. The shared lib checks network first, so the
+  // operator is not sent to `aws sso login` for a transient DNS blip.
+  const wrapped = Object.assign(
+    new Error("Could not load credentials from any providers"),
+    {
+      name: "CredentialsProviderError",
+      cause: new Error("getaddrinfo ENOTFOUND sts.eu-west-1.amazonaws.com"),
+    },
+  );
+  assertEquals(classifyError(wrapped).kind, "network");
 });
 
 // ---------------------------------------------------------------------------
@@ -442,6 +464,8 @@ Deno.test("runScan: credential failure writes one scan_error and skips the accou
   assertEquals(err.profile, "acct-a-readonly");
   assertEquals(err.phase, "credentials");
   assertEquals(err.kind, "auth_expired");
+  // The credentials probe is sts:GetCallerIdentity — tag it as such.
+  assertEquals(err.service, "sts");
 });
 
 Deno.test("runScan: per-region access_denied is recorded but other regions still scanned", async () => {
@@ -651,4 +675,152 @@ Deno.test("runScan: stable keys make re-runs idempotent (same key, same content)
   const nameB = ctxB.getWrittenResources()[0].name;
   assertEquals(nameA, nameB);
   assertEquals(nameA, "finding-111111111111-eu-west-1-sg-a");
+});
+
+// ---- per-region failures carry the failing service tag ---------------------
+
+Deno.test("runScan: a per-region describe failure tags the scan_error service as ec2", async () => {
+  const { context, getWrittenResources } = createModelTestContext({});
+  const denied = Object.assign(
+    new Error("You are not authorized to perform this operation"),
+    { name: "UnauthorizedOperation" },
+  );
+  await runScan({
+    targets: [target("acct-readonly", {
+      accountId: "111111111111",
+      perRegion: { "eu-west-1": { sgsError: denied } },
+    })],
+    configuredRegions: ["eu-west-1"],
+    requiredProfileSuffix: "",
+    ambientProfile: "",
+    context,
+  });
+  const err = getWrittenResources()[0].data as Record<string, unknown>;
+  assertEquals(err.phase, "describe_security_groups");
+  assertEquals(err.service, "ec2");
+  assertEquals(err.region, "eu-west-1");
+});
+
+// ---- SSO pre-flight (injected resolver via the scan seam) ------------------
+
+Deno.test("runScan: expired SSO pre-flight short-circuits the sweep with one service:'sso' error", async () => {
+  const { context, getWrittenResources } = createModelTestContext({});
+  // Tripwire: the per-profile loop must never run once pre-flight reports the
+  // session expired.
+  const tripwire: AwsApi = {
+    getAccountId: () => Promise.reject(new Error("must not call")),
+    describeEnabledRegions: () => Promise.reject(new Error("must not call")),
+    describeDefaultSecurityGroups: () =>
+      Promise.reject(new Error("must not call")),
+    describeVpcs: () => Promise.reject(new Error("must not call")),
+    describeEnisForGroup: () => Promise.reject(new Error("must not call")),
+  };
+  const result = await runScan({
+    targets: [{ profile: "acct-a-readonly", api: tripwire }],
+    configuredRegions: ["eu-west-1"],
+    requiredProfileSuffix: "",
+    ambientProfile: "",
+    ssoSession: "prod-sso",
+    ssoRegion: "eu-west-1",
+    // The cached token is expired — the resolver rejects with an expiry signal.
+    resolveSsoToken: () =>
+      Promise.reject(new Error("SSO session token is expired")),
+    context,
+  });
+
+  assertEquals(result.findingCount, 0);
+  assertEquals(result.errorCount, 1);
+  const written = getWrittenResources();
+  assertEquals(written.length, 1);
+  assertEquals(written[0].specName, "scan_error");
+  const err = written[0].data as Record<string, unknown>;
+  assertEquals(err.service, "sso");
+  assertEquals(err.phase, "preflight_sso");
+  assertEquals(err.kind, "auth_expired");
+  assertEquals(err.profile, "");
+  assert(String(err.message).includes("aws sso login"));
+  assert(String(err.message).includes("prod-sso"));
+});
+
+Deno.test("runScan: a healthy SSO pre-flight proceeds into the per-profile sweep", async () => {
+  const { context, getWrittenResources } = createModelTestContext({});
+  const result = await runScan({
+    targets: [target("acct-a-readonly", {
+      accountId: "111111111111",
+      perRegion: { "eu-west-1": { sgs: [] } },
+    })],
+    configuredRegions: ["eu-west-1"],
+    requiredProfileSuffix: "",
+    ambientProfile: "",
+    ssoSession: "prod-sso",
+    ssoRegion: "eu-west-1",
+    resolveSsoToken: () => Promise.resolve({ accessToken: "ok" }),
+    context,
+  });
+  // Token resolved → the loop ran; the empty region yields no rows and no
+  // pre-flight error.
+  assertEquals(result.findingCount, 0);
+  assertEquals(result.errorCount, 0);
+  assertEquals(getWrittenResources().length, 0);
+});
+
+Deno.test("runScan: a network-blip SSO pre-flight does NOT short-circuit; the sweep proceeds", async () => {
+  const { context, getWrittenResources } = createModelTestContext({});
+  const accountId = "111111111111";
+  const result = await runScan({
+    targets: [target("acct-a-readonly", {
+      accountId,
+      perRegion: {
+        "eu-west-1": {
+          sgs: [{
+            GroupId: "sg-a",
+            GroupName: "default",
+            VpcId: "vpc-1",
+            IpPermissions: [{}],
+            IpPermissionsEgress: [],
+          }],
+          vpcs: [{ VpcId: "vpc-1", Tags: [] }],
+        },
+      },
+    })],
+    configuredRegions: ["eu-west-1"],
+    requiredProfileSuffix: "",
+    ambientProfile: "",
+    ssoSession: "prod-sso",
+    ssoRegion: "eu-west-1",
+    // A transient DNS blip during token resolution → classified `network`,
+    // which must not abort the whole sweep over one flaky lookup.
+    resolveSsoToken: () =>
+      Promise.reject(
+        new Error("getaddrinfo ENOTFOUND oidc.eu-west-1.amazonaws.com"),
+      ),
+    context,
+  });
+  assertEquals(result.findingCount, 1);
+  assertEquals(result.errorCount, 0);
+  const f = getWrittenResources()[0].data as Record<string, unknown>;
+  assertEquals(f.defaultSgId, "sg-a");
+});
+
+Deno.test("runScan: no ssoSession means the pre-flight is skipped entirely (no-op)", async () => {
+  const { context, getWrittenResources } = createModelTestContext({});
+  let resolverCalled = false;
+  const result = await runScan({
+    targets: [target("", {
+      accountId: "111111111111",
+      perRegion: { "eu-west-1": { sgs: [] } },
+    })],
+    configuredRegions: ["eu-west-1"],
+    requiredProfileSuffix: "",
+    ambientProfile: "",
+    // ssoSession omitted → pre-flight skipped; this resolver must never run.
+    resolveSsoToken: () => {
+      resolverCalled = true;
+      return Promise.reject(new Error("must not call"));
+    },
+    context,
+  });
+  assertEquals(resolverCalled, false);
+  assertEquals(result.errorCount, 0);
+  assertEquals(getWrittenResources().length, 0);
 });

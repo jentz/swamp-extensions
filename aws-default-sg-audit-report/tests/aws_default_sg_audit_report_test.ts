@@ -71,6 +71,7 @@ function scanError(overrides: Partial<ScanError> = {}): ScanError {
     profile: "prod-readonly",
     accountId: "111111111111",
     region: "eu-west-1",
+    service: "ec2",
     phase: "describe_security_groups",
     kind: "other",
     message: "boom",
@@ -248,6 +249,40 @@ Deno.test("collect: a schema-drifted artifact is skipped-counted, never thrown",
   assertEquals(out.skipped, 2);
 });
 
+Deno.test("collect: a network scan_error (with service tag) decodes, not skipped as malformed", async () => {
+  // A `network`-kind row carrying the `service` tag is the new shape this slice
+  // adds. With the canonical schema imported, it must parse into errors rather
+  // than failing safeParse and being dropped into skipped.
+  const ctx = contextFor([
+    {
+      specName: SCAN_ERROR_SPEC,
+      payload: scanError({
+        kind: "network",
+        service: "sts",
+        phase: "credentials",
+        region: "",
+        message: "getaddrinfo ENOTFOUND sts.eu-west-1.amazonaws.com",
+      }),
+    },
+  ]);
+  const out = await collect(ctx);
+  assertEquals(out.errors.length, 1);
+  assertEquals(out.skipped, 0);
+  assertEquals(out.errors[0].kind, "network");
+  assertEquals(out.errors[0].service, "sts");
+});
+
+Deno.test("collect: a pre-existing row WITHOUT a service field still parses (back-compat default '')", async () => {
+  // Rows written by a scanner that predates the `service` field must still
+  // decode — the schema defaults `service` to "" on reads.
+  const { service: _drop, ...legacy } = scanError({ kind: "access_denied" });
+  const ctx = contextFor([{ specName: SCAN_ERROR_SPEC, payload: legacy }]);
+  const out = await collect(ctx);
+  assertEquals(out.errors.length, 1);
+  assertEquals(out.skipped, 0);
+  assertEquals(out.errors[0].service, "");
+});
+
 Deno.test("collect: handles with an unrelated spec name are ignored, not skipped", async () => {
   const ctx = contextFor([
     { specName: "something_else", payload: { whatever: true } },
@@ -387,6 +422,35 @@ Deno.test("renderMarkdown: access_denied errors produce the blocked-by-SCP/IAM s
   assert(md.includes("`sa-east-1`"));
 });
 
+Deno.test("renderMarkdown: network errors produce the transient-network section and surface service/region", () => {
+  const collected: Collected = {
+    findings: [],
+    errors: [
+      scanError({
+        kind: "network",
+        service: "sts",
+        region: "",
+        phase: "credentials",
+      }),
+      scanError({
+        kind: "network",
+        service: "ec2",
+        region: "eu-west-1",
+        phase: "describe_security_groups",
+      }),
+    ],
+    skipped: 0,
+  };
+  const md = renderMarkdown(collected, ISO, "sg-workflow");
+  assert(md.includes("Transient network errors"));
+  assert(md.includes("transient-network-error"));
+  // The summary count line distinguishes network errors.
+  assert(md.includes("**2** transient network error(s)"));
+  // Service/region pairs are surfaced (region "" renders as <account>).
+  assert(md.includes("`sts` in `<account>`"));
+  assert(md.includes("`ec2` in `eu-west-1`"));
+});
+
 Deno.test("renderMarkdown: 'other' errors surface in the summary count line", () => {
   const collected: Collected = {
     findings: [],
@@ -431,8 +495,12 @@ Deno.test("report.execute: JSON payload carries findingCount and byVerdict count
   assertEquals(out.json.degraded, false);
 });
 
-Deno.test("report.execute: JSON payload breaks errors down by kind and counts skipped", async () => {
+Deno.test("report.execute: JSON payload breaks errors down by kind (incl. network) and counts skipped", async () => {
   const ctx = contextFor([
+    {
+      specName: SCAN_ERROR_SPEC,
+      payload: scanError({ kind: "network", service: "sts" }),
+    },
     { specName: SCAN_ERROR_SPEC, payload: scanError({ kind: "auth_expired" }) },
     {
       specName: SCAN_ERROR_SPEC,
@@ -447,7 +515,9 @@ Deno.test("report.execute: JSON payload breaks errors down by kind and counts sk
     { specName: FINDING_SPEC, payload: "not json", raw: true },
   ]);
   const out = await report.execute(ctx);
+  // The network row lands in errorsByKind.network, not skipped.
   assertEquals(out.json.errorsByKind, {
+    network: 1,
     auth_expired: 1,
     access_denied: 2,
     other: 1,

@@ -39,16 +39,25 @@ const ROOT = dirname(dirname(fromFileUrl(import.meta.url)));
  * The key is a canonical file under `_lib/`; the value lists the per-package
  * paths generated from it. All paths are repo-root-relative.
  *
- * SCOPE: in this slice only `retry.ts` is generated into packages — the
- * `scan_error.ts` / `aws_credentials.ts` canonical modules exist and are
- * unit-tested at the canonical `_lib/` only, with no per-package copies until a
- * later slice wires a producer/report to consume them. Add a key/target here
- * when a package starts consuming a canonical module.
+ * SCOPE: a canonical module is generated only into the packages that actually
+ * import it, so an SDK-bearing module never leaks into an SDK-free bundle. The
+ * pure `scan_error.ts` is generated into both the `aws-default-sg-audit`
+ * producer and the `aws-default-sg-audit-report` report; the SDK-bearing
+ * `aws_credentials.ts` is generated into the producer only (the report bundle
+ * stays SDK-free). Add a key/target here when a package starts consuming a
+ * canonical module.
  */
 const TARGETS: Record<string, readonly string[]> = {
   "_lib/retry.ts": [
     "aws-rds-inventory/_lib/retry.ts",
     "aws-rds-reservations/_lib/retry.ts",
+  ],
+  "_lib/scan_error.ts": [
+    "aws-default-sg-audit/_lib/scan_error.ts",
+    "aws-default-sg-audit-report/_lib/scan_error.ts",
+  ],
+  "_lib/aws_credentials.ts": [
+    "aws-default-sg-audit/_lib/aws_credentials.ts",
   ],
 };
 
