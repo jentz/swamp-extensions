@@ -1,7 +1,7 @@
 {
   "extension": "@jentz/aws-rds-reservations",
   "version": "2026.06.26.1",
-  "reviewedAt": "2026-06-26T21:41:06Z",
+  "reviewedAt": "2026-06-27T07:11:33Z",
   "dimensions": [
     {
       "id": "credentials-secrets",
