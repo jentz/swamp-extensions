@@ -193,9 +193,12 @@ Storage key: `reserved-<accountId>-<region>--<reservedDBInstanceId>`.
 ### `scan_error` resource (factory)
 
 Storage key: `error-<profile|ambient>-<region|account>-<service>-<phase>` — the
-shared `@jentz/aws-*` fleet key, single hyphens throughout. An absent profile
-renders as the `ambient` sentinel and an absent region as `account`. The per-row
-malformed phases fold their row discriminator into the `phase` segment (e.g.
+shared `@jentz/aws-*` fleet key, with the four segments joined by hyphens. An
+absent profile renders as the `ambient` sentinel and an absent region as
+`account`; a pre-call gate with no AWS service involved leaves the `service`
+segment empty, so the key shows an empty segment there (e.g.
+`error-ambient-account--no_regions`). The per-row malformed phases fold their row
+discriminator into the `phase` segment (e.g.
 `error-prod-readonly-us-east-1-rds-malformed_db_instance:0:orders-db`) so two
 malformed rows in one (profile, region) get distinct keys.
 
