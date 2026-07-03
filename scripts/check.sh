@@ -49,9 +49,8 @@ fi
 
 # 3. Type check: every *.ts/*.tsx under extension dirs.
 check_files="$(mktemp)"
-doc_files="$(mktemp)"
 push_out="$(mktemp)"
-trap 'rm -f "$check_files" "$doc_files" "$push_out"' EXIT
+trap 'rm -f "$check_files" "$push_out"' EXIT
 find -- "${extension_dirs[@]}" -type f \( -name '*.ts' -o -name '*.tsx' \) \
   -print0 > "$check_files"
 if [ ! -s "$check_files" ]; then
@@ -65,14 +64,31 @@ xargs -0 -n 50 deno check < "$check_files"
 # "canonical _lib check" step.
 deno check _lib/*.ts
 
-# 4. Doc lint: same enumeration, every exported symbol including `_lib`.
-find -- "${extension_dirs[@]}" -type f \( -name '*.ts' -o -name '*.tsx' \) \
-  -print0 > "$doc_files"
-if [ ! -s "$doc_files" ]; then
+# 4. Doc lint: one invocation per extension dir. Each extension is an
+# independent package, so its files form one doc graph. Cross-package
+# batches let the byte-identical generated `_lib` twins of different
+# packages share an invocation, which makes deno doc misreport exported
+# twin types as private (private-type-ref) depending on filesystem
+# enumeration order. Mirrors CI's "doc lint" step.
+doc_total=0
+for dir in "${extension_dirs[@]}"; do
+  doc_files=()
+  while IFS= read -r -d '' file; do
+    doc_files+=("$file")
+  done < <(
+    find "$dir" -type f \( -name '*.ts' -o -name '*.tsx' \) -print0 \
+    | sort -z
+  )
+  if [ "${#doc_files[@]}" -eq 0 ]; then
+    continue
+  fi
+  deno doc --lint "${doc_files[@]}"
+  doc_total=$((doc_total + ${#doc_files[@]}))
+done
+if [ "$doc_total" -eq 0 ]; then
   echo "No TypeScript files found under extension manifests"
   exit 1
 fi
-xargs -0 -n 50 deno doc --lint < "$doc_files"
 
 # 4b. Doc lint the canonical shared `_lib/` source modules (test files carry no
 # doc surface). Mirrors CI's "canonical _lib doc lint" step.
