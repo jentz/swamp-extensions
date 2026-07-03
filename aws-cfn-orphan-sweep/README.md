@@ -20,7 +20,7 @@ model instance accumulates the whole fleet, queryable with CEL.
 
 ## What it does
 
-Three methods:
+Four methods:
 
 ### `enumerate` (read-only)
 
@@ -89,6 +89,29 @@ Two guardrails are always enforced: it refuses any stack whose name does not
 start with `namePrefix`, and it refuses to retain anything that is not the
 detected custom resource (so the IAM role and Lambda are always deleted).
 
+### `cleanupOrg` (mutating, cross-account; dry-run unless `apply=true`)
+
+The org-wide sibling of `cleanup`. Run it **once** from the management account;
+it discovers the org's ACTIVE member accounts (like `enumerateOrg`), assumes
+`assumeRoleName` into each member (the management account uses the ambient or
+`profile` creds directly — never self-assumed), and reuses the per-account
+`cleanup` to delete the orphans fleet-wide.
+
+Each member account is run with an internal `expectAccount` landing check set to
+that account's id, so if the assumed credentials resolve to a *different*
+account the per-account cleanup refuses before writing any deletion row — a
+misconfigured role can never delete in the wrong account. Per-account failures
+are recorded in `org-summary.failures` and skipped, never fatal.
+
+It takes the same tuning knobs as `cleanup` (minus `expectAccount`, which the
+driver owns) plus the `onlyAccount` canary. It writes the per-account `deletion`
+rows plus one `org-summary` rollup with aggregate cleanup counters
+(`considered` / `deleted` / `initiated` / `skipped` / `errors`).
+
+Run `enumerateOrg` first to inventory the fleet, then `cleanupOrg` with
+`apply=false` (the default) to preview, then — ideally after an `onlyAccount`
+canary — `apply=true` to delete. Accounts are swept sequentially today.
+
 ### `orphan` resource
 
 One row per matching stack, keyed `orphan-${account}-${region}-${stack}`:
@@ -126,7 +149,7 @@ One row per delete attempt or dry-run plan, keyed
 
 ### `org-summary` resource
 
-One cross-account rollup written by `enumerateOrg`, keyed
+One cross-account rollup written by `enumerateOrg` or `cleanupOrg`, keyed
 `org-summary-${managementAccount}`:
 
 - `managementAccount` — the account the run was driven from
@@ -136,12 +159,15 @@ One cross-account rollup written by `enumerateOrg`, keyed
 - `accountsProcessed` — accounts actually swept
 - `accountsFailed` — accounts whose assume/sweep failed and were skipped
 - `failures` — `[{ account, name, error }]` for each skipped account
-- `totalOrphans` — orphan stacks found across every processed account
-- `regionsScanned`, `mode` (`"enumerate"`), `applied` (`false`)
+- `totalOrphans` — orphan stacks found across every processed account (for
+  `cleanupOrg`, the scoped targets considered)
+- `regionsScanned`, `mode` (`"enumerate"` or `"cleanup"`), `applied`
 - `scannedAt` — ISO-8601 timestamp
 
-The schema is a passthrough, so a future cleanup phase can add counters without
-a breaking change.
+`cleanupOrg` additionally writes the aggregate cleanup counters `considered`,
+`deleted`, `initiated`, `skipped`, and `errors`; `enumerateOrg` omits them. The
+schema is a passthrough, so either writer can add fields without a breaking
+change.
 
 ## Global arguments
 
@@ -172,6 +198,10 @@ The `cleanup` method takes these arguments:
 | `verifyRole`      | `boolean`        | `true`  | After delete, `GetRole` on the captured role name to confirm removal.                            |
 | `initiateOnly`    | `boolean`        | `false` | Fire the delete and return without polling to completion — for fast fleet fan-out.               |
 | `predeleteLambda` | `boolean`        | `true`  | Delete the backing Lambda first so the custom resource deletes cleanly in one plain pass.        |
+
+The `cleanupOrg` method takes the same arguments as `cleanup` except
+`expectAccount` (the driver sets it internally per member account), plus
+`onlyAccount` with the same canary semantics as on `enumerateOrg`.
 
 ## Running a sweep
 
@@ -224,6 +254,21 @@ swamp model method run org-orphan-sweep cleanup \
   --args '{ "apply": true, "onlyStack": "StackSet-IAMCustomPasswordPolicy-111111111111-abc", "expectAccount": "111111111111" }'
 ```
 
+For an org-wide cleanup, run `cleanupOrg` from the management account with a
+profile that can mutate. Preview first, canary one account, then apply:
+
+```sh
+# Dry-run across the whole org (the default): plan rows only.
+swamp model method run org-orphan-sweep cleanupOrg
+
+# Apply in a single canary account first:
+swamp model method run org-orphan-sweep cleanupOrg \
+  --args '{ "apply": true, "onlyAccount": "222222222222" }'
+
+# Then apply fleet-wide:
+swamp model method run org-orphan-sweep cleanupOrg --args '{ "apply": true }'
+```
+
 ## Required IAM permissions
 
 `enumerate` is read-only — a `*-readonly` profile is sufficient:
@@ -248,7 +293,13 @@ permissions above.
 - `lambda:DeleteFunction`
 - `iam:GetRole`
 
-A read-only profile deliberately cannot run `cleanup` with `apply=true`.
+`cleanupOrg` mutates fleet-wide. The management-account profile needs the
+`cleanup` permissions plus `organizations:ListAccounts` and `sts:AssumeRole`
+into `assumeRoleName` in each member account, and the assumed role in each
+member account needs the `cleanup` permissions above.
+
+A read-only profile deliberately cannot run `cleanup` or `cleanupOrg` with
+`apply=true`.
 
 ## Composing enumerate and cleanup in a workflow
 
@@ -288,11 +339,8 @@ data.latest("<sweep-name>", "org-summary-<management-account>").attributes.total
 
 ## Out of scope
 
-- Cross-account **cleanup** — `enumerateOrg` is read-only inventory only; the
-  mutating `cleanup` stays account-scoped (run it once per account, or compose
-  accounts in a workflow).
-- Bounded-concurrency org sweeps — `enumerateOrg` iterates accounts sequentially
-  today; parallelism is a future optimization.
+- Bounded-concurrency org sweeps — `enumerateOrg` and `cleanupOrg` iterate
+  accounts sequentially today; parallelism is a future optimization.
 - Removing stacks outside the configured `namePrefix` — the guard refuses them.
 - Retaining anything but the detected custom resource — the IAM role and Lambda
   are always deleted.

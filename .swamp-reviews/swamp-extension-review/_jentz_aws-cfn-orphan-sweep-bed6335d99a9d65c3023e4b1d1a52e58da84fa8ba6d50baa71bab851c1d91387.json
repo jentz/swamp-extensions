@@ -1,0 +1,82 @@
+{
+  "extension": "@jentz/aws-cfn-orphan-sweep",
+  "version": "2026.07.03.1",
+  "reviewedAt": "2026-07-03T20:46:00Z",
+  "dimensions": [
+    {
+      "id": "credentials-secrets",
+      "verdict": "pass",
+      "note": "First-publish full review. All credentials come from the environment: the ambient chain by default, fromIni for a named profile, and fromTemporaryCredentials (auto-refreshing AssumeRole) for org member accounts; nothing is vaulted or stored. The push-time credentials-sensitive-field warning on namePrefix is a scanner false positive — the default value is a CloudFormation stack-name prefix containing the word Password, not a secret."
+    },
+    {
+      "id": "logging-quality",
+      "verdict": "pass",
+      "note": "Every method logs entry and completion at info with structured placeholders (never interpolation); per-stack and per-account progress logs cover the fan-out paths. No secrets appear in any log call — logged values are account ids, regions, stack names, statuses, and counters, all operationally expected for a fleet tool."
+    },
+    {
+      "id": "error-handling",
+      "verdict": "pass",
+      "note": "expectAccount mismatch throws before any writeResource. Org drivers implement the documented fatal-vs-skip split: discovery failures (GetCallerIdentity/ListAccounts) propagate, per-account failures are caught, recorded in org-summary.failures, and skipped. Catches are narrow: ValidationError does-not-exist for DescribeStacks, ResourceNotFoundException for DeleteFunction, NoSuchEntity for GetRole; everything else rethrows. Minor nit (non-blocking): a pass-2 retain refusal under apply is tallied in the errors counter while the same refusal pre-apply lands in skipped — the per-stack deletion row is honest in both cases (action skip with the reason)."
+    },
+    {
+      "id": "testing-completeness",
+      "verdict": "pass",
+      "note": "22 pure-logic unit tests (guards, retain computation, classification, keys, slugs) plus 22 smoke tests driving runEnumerate/runEnumerateOrg/runCleanup/runCleanupOrg through injected fake SweepApi/OrgApi fixtures and a recording context: dry-run vs apply, wrong-account landing check, skip-dont-abort, no-self-assume, onlyAccount canary, counter aggregation, and network-budget guards. Colocated tests pin manifest-name/version sync, the method/resource surface, and the upgrade-chain invariant."
+    },
+    {
+      "id": "idempotency-resilience",
+      "verdict": "pass",
+      "note": "cleanup is re-runnable: already-gone stacks are recorded as gone and skipped, wait-budget exhaustion records delete-initiated/delete-retain and a later run resumes from live state (targets are re-enumerated live each run, never from stale rows). Org drivers never abort on a member failure. Partial interruption leaves per-stack deletion rows describing exactly what was initiated."
+    },
+    {
+      "id": "api-contracts",
+      "verdict": "pass",
+      "note": "ListStacks, ListStackResources, and ListAccounts all drain NextToken pagination to completion (no caps, so no truncated flag is needed). Clients use maxAttempts 6 retries; optional SDK response fields are defaulted before use. Organizations is pinned to its us-east-1 global endpoint and the AssumeRole provider pins an explicit STS region so runs work without AWS_REGION set."
+    },
+    {
+      "id": "resource-management",
+      "verdict": "pass",
+      "note": "SDK clients are memoized per region in per-run maps and scoped to the run; no file handles or temp files. The abort signal is threaded through every SDK call and the poll delay (clearTimeout on abort), so cancellation does not leak timers."
+    },
+    {
+      "id": "published-surface-hygiene",
+      "verdict": "pass",
+      "note": "All fixture account ids are synthetic repeated-digit placeholders (111111111111 / 222222222222 / 333333333333 / 999999999999), stack ids are arn:stack/<suffix> stubs, and no hostnames, IPs, or real topology appear in README, tests, or source. README was brought in sync with the shipped surface for this publish: it now documents all four methods including cleanupOrg and no longer lists cross-account cleanup as out of scope. Manifest version and model version are aligned at 2026.07.03.1."
+    },
+    {
+      "id": "schema-strictness",
+      "verdict": "pass",
+      "note": "Mechanical schema-write conformance verified for all four specs: every schema field is written by its writers, no data field is absent from a schema, no placeholder values, and the cleanup-only org-summary counters are declared optional and populated on the cleanupOrg path. Known deliberate deviation, disclosed: all four schemas use .passthrough() for forward-compat; the rationale is documented for org-summary (README and its schema comment — two writers share org-summary and add fields non-breakingly) while the orphan/summary/deletion passthroughs carry no comment, matching the repo precedent in aws-s3-bucket-audit; the tradeoff is weaker CEL validation of undeclared fields."
+    },
+    {
+      "id": "lifetime-gc",
+      "verdict": "pass",
+      "note": "Every spec sets lifetime infinite with garbageCollection 10, matching the accumulate-and-query design where rows are keyed by account/region/stack and the last 10 versions per row are retained."
+    },
+    {
+      "id": "crud-completeness",
+      "verdict": "na",
+      "note": "Not a CRUD lifecycle model: it inventories and retires pre-existing orphan stacks (enumerate/enumerateOrg/cleanup/cleanupOrg) and never creates or updates the underlying resources, so create/update/sync methods do not apply."
+    },
+    {
+      "id": "preflight-checks",
+      "verdict": "pass",
+      "note": "No labeled check definitions, but the mutating paths enforce equivalent pre-flight guards before any write or delete: apply defaults to false (dry-run plan rows only), expectAccount throws before any write, cleanupOrg forces a per-member expectAccount landing check, the namePrefix guard refuses out-of-scope stacks, and computeRetain refuses to retain anything but the detected custom resource."
+    },
+    {
+      "id": "instance-names",
+      "verdict": "pass",
+      "note": "Mechanical check done: orphan-/summary- rows are written by runEnumerate (reused by enumerateOrg), deletion- rows by runCleanup (reused by cleanupOrg), and org-summary-<mgmt> by both org drivers with the same schema shape, distinguished by the mode field. Keys embed account, region, and a sanitized stack segment, so writers cannot collide across accounts or specs."
+    },
+    {
+      "id": "data-access",
+      "verdict": "pass",
+      "note": "Methods never read back stored rows (no dataRepository access): cleanup deliberately re-enumerates targets live rather than trusting a stale inventory, which is the safer design for a deleting method."
+    },
+    {
+      "id": "version-upgrades",
+      "verdict": "pass",
+      "note": "Initial publish at 2026.07.03.1 with a single no-op upgrades entry whose toVersion equals model.version; a colocated test pins the chain-ends-at-model.version invariant and that every entry passes attributes through unchanged."
+    }
+  ]
+}
