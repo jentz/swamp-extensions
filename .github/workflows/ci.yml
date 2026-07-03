@@ -77,14 +77,33 @@ jobs:
             exit 1
           fi
 
-          doc_files="$(mktemp)"
-          find -- "${extension_dirs[@]}" -type f \( -name '*.ts' -o -name '*.tsx' \) \
-            -print0 > "$doc_files"
-          if [ ! -s "$doc_files" ]; then
+          # One `deno doc --lint` invocation per extension dir. Each extension
+          # is an independent package, so its files form one doc graph.
+          # Batching files across packages into fixed-size chunks let the
+          # byte-identical generated `_lib` twins of different packages share
+          # an invocation, which makes deno doc misreport exported twin types
+          # as private (private-type-ref) depending on filesystem enumeration
+          # order — the gate went red or green per machine. Mirrored in
+          # scripts/check.sh.
+          doc_total=0
+          for dir in "${extension_dirs[@]}"; do
+            doc_files=()
+            while IFS= read -r -d '' file; do
+              doc_files+=("$file")
+            done < <(
+              find "$dir" -type f \( -name '*.ts' -o -name '*.tsx' \) -print0 \
+              | sort -z
+            )
+            if [ "${#doc_files[@]}" -eq 0 ]; then
+              continue
+            fi
+            deno doc --lint "${doc_files[@]}"
+            doc_total=$((doc_total + ${#doc_files[@]}))
+          done
+          if [ "$doc_total" -eq 0 ]; then
             echo "No TypeScript files found under extension manifests"
             exit 1
           fi
-          xargs -0 -n 50 deno doc --lint < "$doc_files"
 
           # Doc-lint the canonical shared `_lib/` source modules (no manifest,
           # so the enumeration above does not reach them). Mirrored in
