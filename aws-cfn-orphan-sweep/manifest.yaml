@@ -1,0 +1,52 @@
+manifestVersion: 1
+name: "@jentz/aws-cfn-orphan-sweep"
+version: "2026.07.03.1"
+description: |
+  Find and (optionally) clean up the standalone CloudFormation stacks a retired
+  StackSet leaves behind, single-account or org-wide from the management
+  account. Retiring a StackSet with `delete-stack-instances --retain-stacks`
+  drops the StackSet records but leaves each member stack behind as an ordinary
+  standalone stack named `StackSet-<setname>-<guid>`; this model finds those
+  orphans and removes them safely.
+
+  `enumerate` and `enumerateOrg` are READ-ONLY and suitable for a `*-readonly`
+  profile — they only ever call `List*` / `sts:GetCallerIdentity` (plus
+  `organizations:ListAccounts` and `sts:AssumeRole` for the org variant, which
+  assumes a uniformly-named role into each ACTIVE member account). They write
+  per-account `orphan` / `summary` rows plus an `org-summary` rollup.
+
+  MUTATING: `cleanup` and `cleanupOrg` DELETE stacks — including each stack's
+  backing Lambda and IAM role — when run with `apply: true`. Both default to a
+  dry-run that writes plan rows and mutates nothing. Guardrails: stacks outside
+  `namePrefix` are refused, nothing but the detected dead custom resource is
+  ever retained, and `cleanupOrg` runs every member account with an internal
+  `expectAccount` landing check so a misconfigured role can never delete in the
+  wrong account. Applying needs `cloudformation:DeleteStack` +
+  `lambda:DeleteFunction` + `iam:GetRole` — a `*-readonly` profile cannot run
+  the mutating path, by design.
+repository: "https://github.com/jentz/swamp-extensions"
+homepage: "https://github.com/jentz/swamp-extensions/tree/main/aws-cfn-orphan-sweep"
+paths:
+  base: manifest
+models:
+  - aws_cfn_orphan_sweep.ts
+workflows: []
+vaults: []
+drivers: []
+datastores: []
+reports: []
+additionalFiles:
+  - README.md
+  - LICENSE.md
+platforms:
+  - linux-x86_64
+  - linux-aarch64
+  - darwin-x86_64
+  - darwin-aarch64
+labels:
+  - aws
+  - cloudformation
+  - stackset
+  - orphan
+  - cleanup
+dependencies: []

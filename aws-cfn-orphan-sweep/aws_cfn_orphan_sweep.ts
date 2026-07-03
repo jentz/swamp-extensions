@@ -17,7 +17,7 @@
  * run writes rows keyed by account+region+stack so a single model instance
  * accumulates the whole fleet, queryable via CEL.
  *
- * Three methods:
+ * Four methods:
  *
  *   - `enumerate` (READ-ONLY): `ListStacks` per region (every status except
  *     DELETE_COMPLETE), keep names starting with `namePrefix`, and
@@ -1782,8 +1782,15 @@ function orgApiFromGlobals(g: GlobalArgs, signal?: AbortSignal): OrgApi {
  */
 export const model = {
   type: "@jentz/aws-cfn-orphan-sweep",
-  version: "2026.06.16.3",
+  version: "2026.07.03.1",
   globalArguments: GlobalArgsSchema,
+  upgrades: [
+    {
+      toVersion: "2026.07.03.1",
+      description: "Initial publish",
+      upgradeAttributes: (old: Record<string, unknown>) => old,
+    },
+  ],
   resources: {
     orphan: {
       description:
