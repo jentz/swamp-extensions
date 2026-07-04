@@ -61,9 +61,8 @@ import { fromIni } from "npm:@aws-sdk/credential-providers@3.1073.0";
 import { classifyError, type ScanErrorKind } from "./_lib/scan_error.ts";
 import {
   type CredentialProvider,
-  preflightSso,
+  preflightSsoGate,
   SHARED_RETRY,
-  ssoRemediation,
 } from "./_lib/aws_credentials.ts";
 
 export { classifyError };
@@ -718,43 +717,29 @@ export async function runAudit(deps: AuditDeps): Promise<AuditResult> {
     );
   };
 
-  // Pre-flight the shared SSO session once, before the per-profile loop. A
-  // single SSO session backs every profile, so a genuinely expired token would
-  // fail every profile identically; resolving it up front lets one actionable
-  // error replace that wasteful loop. Skipped entirely when no session is
-  // configured (today's behavior). A `network` blip must NOT short-circuit —
-  // the same transient failure would otherwise abort the whole sweep and demand
-  // a needless re-login — so only `expired` returns early.
-  if (ssoSession.length > 0) {
-    const pre = await preflightSso(ssoSession, ssoRegion, deps.resolveSsoToken);
-    if (pre.status === "expired") {
-      context.logger.warn(
-        "SSO pre-flight failed for session {session}: {message}",
-        { session: ssoSession, message: pre.message },
-      );
-      await writeError({
-        profile: "",
-        accountId: "",
-        roleName: "",
-        service: "sso",
-        phase: "preflight_sso",
-        kind: "auth_expired",
-        message: ssoRemediation(ssoSession),
-        scannedAt,
-      });
-      context.logger.info(
-        "iam-role-audit complete: {roles} role row(s) ({present} present), {errors} error(s)",
-        { roles: roleCount, present: presentCount, errors: errorCount },
-      );
-      return { dataHandles: handles, roleCount, presentCount, errorCount };
-    }
-    if (pre.status === "network") {
-      context.logger.warn(
-        "SSO pre-flight hit a transient network error; proceeding with the " +
-          "per-profile sweep: {message}",
-        { message: pre.message },
-      );
-    }
+  // Pre-flight the shared SSO session once, before the per-profile loop. The
+  // shared gate owns the policy: only `expired` aborts, a `network` blip
+  // proceeds, and no configured session skips the check. The row spread keeps
+  // this audit's role-scoped shape (roleName, no region).
+  const gate = await preflightSsoGate({
+    ssoSession,
+    ssoRegion,
+    resolveSsoToken: deps.resolveSsoToken,
+    logger: context.logger,
+  });
+  if (gate.abort) {
+    await writeError({
+      profile: "",
+      accountId: "",
+      roleName: "",
+      ...gate.error,
+      scannedAt,
+    });
+    context.logger.info(
+      "iam-role-audit complete: {roles} role row(s) ({present} present), {errors} error(s)",
+      { roles: roleCount, present: presentCount, errors: errorCount },
+    );
+    return { dataHandles: handles, roleCount, presentCount, errorCount };
   }
 
   for (const target of targets) {
@@ -931,7 +916,7 @@ export async function runAudit(deps: AuditDeps): Promise<AuditResult> {
  */
 export const model = {
   type: "@jentz/aws-iam-role-audit",
-  version: "2026.06.26.1",
+  version: "2026.07.03.0",
   globalArguments: GlobalArgsSchema,
   // The upgrade chain's tail toVersion must equal model.version — swamp
   // registry/host loading rejects a model where the two drift. The no-op
@@ -956,6 +941,13 @@ export const model = {
         "scan_error, `network` classification, optional ssoSession pre-flight, " +
         "and adaptive retry. `service` reads default '' so stored rows still " +
         "parse; no row migration needed.",
+      upgradeAttributes: (old: Record<string, unknown>) => old,
+    },
+    {
+      toVersion: "2026.07.03.0",
+      description:
+        "Centralize the SSO pre-flight policy into the shared gate; no " +
+        "globalArguments schema changes",
       upgradeAttributes: (old: Record<string, unknown>) => old,
     },
   ],

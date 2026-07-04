@@ -7,11 +7,7 @@
  */
 
 import { assertEquals, assertThrows } from "jsr:@std/assert@1";
-import {
-  classifyError,
-  model,
-  resolveBootstrapRegion,
-} from "./aws_rds_reservations.ts";
+import { classifyError, model } from "./aws_rds_reservations.ts";
 
 function manifestScalar(manifest: string, key: string): string {
   const match = manifest.match(
@@ -116,10 +112,10 @@ Deno.test("classifyError: maps an expired-SSO failure to auth_expired", () => {
   assertEquals(classifyError(denied).kind, "access_denied");
 });
 
-Deno.test("resolveBootstrapRegion: falls through to us-east-1 when no source is set", () => {
-  assertEquals(resolveBootstrapRegion([], () => undefined), "us-east-1");
-
-  // Confirm the helper is doing real work, not just returning the default.
+Deno.test("manifestScalar: a missing scalar key throws instead of passing vacuously", () => {
+  // Confirm the manifest-sync helper is doing real work, not silently
+  // matching nothing (which would let the version assertions above pass on a
+  // manifest that lost its version line).
   assertThrows(
     () => manifestScalar('name: "@jentz/aws-rds-reservations"', "version"),
     Error,

@@ -223,28 +223,20 @@ data.latest("rds-res", "instance-<accountId>-us-east-1--orders-db").attributes.d
 
 `DescribeDBInstances` and `DescribeReservedDBInstances` are paginated, and a
 fleet-wide sweep fans out across many `profiles × regions` — exactly where AWS
-throttling bites. A throttled describe is otherwise caught and degrades that
-(account, region) to a `scan_error`, silently dropping its capacity from the
-coverage report (an under-count that skews the purchase recommendation). To
-avoid that, each page request is wrapped in a `withRetry` helper — a
-byte-identical twin of the sibling `@jentz/aws-rds-inventory`'s, modeled on the
-upstream `@swamp/aws/rds` helper: exponential backoff with **full jitter** —
-each retry delay is uniformly sampled from `[0, min(baseDelay * 2 ** n,
-maxDelay)]` — base 1s, ceiling 90s, up to 20 attempts. Full jitter is the
-AWS-documented recommendation for decorrelating concurrent callers. Each retry
-logs at `debug` level.
+throttling bites. Every SDK client is constructed with the shared bounded
+retry config (`retryMode: "adaptive"`, `maxAttempts: 3`): the SDK's adaptive
+mode adds client-side rate limiting on top of standard exponential backoff, so
+sustained throttling backs off instead of hammering. This is the single retry
+mechanism — there is deliberately no second app-level retry layer wrapping the
+same calls, which would compound attempts under sustained throttling.
 
-The retry wraps each individual page send, resuming at the same `Marker` rather
-than restarting pagination from the first page (which would re-fetch earlier
-pages and worsen the throttle). Only a throttle that survives all attempts
-reaches the `scan_error` path. There is no page cap: every page is drained,
-because a silent truncation is the same data-completeness bug this retry
-prevents.
-
-Throttling detection matches by SDK error `name` (`ThrottlingException`,
-`TooManyRequestsException`, `RequestLimitExceeded`, `RequestThrottledException`,
-`Throttling`) with a word-boundary message fallback for generic-Error SDK
-wrappers. Non-throttling errors propagate immediately.
+The client retries each individual page send, resuming at the same `Marker`
+rather than restarting pagination from the first page (which would re-fetch
+earlier pages and worsen the throttle). Only a throttle that survives the
+client's bounded attempts reaches the `scan_error` path, degrading that
+(account, region) to a recorded coverage gap instead of aborting the sweep.
+There is no page cap: every page is drained, because a silent truncation is
+the same data-completeness bug this seam prevents.
 
 ## Pairing with the coverage report
 

@@ -89,7 +89,7 @@ jobs:
           # Doc-lint the canonical shared `_lib/` source modules (no manifest,
           # so the enumeration above does not reach them). Mirrored in
           # scripts/check.sh.
-          deno doc --lint _lib/scan_error.ts _lib/aws_credentials.ts _lib/retry.ts
+          deno doc --lint _lib/scan_error.ts _lib/aws_credentials.ts
       - name: manifest fmt
         shell: bash
         run: |

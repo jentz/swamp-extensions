@@ -43,24 +43,22 @@ const ROOT = dirname(dirname(fromFileUrl(import.meta.url)));
  * import it, so an SDK-bearing module never leaks into an SDK-free bundle. The
  * pure `scan_error.ts` is generated into the producer + report pairs (the
  * `aws-default-sg-audit`, `aws-vpc-inventory`, and `aws-rds-reservations`
- * families) and into the `aws-iam-role-audit` producer (which imports
- * `classifyError` but keeps its own role-scoped stored-row schema); the
+ * families), into the `aws-iam-role-audit` producer (which imports
+ * `classifyError` but keeps its own role-scoped stored-row schema), and into
+ * `aws-rds-inventory` (whose `aws_credentials.ts` twin imports it); the
  * SDK-bearing `aws_credentials.ts` is generated into the producers only (the
  * report bundles stay SDK-free, and the `aws-integration-coverage` consumer
  * reads the stored rows tolerantly so it needs no twin). Add a key/target here
  * when a package starts consuming a canonical module.
  */
 const TARGETS: Record<string, readonly string[]> = {
-  "_lib/retry.ts": [
-    "aws-rds-inventory/_lib/retry.ts",
-    "aws-rds-reservations/_lib/retry.ts",
-  ],
   "_lib/scan_error.ts": [
     "aws-default-sg-audit/_lib/scan_error.ts",
     "aws-default-sg-audit-report/_lib/scan_error.ts",
     "aws-vpc-inventory/_lib/scan_error.ts",
     "aws-vpc-inventory-report/_lib/scan_error.ts",
     "aws-iam-role-audit/_lib/scan_error.ts",
+    "aws-rds-inventory/_lib/scan_error.ts",
     "aws-rds-reservations/_lib/scan_error.ts",
     "aws-rds-reservation-coverage/_lib/scan_error.ts",
   ],
@@ -68,6 +66,7 @@ const TARGETS: Record<string, readonly string[]> = {
     "aws-default-sg-audit/_lib/aws_credentials.ts",
     "aws-vpc-inventory/_lib/aws_credentials.ts",
     "aws-iam-role-audit/_lib/aws_credentials.ts",
+    "aws-rds-inventory/_lib/aws_credentials.ts",
     "aws-rds-reservations/_lib/aws_credentials.ts",
   ],
 };

@@ -1,0 +1,82 @@
+{
+  "extension": "@jentz/aws-rds-reservations",
+  "version": "2026.07.03.0",
+  "reviewedAt": "2026-07-03T21:23:34Z",
+  "dimensions": [
+    {
+      "id": "credentials-secrets",
+      "verdict": "pass",
+      "note": "Credential resolution stays delegated to the AWS SDK (fromIni/ambient) via the aws_credentials twin; no secrets vaulted or logged. The inline preflightSso wiring is replaced with the shared preflightSsoGate — same injectable token resolver, only the remediation message (no token bytes) surfaces. The known credentialModeField 'looks like a secret' WARN is the documented false positive (an enum of 'profile'/'env', not a secret)."
+    },
+    {
+      "id": "logging-quality",
+      "verdict": "pass",
+      "note": "The two pre-flight warn messages moved verbatim into the shared gate (asserted byte-for-byte by the canonical capturing-logger tests). The caller keeps its own sweep-complete info summary with instance/reserved/error counts on the abort path. ACCEPTED TELEMETRY LOSS (grilled decision): the debug-level 'Throttled on {op}' log went away with the app-level retry layer — the SDK's adaptive retry has no equivalent hook and a middleware substitute was judged worse than the loss."
+    },
+    {
+      "id": "error-handling",
+      "verdict": "pass",
+      "note": "Pre-flight policy unchanged, now owned by the gate. The DOUBLE-RETRY is fixed: withRetry/retryDeps removed, so a throttle is retried only inside the SDK client (SHARED_RETRY adaptive, maxAttempts 3) instead of compounding 3 SDK attempts x 20 app attempts under sustained throttling. A throttle that survives the client's bounded retries propagates from paginate/getCallerAccountId and runSweep records the existing per-(profile,region) scan_error — pinned by new no-app-level-re-issue unit tests (exactly one send, error propagates)."
+    },
+    {
+      "id": "testing-completeness",
+      "verdict": "pass",
+      "note": "Retry rework is tested at the surviving observable surfaces: paginate still drains all pages in marker order (kept), a throttle propagates without an app-level re-issue (new, asserts exactly one send), getCallerAccountId returns the account id / '' on omitted Account / propagates a throttle with one send (new). Client-lifetime tests reworked: destroy-once now covered on success, mid-drain-throttle-propagates, and thrown-error paths (the old throttle-then-success variants exercised the deleted app-level retry, which no longer exists at this layer). The withRetry/isThrottlingError suites were deleted with the module; the triplicated resolveBootstrapRegion tests (tests/ + colocated root file) were deleted in favor of the canonical _lib suite, and the colocated file keeps a manifestScalar missing-key self-test so the version-sync assertions cannot pass vacuously."
+    },
+    {
+      "id": "idempotency-resilience",
+      "verdict": "pass",
+      "note": "Sweep remains read-only and re-runnable; deterministic keys unchanged. Retry-semantics reduction (20 full-jitter app attempts -> SDK adaptive 3) is the accepted, documented trade-off: a sustained throttle now degrades that (account, region) to a scan_error sooner, cleared by the next clean re-sweep, instead of stalling the sweep up to 20x90s per page."
+    },
+    {
+      "id": "api-contracts",
+      "verdict": "pass",
+      "note": "No AWS request/response mapping changed; Marker pagination still drains to exhaustion with MaxRecords 100; SDK pins unchanged at 3.1073.0. Rate limiting is now solely the SDK's adaptive client-side limiter (SHARED_RETRY on both RDS and STS clients) — a single retry mechanism replacing the two stacked layers. Public seam signatures simplified: paginate(fetchPage) and getCallerAccountId(send) dropped their RetryDeps parameters, and the RetryDeps/RetryEvent re-exports are gone with _lib/retry.ts; this is an intentional API reduction shipped with the version bump."
+    },
+    {
+      "id": "resource-management",
+      "verdict": "pass",
+      "note": "safeDestroy in every finally chain unchanged; reworked lifetime tests still prove destroy runs exactly once on success, mid-drain-failure, and thrown-error paths, and the in-send destroyCount guard still catches a premature destroy during the drain."
+    },
+    {
+      "id": "published-surface-hygiene",
+      "verdict": "pass",
+      "note": "Manifest and model.version aligned at 2026.07.03.0. README Throttling section rewritten to describe the SDK adaptive retry as the single mechanism (the withRetry/full-jitter/20-attempts text is gone, no stale references remain). Test fixtures keep placeholder identifiers (orders-db, prod-readonly, ACCT_*)."
+    },
+    {
+      "id": "schema-strictness",
+      "verdict": "pass",
+      "note": "MECHANICAL Schema-Write Conformance re-verified at the changed call site: the abort-path writeError spreads the typed PreflightSsoErrorFragment over {profile:'', accountId:'', region:''} and appends scannedAt — all 8 ScanErrorSchema fields present, none extra. instance/reserved schemas and the validate* gates unchanged; strict z.object throughout, no passthrough."
+    },
+    {
+      "id": "lifetime-gc",
+      "verdict": "pass",
+      "note": "instance/reserved/scan_error keep lifetime 'infinite' and garbageCollection 10 — unchanged."
+    },
+    {
+      "id": "crud-completeness",
+      "verdict": "na",
+      "note": "Read-only fan-out sweep, not a CRUD lifecycle model. Unchanged by this slice."
+    },
+    {
+      "id": "preflight-checks",
+      "verdict": "pass",
+      "note": "SSO pre-flight still opt-in and runs once before the per-profile loop; the deps.resolveSsoToken seam is preserved through the gate. The no_regions refusal and requiredProfileSuffix check still fire before any AWS call."
+    },
+    {
+      "id": "instance-names",
+      "verdict": "pass",
+      "note": "MECHANICAL: key construction unchanged — scan_error keyed by canonical scanErrorKey with the discriminated per-row malformed phases; instanceKey/reservedKey ('--'-joined) unchanged and collision-free. The preflight abort row keys identically to before."
+    },
+    {
+      "id": "data-access",
+      "verdict": "pass",
+      "note": "writeResource-only producer; no readResource paths changed. The companion coverage report's contract (instance/reserved/scan_error rows) is byte-identical in shape."
+    },
+    {
+      "id": "version-upgrades",
+      "verdict": "pass",
+      "note": "model.version bumped 2026.06.26.1 -> 2026.07.03.0 with a matching no-op upgrade entry appended (identity upgradeAttributes; description names the centralized pre-flight and the retired app-level retry layer). Chain tail equals model.version and the upgrade descriptions stay clear of resource-migration claims — both enforced by the colocated tests."
+    }
+  ]
+}

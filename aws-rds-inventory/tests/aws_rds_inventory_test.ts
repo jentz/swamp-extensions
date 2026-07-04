@@ -2,8 +2,8 @@
  * Unit tests for the @jentz/aws-rds-inventory extension.
  *
  * Pure-logic coverage: region resolution chain, AWS tag transform, selector
- * evaluation against a stand-in CEL environment, and the retry helper's
- * throttling backoff. No network or filesystem I/O.
+ * evaluation against a stand-in CEL environment, and the pagination /
+ * batching seams. No network or filesystem I/O.
  */
 
 import {
@@ -30,15 +30,6 @@ import {
   type SelectorContext,
   tagsFromAws,
 } from "../aws_rds_inventory.ts";
-import { isThrottlingError, withRetry } from "../_lib/retry.ts";
-
-// A logger that swallows everything — collectInstances only logs on retry.
-const silentLogger = {
-  info: () => {},
-  debug: () => {},
-  warn: () => {},
-  error: () => {},
-};
 
 // ---------------------------------------------------------------------------
 // resolveRegion
@@ -342,7 +333,7 @@ Deno.test("collectInstances: empty clusterIds issues zero API calls", async () =
       return Promise.resolve({ DBInstances: [] });
     },
   };
-  const map = await collectInstances(api, silentLogger, []);
+  const map = await collectInstances(api, []);
   assertEquals(map.size, 0);
   assertEquals(calls, 0);
 });
@@ -358,7 +349,7 @@ Deno.test("collectInstances: forwards cluster ids as the filter and keys by inst
       });
     },
   };
-  const map = await collectInstances(api, silentLogger, ["c1", "c2"]);
+  const map = await collectInstances(api, ["c1", "c2"]);
   assertEquals(seen, [["c1", "c2"]]);
   assertEquals([...map.keys()].sort(), ["c1-a", "c2-a"]);
 });
@@ -379,7 +370,7 @@ Deno.test("collectInstances: paginates a batch to exhaustion via Marker (no earl
       return Promise.resolve(pageByMarker.get(marker)!);
     },
   };
-  const map = await collectInstances(api, silentLogger, ["c1"]);
+  const map = await collectInstances(api, ["c1"]);
   // All three pages were walked, in order, following the returned markers.
   assertEquals(markers, [undefined, "m1", "m2"]);
   assertEquals([...map.keys()].sort(), ["a", "b", "c"]);
@@ -402,7 +393,7 @@ Deno.test("collectInstances: chunks cluster ids into batches no larger than the 
     },
   };
 
-  const map = await collectInstances(api, silentLogger, clusterIds);
+  const map = await collectInstances(api, clusterIds);
 
   // Three batches: cap, cap, 1 — the tail chunk is sent and none exceeds the cap.
   assertEquals(batchSizes, [
@@ -424,195 +415,30 @@ Deno.test("collectInstances: skips returned instances that carry no identifier",
         DBInstances: [inst("real"), { DBInstanceClass: "db.r7g.large" }],
       }),
   };
-  const map = await collectInstances(api, silentLogger, ["c1"]);
+  const map = await collectInstances(api, ["c1"]);
   assertEquals([...map.keys()], ["real"]);
 });
 
-// ---------------------------------------------------------------------------
-// withRetry / isThrottlingError
-// ---------------------------------------------------------------------------
-
-Deno.test("isThrottlingError: matches ThrottlingException name", () => {
-  const err = new Error("rate exceeded");
-  err.name = "ThrottlingException";
-  assertEquals(isThrottlingError(err), true);
-});
-
-Deno.test("isThrottlingError: matches by message substring", () => {
-  assertEquals(isThrottlingError(new Error("Throttling: slow down")), true);
-  assertEquals(isThrottlingError(new Error("TooManyRequests")), true);
-  assertEquals(isThrottlingError(new Error("RequestLimitExceeded")), true);
-});
-
-Deno.test("isThrottlingError: message fallback covers every name in the switch", () => {
-  // The `\bToken\b` regex is strict — `TooManyRequests` does not match inside
-  // `TooManyRequestsException` because there is no word boundary between `s`
-  // and `E`. The regex must spell out both bare and `*Exception`-suffixed
-  // forms so an SDK wrapper that puts the full token in `.message` while
-  // collapsing `.name` to "Error" still trips the retry path.
-  assertEquals(
-    isThrottlingError(new Error("ThrottlingException: ...")),
-    true,
-  );
-  assertEquals(
-    isThrottlingError(new Error("TooManyRequestsException: ...")),
-    true,
-  );
-  assertEquals(
-    isThrottlingError(new Error("RequestThrottledException: ...")),
-    true,
-  );
-});
-
-Deno.test("isThrottlingError: regular errors do not match", () => {
-  assertEquals(isThrottlingError(new Error("connection refused")), false);
-  assertEquals(isThrottlingError(undefined), false);
-  assertEquals(isThrottlingError(null), false);
-});
-
-Deno.test("withRetry: succeeds on first try, no waiting", async () => {
-  let waited = 0;
-  const result = await withRetry(
-    () => Promise.resolve(42),
-    "test",
-    {},
-    {
-      random: () => 0,
-      delay: (ms) => {
-        waited += ms;
-        return Promise.resolve();
-      },
+Deno.test("collectInstances: a throttle propagates without an app-level re-issue", async () => {
+  // Throttling retry lives inside the SDK client (SHARED_RETRY); by the time
+  // a send rejects here the client's bounded retries are exhausted. The
+  // batching loop must neither re-issue the page nor swallow the error.
+  let calls = 0;
+  const api: RdsApi = {
+    describeDBClusters: () => Promise.resolve({ DBClusters: [] }),
+    describeDBInstances: () => {
+      calls++;
+      const err = new Error("rate exceeded");
+      err.name = "ThrottlingException";
+      return Promise.reject(err);
     },
-  );
-  assertEquals(result, 42);
-  assertEquals(waited, 0);
-});
-
-Deno.test("withRetry: retries throttling errors then succeeds", async () => {
-  const delays: number[] = [];
-  const events: number[] = [];
-  let attempts = 0;
-  const result = await withRetry(
-    () => {
-      attempts++;
-      if (attempts < 3) {
-        const err = new Error("Throttling");
-        return Promise.reject(err);
-      }
-      return Promise.resolve("ok");
-    },
-    "DescribeDBClusters",
-    { baseDelayMs: 10, maxDelayMs: 1000 },
-    {
-      // Full jitter: with random()==1 we get the full ceiling.
-      random: () => 1,
-      delay: (ms) => {
-        delays.push(ms);
-        return Promise.resolve();
-      },
-      onRetry: (e) => events.push(e.attempt),
-    },
-  );
-  assertEquals(result, "ok");
-  assertEquals(attempts, 3);
-  // Two delays for two retries. Ceiling doubles each attempt.
-  assertEquals(delays, [10, 20]);
-  assertEquals(events, [1, 2]);
-});
-
-Deno.test("withRetry: non-throttling errors propagate without retry", async () => {
-  let attempts = 0;
+  };
   await assertRejects(
-    () =>
-      withRetry(
-        () => {
-          attempts++;
-          return Promise.reject(new Error("Bad input"));
-        },
-        "test",
-        {},
-        {
-          random: () => 0,
-          delay: () => Promise.resolve(),
-        },
-      ),
+    () => collectInstances(api, ["c1"]),
     Error,
-    "Bad input",
+    "rate exceeded",
   );
-  assertEquals(attempts, 1);
-});
-
-Deno.test("withRetry: gives up after maxAttempts and rethrows", async () => {
-  let attempts = 0;
-  await assertRejects(
-    () =>
-      withRetry(
-        () => {
-          attempts++;
-          return Promise.reject(new Error("Throttling"));
-        },
-        "test",
-        { maxAttempts: 3, baseDelayMs: 1, maxDelayMs: 1 },
-        {
-          random: () => 0,
-          delay: () => Promise.resolve(),
-        },
-      ),
-    Error,
-    "Throttling",
-  );
-  assertEquals(attempts, 3);
-});
-
-Deno.test("withRetry: full jitter — random() value scales the delay uniformly", async () => {
-  const delays: number[] = [];
-  await withRetry(
-    (() => {
-      let n = 0;
-      return () => {
-        n++;
-        return n === 2 ? Promise.resolve("ok") : Promise.reject(
-          new Error("Throttling"),
-        );
-      };
-    })(),
-    "test",
-    { baseDelayMs: 1000, maxDelayMs: 60000 },
-    {
-      random: () => 0.5, // Sample at half the ceiling.
-      delay: (ms) => {
-        delays.push(ms);
-        return Promise.resolve();
-      },
-    },
-  );
-  assertEquals(delays.length, 1);
-  // Ceiling = min(1000 * 2^0, 60000) = 1000; sample = 0.5 * 1000 = 500.
-  assertEquals(delays[0], 500);
-});
-
-Deno.test("withRetry: max delay caps exponential growth (with random()==1 we get the ceiling)", async () => {
-  const delays: number[] = [];
-  let attempts = 0;
-  await withRetry(
-    () => {
-      attempts++;
-      return attempts >= 5
-        ? Promise.resolve("ok")
-        : Promise.reject(new Error("Throttling"));
-    },
-    "test",
-    { baseDelayMs: 1000, maxDelayMs: 3000 },
-    {
-      random: () => 1, // Full-ceiling sample.
-      delay: (ms) => {
-        delays.push(ms);
-        return Promise.resolve();
-      },
-    },
-  );
-  // Ceilings: 1000, 2000, 3000, 3000 (capped at maxDelayMs).
-  assertEquals(delays, [1000, 2000, 3000, 3000]);
+  assertEquals(calls, 1);
 });
 
 // ---------------------------------------------------------------------------
@@ -625,7 +451,5 @@ Deno.test("smoke: every exported helper still has a real implementation", () => 
   assertExists(evaluateSelector);
   assertExists(isRdsEngine);
   assertExists(RDS_ENGINE_ALLOWLIST);
-  assertExists(withRetry);
-  assertExists(isThrottlingError);
   assertNotEquals(typeof resolveRegion, "undefined");
 });

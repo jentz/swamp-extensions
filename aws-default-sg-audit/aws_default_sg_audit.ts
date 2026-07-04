@@ -50,9 +50,9 @@ import {
 } from "./_lib/scan_error.ts";
 import {
   type CredentialProvider,
-  preflightSso,
+  preflightSsoGate,
+  resolveBootstrapRegion,
   SHARED_RETRY,
-  ssoRemediation,
 } from "./_lib/aws_credentials.ts";
 
 export { classifyError, scanErrorKey };
@@ -253,28 +253,6 @@ export function deriveVerdict(
 ): Verdict {
   if (compliant) return "compliant";
   return eniCount === 0 ? "safe_to_remediate" : "in_use_needs_migration";
-}
-
-/**
- * Strict bootstrap-region resolver for the account-level calls
- * (sts:GetCallerIdentity, ec2:DescribeRegions) that must target *some* region
- * before per-region scanning begins. Order: first configured region →
- * `AWS_REGION` → `AWS_DEFAULT_REGION` → `us-east-1` (a global-ish default that
- * is enabled on every account, used only for these bootstrap calls).
- */
-export function resolveBootstrapRegion(
-  regions: string[],
-  env: (name: string) => string | undefined = (name) => Deno.env.get(name),
-): string {
-  const candidates = [
-    regions[0],
-    env("AWS_REGION"),
-    env("AWS_DEFAULT_REGION"),
-  ];
-  for (const c of candidates) {
-    if (typeof c === "string" && c.trim().length > 0) return c.trim();
-  }
-  return "us-east-1";
 }
 
 /** Build a stable storage key for a finding (unique across account/region). */
@@ -523,43 +501,28 @@ export async function runScan(deps: ScanDeps): Promise<ScanResult> {
     );
   };
 
-  // Pre-flight the shared SSO session once, before the per-profile loop. A
-  // single SSO session backs every profile, so a genuinely expired token would
-  // fail every profile identically; resolving it up front lets one actionable
-  // error replace that wasteful loop. Skipped entirely when no session is
-  // configured (today's behavior). A `network` blip must NOT short-circuit —
-  // the same transient failure would otherwise abort the whole sweep and demand
-  // a needless re-login — so only `expired` returns early.
-  if (ssoSession.length > 0) {
-    const pre = await preflightSso(ssoSession, ssoRegion, deps.resolveSsoToken);
-    if (pre.status === "expired") {
-      context.logger.warn(
-        "SSO pre-flight failed for session {session}: {message}",
-        { session: ssoSession, message: pre.message },
-      );
-      await writeError({
-        profile: "",
-        accountId: "",
-        region: "",
-        service: "sso",
-        phase: "preflight_sso",
-        kind: "auth_expired",
-        message: ssoRemediation(ssoSession),
-        scannedAt,
-      });
-      context.logger.info(
-        "default-sg-audit complete: {findings} finding(s), {errors} error(s)",
-        { findings: findingCount, errors: errorCount },
-      );
-      return { dataHandles: handles, findingCount, errorCount };
-    }
-    if (pre.status === "network") {
-      context.logger.warn(
-        "SSO pre-flight hit a transient network error; proceeding with the " +
-          "per-profile sweep: {message}",
-        { message: pre.message },
-      );
-    }
+  // Pre-flight the shared SSO session once, before the per-profile loop. The
+  // shared gate owns the policy: only `expired` aborts, a `network` blip
+  // proceeds, and no configured session skips the check.
+  const gate = await preflightSsoGate({
+    ssoSession,
+    ssoRegion,
+    resolveSsoToken: deps.resolveSsoToken,
+    logger: context.logger,
+  });
+  if (gate.abort) {
+    await writeError({
+      profile: "",
+      accountId: "",
+      region: "",
+      ...gate.error,
+      scannedAt,
+    });
+    context.logger.info(
+      "default-sg-audit complete: {findings} finding(s), {errors} error(s)",
+      { findings: findingCount, errors: errorCount },
+    );
+    return { dataHandles: handles, findingCount, errorCount };
   }
 
   for (const target of targets) {
@@ -777,7 +740,7 @@ export async function runScan(deps: ScanDeps): Promise<ScanResult> {
  */
 export const model = {
   type: "@jentz/aws-default-sg-audit",
-  version: "2026.06.26.1",
+  version: "2026.07.03.0",
   globalArguments: GlobalArgsSchema,
   // The upgrade chain's tail toVersion must equal model.version — swamp
   // registry/host loading rejects a model where the two drift. The no-op
@@ -802,6 +765,13 @@ export const model = {
         "scan_error, `network` classification, optional ssoSession pre-flight, " +
         "and adaptive retry. `service` reads default '' so stored rows still " +
         "parse; no row migration needed.",
+      upgradeAttributes: (old: Record<string, unknown>) => old,
+    },
+    {
+      toVersion: "2026.07.03.0",
+      description:
+        "Centralize the SSO pre-flight policy into the shared gate; no " +
+        "globalArguments schema changes",
       upgradeAttributes: (old: Record<string, unknown>) => old,
     },
   ],

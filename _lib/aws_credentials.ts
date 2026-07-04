@@ -14,6 +14,11 @@
  *   - {@link preflightSso} — a single pre-flight resolve of the shared SSO
  *     session token, so a genuinely expired token short-circuits the per-profile
  *     loop with one actionable error instead of failing every profile.
+ *   - {@link preflightSsoGate} — the pre-flight *policy* on top of
+ *     {@link preflightSso}: only `expired` aborts the sweep, a `network` blip
+ *     proceeds, and no configured session skips the check entirely.
+ *   - {@link resolveBootstrapRegion} — the region chain for the account-level
+ *     bootstrap calls that must target *some* region before scanning begins.
  *
  * @module
  */
@@ -181,4 +186,134 @@ export function ssoRemediation(session: string): string {
   return session.length > 0
     ? `SSO session token expired or missing; run \`aws sso login --sso-session ${session}\``
     : "SSO session token expired or missing; run `aws sso login`";
+}
+
+// ---------------------------------------------------------------------------
+// Pre-flight SSO gate (policy on top of preflightSso)
+// ---------------------------------------------------------------------------
+
+/**
+ * Minimal logger surface {@link preflightSsoGate} needs. The swamp runtime
+ * `context.logger` satisfies this structurally.
+ */
+export interface PreflightSsoLogger {
+  /** Structured warn: a message template plus named fields. */
+  warn(message: string, fields?: Record<string, unknown>): void;
+}
+
+/**
+ * Canonical `scan_error` fragment for an aborted SSO pre-flight. Callers spread
+ * it into their own row schema (each scanner keys rows differently — e.g. the
+ * IAM audit stores `roleName` instead of `region`) and append their own row
+ * prefix and `scannedAt`.
+ */
+export interface PreflightSsoErrorFragment {
+  /** Always `sso` — the pre-flight talks to the SSO token cache, not AWS APIs. */
+  service: "sso";
+  /** Always `preflight_sso` — the shared pre-flight phase name. */
+  phase: "preflight_sso";
+  /** Always `auth_expired` — the only kind that aborts the sweep. */
+  kind: "auth_expired";
+  /** Operator-facing remediation message ({@link ssoRemediation}). */
+  message: string;
+}
+
+/**
+ * Decision returned by {@link preflightSsoGate}: proceed with the sweep, or
+ * abort with the canonical error fragment to record.
+ */
+export type PreflightSsoDecision =
+  | { abort: false }
+  | { abort: true; error: PreflightSsoErrorFragment };
+
+/** Arguments for {@link preflightSsoGate}. */
+export interface PreflightSsoGateArgs {
+  /** Shared SSO session name; `""` skips the pre-flight entirely. */
+  ssoSession: string;
+  /** SSO region for the token resolve. */
+  ssoRegion: string;
+  /**
+   * SSO-token resolver injected into the pre-flight. Defaults (when omitted) to
+   * the on-disk cache reader; tests pass a fake to drive the expired/ok/network
+   * branches without touching disk or the SDK.
+   */
+  resolveSsoToken?: (session: string, region: string) => Promise<unknown>;
+  /** Runtime logger for the shared warn messages. */
+  logger: PreflightSsoLogger;
+}
+
+/**
+ * Pre-flight the shared SSO session once, before the per-profile loop, and
+ * decide whether the sweep may proceed. This is the *policy* layer every fleet
+ * scanner previously re-assembled inline around {@link preflightSso}:
+ *
+ * - No configured session (`ssoSession === ""`) skips the check — proceed.
+ * - `ok` — the token resolved; proceed.
+ * - `network` — a transient DNS/socket blip; warn and proceed. A network
+ *   result must never short-circuit, since the same blip would otherwise abort
+ *   the entire sweep and demand a needless re-login.
+ * - `expired` — the token is genuinely expired or missing; warn and abort with
+ *   the canonical {@link PreflightSsoErrorFragment}. The caller spreads the
+ *   fragment into its own `scan_error` row, logs its own completion summary,
+ *   and returns early.
+ *
+ * @param args Session, region, optional injected resolver, and logger.
+ * @returns The proceed/abort decision, with the error fragment on abort.
+ */
+export async function preflightSsoGate(
+  args: PreflightSsoGateArgs,
+): Promise<PreflightSsoDecision> {
+  const { ssoSession, ssoRegion, resolveSsoToken, logger } = args;
+  if (ssoSession.length === 0) return { abort: false };
+  const pre = await preflightSso(ssoSession, ssoRegion, resolveSsoToken);
+  if (pre.status === "expired") {
+    logger.warn(
+      "SSO pre-flight failed for session {session}: {message}",
+      { session: ssoSession, message: pre.message },
+    );
+    return {
+      abort: true,
+      error: {
+        service: "sso",
+        phase: "preflight_sso",
+        kind: "auth_expired",
+        message: ssoRemediation(ssoSession),
+      },
+    };
+  }
+  if (pre.status === "network") {
+    logger.warn(
+      "SSO pre-flight hit a transient network error; proceeding with the " +
+        "per-profile sweep: {message}",
+      { message: pre.message },
+    );
+  }
+  return { abort: false };
+}
+
+// ---------------------------------------------------------------------------
+// Bootstrap region
+// ---------------------------------------------------------------------------
+
+/**
+ * Strict bootstrap-region resolver for the account-level calls
+ * (sts:GetCallerIdentity, ec2:DescribeRegions) that must target *some* region
+ * before per-region scanning begins. Order: first configured region →
+ * `AWS_REGION` → `AWS_DEFAULT_REGION` → `us-east-1` (a global-ish default that
+ * is enabled on every account, used only for these bootstrap calls).
+ * Whitespace-only values are treated as unset.
+ */
+export function resolveBootstrapRegion(
+  regions: string[],
+  env: (name: string) => string | undefined = (name) => Deno.env.get(name),
+): string {
+  const candidates = [
+    regions[0],
+    env("AWS_REGION"),
+    env("AWS_DEFAULT_REGION"),
+  ];
+  for (const c of candidates) {
+    if (typeof c === "string" && c.trim().length > 0) return c.trim();
+  }
+  return "us-east-1";
 }

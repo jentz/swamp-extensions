@@ -41,7 +41,6 @@ import {
   STSClient,
 } from "npm:@aws-sdk/client-sts@3.1073.0";
 import { fromIni } from "npm:@aws-sdk/credential-providers@3.1073.0";
-import { type RetryDeps, withRetry } from "./_lib/retry.ts";
 import {
   classifyError,
   type ScanError,
@@ -49,17 +48,13 @@ import {
   ScanErrorSchema,
 } from "./_lib/scan_error.ts";
 import {
-  preflightSso,
+  preflightSsoGate,
+  resolveBootstrapRegion,
   SHARED_RETRY,
-  ssoRemediation,
 } from "./_lib/aws_credentials.ts";
 
 export { classifyError, scanErrorKey };
 export type { ScanError };
-
-// Re-exported so the public `paginate` signature does not leak private types
-// (`RetryDeps.onRetry` carries a `RetryEvent`).
-export type { RetryDeps, RetryEvent } from "./_lib/retry.ts";
 
 /** Minimal AWS credential shape a {@link CredentialProvider} resolves. */
 export interface AwsCredentials {
@@ -294,23 +289,6 @@ export function accountNameFromProfile(
   return profile.endsWith(suffix)
     ? profile.slice(0, profile.length - suffix.length)
     : profile;
-}
-
-/**
- * Resolve the bootstrap region for the per-account sts:GetCallerIdentity call.
- * Order: first configured region → `AWS_REGION` → `AWS_DEFAULT_REGION` →
- * `us-east-1` (a global-ish default enabled on every account, used only for
- * that one bootstrap call).
- */
-export function resolveBootstrapRegion(
-  regions: string[],
-  env: (name: string) => string | undefined = (name) => Deno.env.get(name),
-): string {
-  const candidates = [regions[0], env("AWS_REGION"), env("AWS_DEFAULT_REGION")];
-  for (const c of candidates) {
-    if (typeof c === "string" && c.trim().length > 0) return c.trim();
-  }
-  return "us-east-1";
 }
 
 // Storage-key separator convention (locked task-57, before first publish).
@@ -576,25 +554,6 @@ export interface AwsApi {
 // ---------------------------------------------------------------------------
 
 /**
- * Build the {@link RetryDeps} the {@link paginate} loop uses for production
- * (real `Math.random` jitter, real `setTimeout` waits), logging each retry at
- * `debug` so a throttled sweep is observable. Mirrors the sibling
- * `@jentz/aws-rds-inventory`'s `retryDeps`.
- */
-// deno-lint-ignore no-explicit-any
-function retryDeps(logger: any): RetryDeps {
-  return {
-    random: () => Math.random(),
-    delay: (ms: number) => new Promise<void>((r) => setTimeout(r, ms)),
-    onRetry: (e: { operationName: string; attempt: number; delayMs: number }) =>
-      logger.debug(
-        "Throttled on {op} attempt {attempt}, waiting {delayMs}ms",
-        { op: e.operationName, attempt: e.attempt, delayMs: e.delayMs },
-      ),
-  };
-}
-
-/**
  * One page of a `Marker`-paginated RDS describe call: the items on this page
  * plus the `Marker` for the next page (`undefined` once the last page is
  * reached).
@@ -609,42 +568,29 @@ export interface Page<T> {
 }
 
 /**
- * Drain a `Marker`-paginated RDS describe call to exhaustion, retrying each
- * page on throttling with full-jitter backoff. `fetchPage(marker)` issues one
- * `rds.send` for the page starting at `marker` and returns that page's items
- * plus the next marker.
+ * Drain a `Marker`-paginated RDS describe call to exhaustion. `fetchPage(marker)`
+ * issues one `rds.send` for the page starting at `marker` and returns that
+ * page's items plus the next marker.
  *
- * The retry wraps each individual page send — NOT the whole drain — so a
- * throttle deep in the pagination re-issues only the current page (with the
- * same marker) rather than resetting to the first page and re-fetching
- * everything, which would worsen the throttle. No early exit and no page cap:
- * every page matters, and a silent truncation is the exact data-completeness
- * bug this seam exists to prevent.
- *
- * Owning the loop+retry wiring here (rather than in `_lib/retry.ts`) keeps the
- * retry twin byte-identical with the sibling and makes the wiring unit-testable
- * with a fake `fetchPage` — no AWS SDK fake required.
+ * Throttling retry lives inside the SDK client (the `SHARED_RETRY` adaptive
+ * config every client is constructed with), not here — a single retry
+ * mechanism, so a sustained throttle can never compound across two layers.
+ * A throttle that survives the client's bounded retries propagates to the
+ * caller, where `runSweep` records it as a `scan_error`. No early exit and no
+ * page cap: every page matters, and a silent truncation is the exact
+ * data-completeness bug this seam exists to prevent.
  *
  * @typeParam T Element type accumulated across pages.
  * @param fetchPage Issues one page request for the given marker.
- * @param operationName Short op name surfaced via `onRetry` (e.g. `DescribeDBInstances`).
- * @param deps Retry dependencies — injectable for deterministic tests.
  * @returns Every item across every page, in page order.
  */
 export async function paginate<T>(
   fetchPage: (marker: string | undefined) => Promise<Page<T>>,
-  operationName: string,
-  deps: RetryDeps,
 ): Promise<T[]> {
   const out: T[] = [];
   let marker: string | undefined;
   do {
-    const page = await withRetry(
-      () => fetchPage(marker),
-      operationName,
-      undefined,
-      deps,
-    );
+    const page = await fetchPage(marker);
     out.push(...page.items);
     marker = page.marker;
   } while (marker);
@@ -658,25 +604,18 @@ export interface CallerIdentity {
 }
 
 /**
- * Fetch the current caller's AWS account id, retrying throttled STS bootstrap
- * calls with the same full-jitter retry policy used by the RDS describe paths.
- * A post-exhaustion throttle is deliberately allowed to propagate so
- * `runSweep` records the existing credentials-phase `scan_error`.
+ * Fetch the current caller's AWS account id. Throttling retry lives inside the
+ * STS client (`SHARED_RETRY`); a throttle that survives the client's bounded
+ * retries propagates so `runSweep` records the existing credentials-phase
+ * `scan_error`.
  *
  * @param send Issues one `sts:GetCallerIdentity` request.
- * @param deps Retry dependencies — injectable for deterministic tests.
  * @returns The reported account id, or `""` if AWS omitted it.
  */
 export async function getCallerAccountId(
   send: () => Promise<CallerIdentity>,
-  deps: RetryDeps,
 ): Promise<string> {
-  const resp = await withRetry(
-    send,
-    "GetCallerIdentity",
-    undefined,
-    deps,
-  );
+  const resp = await send();
   return resp.Account ?? "";
 }
 
@@ -757,15 +696,12 @@ function sdkApi(
   stsClientFactory: StsClientFactory = () =>
     new STSClient({ region: bootstrapRegion, credentials, ...SHARED_RETRY }),
 ): AwsApi {
-  const deps = retryDeps(logger);
-
   return {
     getAccountId: async () => {
       const sts = stsClientFactory();
       try {
         return await getCallerAccountId(
           () => sts.send(new GetCallerIdentityCommand({})),
-          deps,
         );
       } finally {
         safeDestroy(sts, logger);
@@ -784,8 +720,6 @@ function sdkApi(
             );
             return { items: resp.DBInstances ?? [], marker: resp.Marker };
           },
-          "DescribeDBInstances",
-          deps,
         );
       } finally {
         safeDestroy(rds, logger);
@@ -807,8 +741,6 @@ function sdkApi(
               marker: resp.Marker,
             };
           },
-          "DescribeReservedDBInstances",
-          deps,
         );
       } finally {
         safeDestroy(rds, logger);
@@ -822,8 +754,8 @@ function sdkApi(
  * client factories. The default factories build real `RDSClient` / `STSClient`
  * instances, so production behavior is identical to calling {@link sdkApi}
  * directly. Tests pass fakes to assert each client's `destroy()` runs exactly
- * once on success, throttle-then-success, and thrown-error paths without
- * touching the public {@link AwsApi} / {@link ApiFactory} surface.
+ * once on success and thrown-error paths without touching the public
+ * {@link AwsApi} / {@link ApiFactory} surface.
  *
  * @param credentials Credential provider, or `undefined` for the ambient chain.
  * @param bootstrapRegion Region for the STS bootstrap call.
@@ -997,48 +929,33 @@ export async function runSweep(deps: SweepDeps): Promise<SweepResult> {
     );
   };
 
-  // Pre-flight the shared SSO session once, before the per-profile loop. A
-  // single SSO session backs every profile, so a genuinely expired token would
-  // fail every profile identically; resolving it up front lets one actionable
-  // error replace that wasteful loop. Skipped entirely when no session is
-  // configured (today's behavior). A `network` blip must NOT short-circuit —
-  // the same transient failure would otherwise abort the whole sweep and demand
-  // a needless re-login — so only `expired` returns early.
-  if (ssoSession.length > 0) {
-    const pre = await preflightSso(ssoSession, ssoRegion, deps.resolveSsoToken);
-    if (pre.status === "expired") {
-      context.logger.warn(
-        "SSO pre-flight failed for session {session}: {message}",
-        { session: ssoSession, message: pre.message },
-      );
-      await writeError({
-        profile: "",
-        accountId: "",
-        region: "",
-        service: "sso",
-        phase: "preflight_sso",
-        kind: "auth_expired",
-        message: ssoRemediation(ssoSession),
-        scannedAt,
-      });
-      context.logger.info(
-        "aws-rds-reservations sweep complete: {instances} instance(s), " +
-          "{reserved} reservation(s), {errors} error(s)",
-        {
-          instances: instanceCount,
-          reserved: reservedCount,
-          errors: errorCount,
-        },
-      );
-      return { dataHandles: handles, instanceCount, reservedCount, errorCount };
-    }
-    if (pre.status === "network") {
-      context.logger.warn(
-        "SSO pre-flight hit a transient network error; proceeding with the " +
-          "per-profile sweep: {message}",
-        { message: pre.message },
-      );
-    }
+  // Pre-flight the shared SSO session once, before the per-profile loop. The
+  // shared gate owns the policy: only `expired` aborts, a `network` blip
+  // proceeds, and no configured session skips the check.
+  const gate = await preflightSsoGate({
+    ssoSession,
+    ssoRegion,
+    resolveSsoToken: deps.resolveSsoToken,
+    logger: context.logger,
+  });
+  if (gate.abort) {
+    await writeError({
+      profile: "",
+      accountId: "",
+      region: "",
+      ...gate.error,
+      scannedAt,
+    });
+    context.logger.info(
+      "aws-rds-reservations sweep complete: {instances} instance(s), " +
+        "{reserved} reservation(s), {errors} error(s)",
+      {
+        instances: instanceCount,
+        reserved: reservedCount,
+        errors: errorCount,
+      },
+    );
+    return { dataHandles: handles, instanceCount, reservedCount, errorCount };
   }
 
   // Regions are required: RDS describe calls are region-scoped and there is no
@@ -1344,7 +1261,7 @@ export async function runSweep(deps: SweepDeps): Promise<SweepResult> {
  */
 export const model = {
   type: "@jentz/aws-rds-reservations",
-  version: "2026.06.26.1",
+  version: "2026.07.03.0",
   globalArguments: GlobalArgsSchema,
   // swamp model upgrades transform stored globalArguments, not historical
   // resource artifacts, so there is nothing to migrate here. The no-op chain
@@ -1388,6 +1305,14 @@ export const model = {
         "scan_error, `network` classification, optional ssoSession pre-flight, " +
         "and adaptive retry. `service` reads default '' so stored rows still " +
         "parse; no row migration needed.",
+      upgradeAttributes: (old: Record<string, unknown>) => old,
+    },
+    {
+      toVersion: "2026.07.03.0",
+      description:
+        "Centralize the SSO pre-flight policy into the shared gate and " +
+        "retire the app-level retry layer (the SDK adaptive retry is the " +
+        "single mechanism); no globalArguments schema changes",
       upgradeAttributes: (old: Record<string, unknown>) => old,
     },
   ] as Array<{

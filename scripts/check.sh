@@ -76,7 +76,7 @@ xargs -0 -n 50 deno doc --lint < "$doc_files"
 
 # 4b. Doc lint the canonical shared `_lib/` source modules (test files carry no
 # doc surface). Mirrors CI's "canonical _lib doc lint" step.
-deno doc --lint _lib/scan_error.ts _lib/aws_credentials.ts _lib/retry.ts
+deno doc --lint _lib/scan_error.ts _lib/aws_credentials.ts
 
 # Discover manifests (the files themselves) for the swamp gates.
 manifests=()

@@ -4,7 +4,7 @@
  * Two layers:
  *
  *   1. Pure helpers — `classifyError` (SSO-role-ARN regression locked in),
- *      `accountNameFromProfile`, `resolveBootstrapRegion`, `tagsFromAws`.
+ *      `accountNameFromProfile`, `tagsFromAws`.
  *   2. `runSweep` integration paths — driven through `createModelTestContext`
  *      with a hand-rolled `AwsApi` replay so the SDK is never touched.
  *      Verifies `instance` / `reserved` row shape and that per-(profile,
@@ -33,7 +33,6 @@ import {
   getCallerAccountId,
   type Page,
   paginate,
-  resolveBootstrapRegion,
   runSweep,
   safeDestroy,
   sdkApiWithFactories,
@@ -43,7 +42,6 @@ import {
   validateDBInstance,
   validateReservedDBInstance,
 } from "../aws_rds_reservations.ts";
-import { isThrottlingError, type RetryDeps, withRetry } from "../_lib/retry.ts";
 
 // ---------------------------------------------------------------------------
 // Fake account identifiers. The schema treats `accountId` as an opaque string
@@ -106,17 +104,6 @@ Deno.test("classifyError: a transient network failure classifies as network (bef
     "getaddrinfo ENOTFOUND sts.us-east-1.amazonaws.com",
   );
   assertEquals(classifyError(wrapped).kind, "network");
-});
-
-Deno.test("resolveBootstrapRegion: first configured region wins", () => {
-  assertEquals(
-    resolveBootstrapRegion(["us-east-1"], () => undefined),
-    "us-east-1",
-  );
-});
-
-Deno.test("resolveBootstrapRegion: falls back to us-east-1 when nothing set", () => {
-  assertEquals(resolveBootstrapRegion([], () => undefined), "us-east-1");
 });
 
 // ---------------------------------------------------------------------------
@@ -505,274 +492,89 @@ Deno.test("runSweep: empty regions writes one no_regions scan_error and makes no
 });
 
 // ---------------------------------------------------------------------------
-// Throttling retry — withRetry / isThrottlingError (ported verbatim from the
-// sibling @jentz/aws-rds-inventory test, since _lib/retry.ts is a byte-identical
-// twin) plus a paginate() loop+retry wiring test specific to this model.
+// paginate / getCallerAccountId — thin seams over the SDK clients. Throttling
+// retry lives inside the clients (`SHARED_RETRY` adaptive config), so these
+// tests pin the single-retry-mechanism contract: the seams never re-issue a
+// failed send themselves, and a throttle that escapes the client's bounded
+// retries propagates for runSweep to record as a scan_error.
 // ---------------------------------------------------------------------------
 
-Deno.test("isThrottlingError: matches ThrottlingException name", () => {
-  const err = new Error("rate exceeded");
-  err.name = "ThrottlingException";
-  assertEquals(isThrottlingError(err), true);
-});
-
-Deno.test("isThrottlingError: matches by message substring", () => {
-  assertEquals(isThrottlingError(new Error("Throttling: slow down")), true);
-  assertEquals(isThrottlingError(new Error("TooManyRequests")), true);
-  assertEquals(isThrottlingError(new Error("RequestLimitExceeded")), true);
-});
-
-Deno.test("isThrottlingError: message fallback covers every name in the switch", () => {
-  // The word-boundary regex is strict — `TooManyRequests` does not match inside
-  // `TooManyRequestsException` because there is no word boundary between `s`
-  // and `E`. The regex must spell out both bare and `*Exception`-suffixed
-  // forms so an SDK wrapper that puts the full token in `.message` while
-  // collapsing `.name` to "Error" still trips the retry path.
-  assertEquals(
-    isThrottlingError(new Error("ThrottlingException: ...")),
-    true,
+Deno.test("getCallerAccountId: returns the reported account id", async () => {
+  const accountId = await getCallerAccountId(() =>
+    Promise.resolve({ Account: ACCOUNT_ALPHA })
   );
-  assertEquals(
-    isThrottlingError(new Error("TooManyRequestsException: ...")),
-    true,
-  );
-  assertEquals(
-    isThrottlingError(new Error("RequestThrottledException: ...")),
-    true,
-  );
-});
-
-Deno.test("isThrottlingError: regular errors do not match", () => {
-  assertEquals(isThrottlingError(new Error("connection refused")), false);
-  assertEquals(isThrottlingError(undefined), false);
-  assertEquals(isThrottlingError(null), false);
-});
-
-Deno.test("getCallerAccountId: retries throttled STS call then returns account id", async () => {
-  const throttled = new Error("rate exceeded");
-  throttled.name = "ThrottlingException";
-  let calls = 0;
-  const retryEvents: Array<
-    { operationName: string; attempt: number; delayMs: number }
-  > = [];
-  const deps: RetryDeps = {
-    random: () => 0.25,
-    delay: () => Promise.resolve(),
-    onRetry: (event) => {
-      retryEvents.push({
-        operationName: event.operationName,
-        attempt: event.attempt,
-        delayMs: event.delayMs,
-      });
-    },
-  };
-
-  const accountId = await getCallerAccountId(() => {
-    calls++;
-    if (calls === 1) return Promise.reject(throttled);
-    return Promise.resolve({ Account: ACCOUNT_ALPHA });
-  }, deps);
-
   assertEquals(accountId, ACCOUNT_ALPHA);
-  assertEquals(calls, 2);
-  assertEquals(retryEvents, [{
-    operationName: "GetCallerIdentity",
-    attempt: 1,
-    delayMs: 250,
-  }]);
 });
 
-Deno.test("withRetry: succeeds on first try, no waiting", async () => {
-  let waited = 0;
-  const result = await withRetry(
-    () => Promise.resolve(42),
-    "test",
-    {},
-    {
-      random: () => 0,
-      delay: (ms) => {
-        waited += ms;
-        return Promise.resolve();
-      },
-    },
-  );
-  assertEquals(result, 42);
-  assertEquals(waited, 0);
+Deno.test("getCallerAccountId: an omitted Account maps to the empty string", async () => {
+  assertEquals(await getCallerAccountId(() => Promise.resolve({})), "");
 });
 
-Deno.test("withRetry: retries throttling errors then succeeds", async () => {
-  const delays: number[] = [];
-  const events: number[] = [];
-  let attempts = 0;
-  const result = await withRetry(
-    () => {
-      attempts++;
-      if (attempts < 3) {
-        const err = new Error("Throttling");
+Deno.test("getCallerAccountId: a throttle propagates without an app-level re-issue", async () => {
+  // The SDK client already retried internally; a second app-level retry would
+  // compound attempts under sustained throttling. Exactly one send.
+  let calls = 0;
+  await assertRejects(
+    () =>
+      getCallerAccountId(() => {
+        calls++;
+        const err = new Error("rate exceeded");
+        err.name = "ThrottlingException";
         return Promise.reject(err);
-      }
-      return Promise.resolve("ok");
-    },
-    "DescribeReservedDBInstances",
-    { baseDelayMs: 10, maxDelayMs: 1000 },
-    {
-      // Full jitter: with random()==1 we get the full ceiling.
-      random: () => 1,
-      delay: (ms) => {
-        delays.push(ms);
-        return Promise.resolve();
-      },
-      onRetry: (e) => events.push(e.attempt),
-    },
-  );
-  assertEquals(result, "ok");
-  assertEquals(attempts, 3);
-  // Two delays for two retries. Ceiling doubles each attempt.
-  assertEquals(delays, [10, 20]);
-  assertEquals(events, [1, 2]);
-});
-
-Deno.test("withRetry: non-throttling errors propagate without retry", async () => {
-  let attempts = 0;
-  await assertRejects(
-    () =>
-      withRetry(
-        () => {
-          attempts++;
-          return Promise.reject(new Error("Bad input"));
-        },
-        "test",
-        {},
-        {
-          random: () => 0,
-          delay: () => Promise.resolve(),
-        },
-      ),
+      }),
     Error,
-    "Bad input",
+    "rate exceeded",
   );
-  assertEquals(attempts, 1);
+  assertEquals(calls, 1);
 });
 
-Deno.test("withRetry: gives up after maxAttempts and rethrows", async () => {
-  let attempts = 0;
-  await assertRejects(
-    () =>
-      withRetry(
-        () => {
-          attempts++;
-          return Promise.reject(new Error("Throttling"));
-        },
-        "test",
-        { maxAttempts: 3, baseDelayMs: 1, maxDelayMs: 1 },
-        {
-          random: () => 0,
-          delay: () => Promise.resolve(),
-        },
-      ),
-    Error,
-    "Throttling",
-  );
-  assertEquals(attempts, 3);
-});
-
-Deno.test("paginate: drains every page in order, no retry on the happy path", async () => {
+Deno.test("paginate: drains every page in order", async () => {
   const pages: Record<string, Page<number>> = {
     "": { items: [1, 2], marker: "m1" },
     "m1": { items: [3, 4], marker: "m2" },
     "m2": { items: [5], marker: undefined },
   };
   const seen: (string | undefined)[] = [];
-  let waited = 0;
   const out = await paginate<number>(
     (marker) => {
       seen.push(marker);
       return Promise.resolve(pages[marker ?? ""]);
     },
-    "DescribeDBInstances",
-    {
-      random: () => 0,
-      delay: (ms) => {
-        waited += ms;
-        return Promise.resolve();
-      },
-    },
   );
   assertEquals(out, [1, 2, 3, 4, 5]);
   // First page uses marker=undefined, then follows each returned marker.
   assertEquals(seen, [undefined, "m1", "m2"]);
-  assertEquals(waited, 0);
 });
 
-Deno.test("paginate: a throttled page is retried then succeeds (loop+retry wired)", async () => {
-  // The first send for the SECOND page throttles once, then succeeds — proving
-  // the retry wraps the per-page send and resumes at the same marker rather
-  // than restarting the drain from page one.
-  let throttledSecondPage = 0;
-  const events: string[] = [];
-  const out = await paginate<number>(
-    (marker) => {
-      if (marker === undefined) {
-        return Promise.resolve({ items: [1, 2], marker: "m1" });
-      }
-      if (marker === "m1" && throttledSecondPage === 0) {
-        throttledSecondPage++;
-        const err = new Error("Throttling: slow down");
-        err.name = "ThrottlingException";
-        return Promise.reject(err);
-      }
-      return Promise.resolve({ items: [3, 4], marker: undefined });
-    },
-    "DescribeReservedDBInstances",
-    {
-      random: () => 1,
-      delay: () => Promise.resolve(),
-      onRetry: (e) => events.push(`${e.operationName}#${e.attempt}`),
-    },
-  );
-  assertEquals(out, [1, 2, 3, 4]);
-  assertEquals(throttledSecondPage, 1);
-  // Exactly one retry, on the reserved describe op.
-  assertEquals(events, ["DescribeReservedDBInstances#1"]);
-});
-
-Deno.test("paginate: post-exhaustion throttle propagates to the caller", async () => {
-  // After maxAttempts the throttle is rethrown — runSweep's try/catch then
-  // turns it into a scan_error. We assert the error escapes paginate rather
-  // than being swallowed.
+Deno.test("paginate: a throttle propagates without an app-level re-issue", async () => {
+  // A throttle that escapes the SDK client's bounded retries is rethrown —
+  // runSweep's try/catch then turns it into a scan_error. paginate itself
+  // must not retry (single retry mechanism) nor swallow the error.
+  let calls = 0;
   await assertRejects(
     () =>
       paginate<number>(
         () => {
+          calls++;
           const err = new Error("Throttling");
           err.name = "ThrottlingException";
           return Promise.reject(err);
-        },
-        "DescribeDBInstances",
-        {
-          random: () => 0,
-          delay: () => Promise.resolve(),
         },
       ),
     Error,
     "Throttling",
   );
+  assertEquals(calls, 1);
 });
 
 // ---------------------------------------------------------------------------
 // SDK client lifetime — injected client factories prove every RDSClient /
-// STSClient is destroyed exactly once on success, throttle-then-success, and
-// thrown-error paths, without resetting pagination or masking the error
-// (task-82). Driven through sdkApiWithFactories so the public AwsApi /
-// ApiFactory surface and production defaults stay untouched.
+// STSClient is destroyed exactly once on success and thrown-error paths,
+// without resetting pagination or masking the error (task-82). Driven through
+// sdkApiWithFactories so the public AwsApi / ApiFactory surface and production
+// defaults stay untouched. Retry lives inside the real clients (SHARED_RETRY);
+// a fake client's send is issued exactly once per page.
 // ---------------------------------------------------------------------------
-
-// A no-throttle, no-wait retry surface so sdkApiWithFactories' internal
-// retryDeps (real Math.random / setTimeout) is bypassed deterministically only
-// where the fake send drives the throttle. The factory clients still go through
-// the model's own retryDeps, so we keep the throttle on the FIRST send and rely
-// on the standard full-jitter retry to re-issue — matching how paginate /
-// getCallerAccountId tests simulate throttle-then-success.
 
 /**
  * Build a fake SDK client recording send + destroy, with scripted send behavior.
@@ -861,13 +663,12 @@ Deno.test("sdkApi getAccountId: destroys the STS client once on success", async 
   assertEquals(sts.destroyCount, 1);
 });
 
-Deno.test("sdkApi getAccountId: destroys the STS client once after throttle-then-success", async () => {
-  let calls = 0;
-  const sts = fakeClient(() => {
-    calls++;
-    if (calls === 1) return Promise.reject(throttle());
-    return Promise.resolve({ Account: ACCOUNT_BETA });
-  });
+Deno.test("sdkApi getAccountId: a throttled send propagates, STS client destroyed once", async () => {
+  // The fake's send stands in for the real client's `send`, whose internal
+  // SHARED_RETRY has already been exhausted by the time it rejects. The facade
+  // must not re-issue the send (no second retry layer) and must still destroy
+  // the client exactly once.
+  const sts = fakeClient(() => Promise.reject(throttle()));
   const api = sdkApiWithFactories(
     undefined,
     "us-east-1",
@@ -875,11 +676,8 @@ Deno.test("sdkApi getAccountId: destroys the STS client once after throttle-then
     undefined,
     () => sts,
   );
-  const accountId = await api.getAccountId();
-  assertEquals(accountId, ACCOUNT_BETA);
-  assertEquals(calls, 2);
-  // Destroyed exactly once even though send retried — destroy is per-client,
-  // after the whole drain, never per-attempt.
+  await assertRejects(() => api.getAccountId(), Error, "Throttling");
+  assertEquals(sts.sendCount, 1);
   assertEquals(sts.destroyCount, 1);
 });
 
@@ -939,34 +737,23 @@ Deno.test("sdkApi describeDBInstances: destroys the RDS client once on multi-pag
   assertEquals(rds.destroyCount, 1);
 });
 
-Deno.test("sdkApi describeDBInstances: destroys the RDS client once after throttle-then-success, no pagination reset", async () => {
-  // The first send throttles, then the drain proceeds across two real pages.
-  // destroy must run exactly once after the full drain, and the marker loop
-  // must NOT restart from page one. The fake's send also asserts
-  // destroyCount === 0, so a lost `await` on `return await paginate(...)` that
-  // let safeDestroy fire mid-drain would trip the in-send guard on the second
-  // page rather than passing silently.
-  let firstThrottled = false;
-  const markersSeen: (string | undefined)[] = [];
+Deno.test("sdkApi describeDBInstances: a mid-drain throttle propagates, RDS client destroyed once", async () => {
+  // The first page succeeds; the second page's send rejects with a throttle
+  // (standing in for a throttle that survived the client's internal
+  // SHARED_RETRY). The facade must not re-issue the page (no second retry
+  // layer), the error must propagate for runSweep's scan_error path, and the
+  // client must still be destroyed exactly once after the failed drain.
   const rds = fakeClient((
     command: DescribeDBInstancesCommandLike,
   ): Promise<{ DBInstances: AwsDBInstance[]; Marker: string | undefined }> => {
     const marker = command.input?.Marker;
-    if (marker === undefined && !firstThrottled) {
-      firstThrottled = true;
-      return Promise.reject(throttle());
-    }
-    markersSeen.push(marker);
     if (marker === undefined) {
       return Promise.resolve({
         DBInstances: [{ DBInstanceIdentifier: "a" }],
         Marker: "m1",
       });
     }
-    return Promise.resolve({
-      DBInstances: [{ DBInstanceIdentifier: "b" }],
-      Marker: undefined,
-    });
+    return Promise.reject(throttle());
   });
   const api = sdkApiWithFactories(
     undefined,
@@ -974,11 +761,13 @@ Deno.test("sdkApi describeDBInstances: destroys the RDS client once after thrott
     noopLogger,
     () => rds,
   );
-  const out = await api.describeDBInstances("us-east-1");
-  assertEquals(out.map((d) => d.DBInstanceIdentifier), ["a", "b"]);
-  // Successful page sends saw the first page once then the second marker once —
-  // proving the retry resumed at the same marker, not a drain restart.
-  assertEquals(markersSeen, [undefined, "m1"]);
+  await assertRejects(
+    () => api.describeDBInstances("us-east-1"),
+    Error,
+    "Throttling",
+  );
+  // One send per page: the first page and the failed second page, no re-issue.
+  assertEquals(rds.sendCount, 2);
   assertEquals(rds.destroyCount, 1);
 });
 
