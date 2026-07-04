@@ -304,17 +304,15 @@ data.latest("rds-inv", "instance-cluster-a--cluster-a-1").attributes.DBInstanceC
 ## Throttling
 
 `DescribeDBClusters` and `DescribeDBInstances` are paginated; on busy accounts
-the AWS SDK's built-in retries can be insufficient. This extension wraps both
-calls with a `withRetry` helper modeled on the upstream `@swamp/aws/rds` helper:
-exponential backoff with **full jitter** — each retry delay is uniformly sampled
-from `[0, min(baseDelay * 2 ** n, maxDelay)]` — base 1s, ceiling 90s, up to 20
-attempts. Full jitter is the AWS-documented recommendation for decorrelating
-concurrent callers. Each retry logs at `debug` level.
-
-Throttling detection matches by SDK error `name` (`ThrottlingException`,
-`TooManyRequestsException`, `RequestLimitExceeded`, `RequestThrottledException`,
-`Throttling`) with a word-boundary message fallback for generic-Error SDK
-wrappers. Non-throttling errors propagate immediately.
+throttling bites exactly there. The RDS client is constructed with the shared
+bounded retry config (`retryMode: "adaptive"`, `maxAttempts: 3`): the SDK's
+adaptive mode adds client-side rate limiting on top of standard exponential
+backoff, so sustained throttling backs off instead of hammering. This is the
+single retry mechanism — there is deliberately no second app-level retry layer
+wrapping the same calls, which would compound attempts under sustained
+throttling. The client retries each individual page send, resuming at the same
+`Marker`; a throttle that survives the bounded attempts propagates as the
+method's error. Every page is drained to exhaustion — there is no page cap.
 
 ## Workflow ergonomics
 

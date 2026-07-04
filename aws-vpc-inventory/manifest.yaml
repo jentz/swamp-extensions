@@ -1,6 +1,6 @@
 manifestVersion: 1
 name: "@jentz/aws-vpc-inventory"
-version: "2026.06.26.1"
+version: "2026.07.03.0"
 description: |
   Fleet-wide VPC inventory across `profiles × regions`. A single read-only
   `scan` method fans out over every configured AWS profile and region in one

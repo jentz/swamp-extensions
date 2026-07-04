@@ -26,7 +26,6 @@ import {
   classifyError,
   deriveVerdict,
   findingKey,
-  resolveBootstrapRegion,
   runScan,
   scanErrorKey,
   type ScanTarget,
@@ -153,37 +152,6 @@ Deno.test("classifyError: unknown failures fall through to 'other'", () => {
 Deno.test("classifyError: message is preserved verbatim for the report", () => {
   const err = new Error("specific upstream message");
   assertEquals(classifyError(err).message, "specific upstream message");
-});
-
-Deno.test("resolveBootstrapRegion: first configured region wins", () => {
-  const env = (_: string) => undefined;
-  assertEquals(
-    resolveBootstrapRegion(["eu-west-1", "us-east-1"], env),
-    "eu-west-1",
-  );
-});
-
-Deno.test("resolveBootstrapRegion: env chain when no regions configured", () => {
-  const env = (n: string) => n === "AWS_REGION" ? "eu-north-1" : undefined;
-  assertEquals(resolveBootstrapRegion([], env), "eu-north-1");
-
-  const envDefault = (n: string) =>
-    n === "AWS_DEFAULT_REGION" ? "eu-central-1" : undefined;
-  assertEquals(resolveBootstrapRegion([], envDefault), "eu-central-1");
-});
-
-Deno.test("resolveBootstrapRegion: us-east-1 final fallback when nothing is set", () => {
-  assertEquals(resolveBootstrapRegion([], () => undefined), "us-east-1");
-});
-
-Deno.test("resolveBootstrapRegion: whitespace-only values are treated as unset", () => {
-  const env = (n: string) =>
-    n === "AWS_REGION"
-      ? "   "
-      : n === "AWS_DEFAULT_REGION"
-      ? "eu-west-1"
-      : undefined;
-  assertEquals(resolveBootstrapRegion([], env), "eu-west-1");
 });
 
 Deno.test("findingKey: stable and unique across (account, region, sg)", () => {

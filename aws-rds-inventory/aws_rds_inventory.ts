@@ -25,7 +25,7 @@ import {
   DescribeDBInstancesCommand,
   RDSClient,
 } from "npm:@aws-sdk/client-rds@3.1073.0";
-import { withRetry } from "./_lib/retry.ts";
+import { SHARED_RETRY } from "./_lib/aws_credentials.ts";
 
 // ---------------------------------------------------------------------------
 // Schemas
@@ -478,37 +478,16 @@ function rdsApiFromSdk(client: RDSClient): RdsApi {
   };
 }
 
-// deno-lint-ignore no-explicit-any
-function retryDeps(logger: any) {
-  return {
-    random: () => Math.random(),
-    delay: (ms: number) => new Promise<void>((r) => setTimeout(r, ms)),
-    onRetry: (e: { operationName: string; attempt: number; delayMs: number }) =>
-      logger.debug(
-        "Throttled on {op} attempt {attempt}, waiting {delayMs}ms",
-        { op: e.operationName, attempt: e.attempt, delayMs: e.delayMs },
-      ),
-  };
-}
-
 /**
- * Iterate paginated `DescribeDBClusters`, retrying throttled calls. Returns
- * the raw AWS shapes so caller-side logic can pick them apart.
+ * Iterate paginated `DescribeDBClusters` to exhaustion. Returns the raw AWS
+ * shapes so caller-side logic can pick them apart. Throttling retry lives
+ * inside the SDK client (`SHARED_RETRY`), not here.
  */
-async function collectClusters(
-  api: RdsApi,
-  // deno-lint-ignore no-explicit-any
-  logger: any,
-): Promise<AwsCluster[]> {
+async function collectClusters(api: RdsApi): Promise<AwsCluster[]> {
   const all: AwsCluster[] = [];
   let marker: string | undefined;
   do {
-    const resp = await withRetry(
-      () => api.describeDBClusters(marker),
-      "DescribeDBClusters",
-      undefined,
-      retryDeps(logger),
-    );
+    const resp = await api.describeDBClusters(marker);
     all.push(...(resp.DBClusters ?? []));
     marker = resp.Marker;
   } while (marker);
@@ -536,16 +515,15 @@ export const MAX_CLUSTER_IDS_PER_FILTER = 200;
  * The cluster set is chunked into batches of at most
  * {@link MAX_CLUSTER_IDS_PER_FILTER}; each batch is paginated to exhaustion by
  * `Marker` (no early exit — every member of every requested cluster matters,
- * since a member may live on any page). Throttled calls are retried. Results
- * merge into a single `Map` keyed by `DBInstanceIdentifier`; only returned
- * instances carrying an identifier are keyed.
+ * since a member may live on any page). Throttling retry lives inside the SDK
+ * client (`SHARED_RETRY`), not here. Results merge into a single `Map` keyed
+ * by `DBInstanceIdentifier`; only returned instances carrying an identifier
+ * are keyed.
  *
  * An empty `clusterIds` returns an empty map without issuing any API call.
  */
 export async function collectInstances(
   api: RdsApi,
-  // deno-lint-ignore no-explicit-any
-  logger: any,
   clusterIds: string[],
 ): Promise<Map<string, AwsInstance>> {
   const map = new Map<string, AwsInstance>();
@@ -558,12 +536,7 @@ export async function collectInstances(
     const batch = clusterIds.slice(start, start + MAX_CLUSTER_IDS_PER_FILTER);
     let marker: string | undefined;
     do {
-      const resp = await withRetry(
-        () => api.describeDBInstances(batch, marker),
-        "DescribeDBInstances",
-        undefined,
-        retryDeps(logger),
-      );
+      const resp = await api.describeDBInstances(batch, marker);
       for (const inst of resp.DBInstances ?? []) {
         if (inst.DBInstanceIdentifier) {
           map.set(inst.DBInstanceIdentifier, inst);
@@ -689,7 +662,7 @@ export async function runListClusters(
     );
   }
 
-  const rawClusters = await collectClusters(api, context.logger);
+  const rawClusters = await collectClusters(api);
   context.logger.info(
     "Fetched {count} DescribeDBClusters rows from {region}",
     { count: rawClusters.length, region },
@@ -712,7 +685,7 @@ export async function runListClusters(
   for (const c of clusters) {
     if (c.DBClusterIdentifier) clusterIds.push(c.DBClusterIdentifier);
   }
-  const instances = await collectInstances(api, context.logger, clusterIds);
+  const instances = await collectInstances(api, clusterIds);
 
   const selectorContexts = clusters.map((c) =>
     buildSelectorContext(c, instances)
@@ -821,7 +794,7 @@ export async function runListClusters(
  */
 export const model = {
   type: "@jentz/aws-rds-inventory",
-  version: "2026.06.26.0",
+  version: "2026.07.03.0",
   globalArguments: GlobalArgsSchema,
   // The 2026.06.05.1, 2026.06.06.1, 2026.06.07.1, and 2026.06.07.2 releases
   // changed only internals (server-side DescribeDBInstances filtering, AWS SDK
@@ -868,6 +841,14 @@ export const model = {
         "header only); no globalArguments schema or runtime changes",
       upgradeAttributes: (old: Record<string, unknown>) => old,
     },
+    {
+      toVersion: "2026.07.03.0",
+      description:
+        "Retire the app-level retry layer for the SDK adaptive retry " +
+        "(shared bounded config on the RDS client); no globalArguments " +
+        "schema changes",
+      upgradeAttributes: (old: Record<string, unknown>) => old,
+    },
   ],
   resources: {
     cluster: {
@@ -899,7 +880,7 @@ export const model = {
       ): Promise<{ dataHandles: unknown[] }> => {
         const globalArgs = GlobalArgsSchema.parse(context.globalArgs);
         const region = resolveRegion(globalArgs);
-        const client = new RDSClient({ region });
+        const client = new RDSClient({ region, ...SHARED_RETRY });
         return runListClusters({ api: rdsApiFromSdk(client), context });
       },
     },

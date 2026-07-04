@@ -1,0 +1,82 @@
+{
+  "extension": "@jentz/aws-rds-inventory",
+  "version": "2026.07.03.0",
+  "reviewedAt": "2026-07-03T21:23:34Z",
+  "dimensions": [
+    {
+      "id": "credentials-secrets",
+      "verdict": "pass",
+      "note": "Deliberately unchanged: clients stay ambient-only (new RDSClient({region, ...SHARED_RETRY}), no credentials argument, no profile support added — retry alignment only per the task scope). The new aws_credentials twin is consumed solely for SHARED_RETRY; its credentialModeField/selectCredentials/preflight helpers are present but unused (bundled dead weight accepted to keep the twin byte-identical with the canonical module). The known credentialModeField 'looks like a secret' WARN is the documented false positive."
+    },
+    {
+      "id": "logging-quality",
+      "verdict": "pass",
+      "note": "Entry/progress/completion info logs unchanged. ACCEPTED TELEMETRY LOSS (grilled decision): the debug-level 'Throttled on {op}' retry log went away with retryDeps/withRetry — the SDK adaptive retry has no equivalent hook. No sensitive values logged."
+    },
+    {
+      "id": "error-handling",
+      "verdict": "pass",
+      "note": "Previously this package had ONLY the app-level withRetry (no SDK retry config); now the RDS client carries SHARED_RETRY (adaptive, maxAttempts 3) as the single retry mechanism. A throttle that survives the client's bounded retries propagates and fails the method (this model has no scan_error spec — the method-level failure is the designed surface, unchanged). Pinned by a new collectInstances test: a throttle propagates with exactly one send (no app-level re-issue)."
+    },
+    {
+      "id": "testing-completeness",
+      "verdict": "pass",
+      "note": "The withRetry/isThrottlingError suites (and their smoke-test existence assertions) were deleted with the module. Surviving observable behavior keeps real teeth: collectInstances still paginates each batch to exhaustion by Marker, chunks at MAX_CLUSTER_IDS_PER_FILTER, skips id-less instances, issues zero calls for empty input, and (new) propagates a throttle without an app-level re-issue. collectInstances' unused logger parameter was dropped alongside; all call sites and tests updated."
+    },
+    {
+      "id": "idempotency-resilience",
+      "verdict": "pass",
+      "note": "list_clusters remains read-only and re-runnable with deterministic cluster/instance keys. Retry-semantics change (20 full-jitter app attempts -> SDK adaptive 3) is the accepted trade-off: a sustained throttle fails the run sooner instead of stalling up to 20x90s per page; adaptive client-side rate limiting backs off instead of hammering."
+    },
+    {
+      "id": "api-contracts",
+      "verdict": "pass",
+      "note": "No AWS request/response mapping changed; DescribeDBClusters/DescribeDBInstances pagination and the db-cluster-id server-side filter unchanged; MaxRecords 100; SDK pins unchanged at 3.1073.0. Rate limiting now handled by the SDK adaptive limiter on the client. collectInstances' signature changed (logger parameter removed) — an intentional API reduction shipped with the version bump."
+    },
+    {
+      "id": "resource-management",
+      "verdict": "pass",
+      "note": "No new clients, handles, or files; client construction gains only the retry config spread. Cleanup behavior unchanged."
+    },
+    {
+      "id": "published-surface-hygiene",
+      "verdict": "pass",
+      "note": "Manifest and model.version aligned at 2026.07.03.0. README Throttling section rewritten for the SDK adaptive retry as the single mechanism (the withRetry/full-jitter/20-attempts text is gone). Test fixtures keep placeholder identifiers (cluster-a, i-1)."
+    },
+    {
+      "id": "schema-strictness",
+      "verdict": "pass",
+      "note": "MECHANICAL Schema-Write Conformance: no writeResource call site changed — cluster/instance rows are built exactly as before and their strict z.object schemas are untouched. The new scan_error twin file exists only to satisfy the aws_credentials twin's import; this model stores no scan_error spec and writes none."
+    },
+    {
+      "id": "lifetime-gc",
+      "verdict": "pass",
+      "note": "cluster/instance keep lifetime 'infinite' and garbageCollection 10 — unchanged."
+    },
+    {
+      "id": "crud-completeness",
+      "verdict": "na",
+      "note": "Read-only inventory model, not a CRUD lifecycle model. Unchanged by this slice."
+    },
+    {
+      "id": "preflight-checks",
+      "verdict": "na",
+      "note": "No mutating methods and no SSO pre-flight in this package (single-region, ambient-only by design; typically gated by @jentz/aws-context-guard upstream in a workflow). This slice deliberately does not add one."
+    },
+    {
+      "id": "instance-names",
+      "verdict": "pass",
+      "note": "MECHANICAL: clusterKey/instanceKey unchanged ('cluster-<id>' vs 'instance-<cluster>--<id>', collision-free, pinned by tests). No new writes introduced."
+    },
+    {
+      "id": "data-access",
+      "verdict": "pass",
+      "note": "writeResource-only producer; no readResource paths changed. The companion report's contract (cluster/instance rows) is byte-identical in shape."
+    },
+    {
+      "id": "version-upgrades",
+      "verdict": "pass",
+      "note": "model.version bumped 2026.06.26.0 -> 2026.07.03.0 with a matching no-op upgrade entry appended (identity upgradeAttributes; description names the retired app-level retry layer, no globalArguments schema changes). Chain tail equals model.version, verified by the colocated upgrade-chain test."
+    }
+  ]
+}
