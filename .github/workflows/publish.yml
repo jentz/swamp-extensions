@@ -20,7 +20,7 @@ jobs:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           ref: ${{ github.event.workflow_run.head_sha }}
-      - uses: systeminit/setup-swamp@8764f3226a675af5b78708adfdee4e13eaa19aac # v0.1.0
+      - uses: systeminit/setup-swamp@c2608c1441f5ffe82b91487ae61736661a3e242b # v0.1.1
         with:
           api-key: ${{ secrets.SWAMP_API_KEY }}
       - id: changes
@@ -96,7 +96,7 @@ jobs:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           ref: ${{ github.event.workflow_run.head_sha }}
-      - uses: systeminit/setup-swamp@8764f3226a675af5b78708adfdee4e13eaa19aac # v0.1.0
+      - uses: systeminit/setup-swamp@c2608c1441f5ffe82b91487ae61736661a3e242b # v0.1.1
         with:
           api-key: ${{ secrets.SWAMP_API_KEY }}
       - name: Publish extension

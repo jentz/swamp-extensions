@@ -19,7 +19,7 @@ jobs:
       - uses: denoland/setup-deno@22d081ff2d3a40755e97629de92e3bcbfa7cf2ed # v2.0.5
         with:
           deno-version: v2.x
-      - uses: systeminit/setup-swamp@8764f3226a675af5b78708adfdee4e13eaa19aac # v0.1.0
+      - uses: systeminit/setup-swamp@c2608c1441f5ffe82b91487ae61736661a3e242b # v0.1.1
       - run: deno fmt --check
       - run: deno lint
       - name: sync-lib drift
