@@ -14,12 +14,18 @@
  * writes:
  *
  *   - one `summary` resource — stackset config, drift-detection rollup,
- *     per-dimension counts (status / region / drift / failure category), recent
- *     operations, a normalized `rootCauses` grouping, detected anti-patterns,
- *     and a derived `safeToReapply` verdict, and
+ *     per-dimension counts (status / region / drift / failure category /
+ *     stack-presence hint via `byStackPresenceHint`), recent operations, a
+ *     normalized `rootCauses` grouping, a heuristic `orphanCandidates` split,
+ *     detected anti-patterns, and a derived `safeToReapply` verdict, and
  *   - one `instance` resource per stack instance (keyed by account+region),
  *     carrying its deployment status, status reason, drift status, stack id,
- *     OU, and a normalized `failureCategory` — fully queryable via CEL.
+ *     OU, a normalized `failureCategory`, and a non-authoritative
+ *     `stackPresenceHint` — fully queryable via CEL.
+ *
+ * `stackPresenceHint`, `byStackPresenceHint`, and `orphanCandidates` are
+ * non-authoritative heuristics derived only from `(detailedStatus, stackId)`;
+ * confirm with a live `@jentz/aws-cfn-orphan-sweep` `enumerate` before acting.
  *
  * The audit reports each instance's **existing** drift status exactly as the
  * StackSet API returns it; it never triggers a fresh drift-detection run.
@@ -981,7 +987,7 @@ function apiFromGlobals(g: GlobalArgs, signal?: AbortSignal): StackSetApi {
  */
 export const model = {
   type: "@jentz/aws-stackset-audit",
-  version: "2026.07.04.1",
+  version: "2026.07.19.0",
   globalArguments: GlobalArgsSchema,
   upgrades: [
     {
@@ -1008,6 +1014,14 @@ export const model = {
       description:
         "Internal refactor onto the shared _lib/stackset.ts twin; no " +
         "resource schema changes.",
+      upgradeAttributes: (old: Record<string, unknown>) => old,
+    },
+    {
+      toVersion: "2026.07.19.0",
+      description:
+        "Docs: describe the stackPresenceHint / byStackPresenceHint / " +
+        "orphanCandidates heuristics in prose and align the illustrative " +
+        "workflow YAML to canonical schema. No resource schema changes.",
       upgradeAttributes: (old: Record<string, unknown>) => old,
     },
   ],

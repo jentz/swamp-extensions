@@ -1,0 +1,82 @@
+{
+  "extension": "@jentz/aws-stackset-audit",
+  "version": "2026.07.19.0",
+  "reviewedAt": "2026-07-19T19:47:47Z",
+  "dimensions": [
+    {
+      "id": "credentials-secrets",
+      "verdict": "pass",
+      "note": "Docs-only change: README prose, module JSDoc, and manifest description, plus a version bump and one additive no-op upgrades entry. No credential resolution, env reads, vault references, or sensitive logging added or altered."
+    },
+    {
+      "id": "logging-quality",
+      "verdict": "pass",
+      "note": "No logging calls added or changed; edits are limited to documentation prose, JSDoc comments, and version metadata."
+    },
+    {
+      "id": "error-handling",
+      "verdict": "pass",
+      "note": "No executable code paths changed. The only .ts edits are the module-doc JSDoc, the model.version string, and a pass-through upgrades entry; audit read/derive/write logic is untouched."
+    },
+    {
+      "id": "testing-completeness",
+      "verdict": "pass",
+      "note": "No behavior change, so existing coverage still holds. The colocated metadata invariant test asserts manifest==model.version==upgrades.at(-1).toVersion and now guards the 2026.07.19.0 bump. Full package suite re-run: 41 passed / 0 failed."
+    },
+    {
+      "id": "idempotency-resilience",
+      "verdict": "na",
+      "note": "Read-only audit model with a single non-mutating audit method; no create/delete lifecycle. Unchanged by this docs edit."
+    },
+    {
+      "id": "api-contracts",
+      "verdict": "pass",
+      "note": "No AWS API calls added, removed, or reordered. Prose now documents the pre-existing stackPresenceHint / byStackPresenceHint / orphanCandidates output fields; verified each description against SummarySchema and InstanceRecordSchema and their .describe() text. The schemas themselves are unchanged."
+    },
+    {
+      "id": "resource-management",
+      "verdict": "pass",
+      "note": "No handles, clients, or temp files touched; no client construction changed."
+    },
+    {
+      "id": "published-surface-hygiene",
+      "verdict": "pass",
+      "note": "Edited README/JSDoc/manifest carry only synthetic identifiers (my-stackset-audit, stackset-drift-detect, DemoOrgSetup) and doc prose. The corrected illustrative workflow YAML uses placeholder model names only; its jobs/steps/task/dependsOn.condition shape was validated against swamp workflow schema (validate PASSED, warnings only for the placeholder model names)."
+    },
+    {
+      "id": "schema-strictness",
+      "verdict": "pass",
+      "note": "No schema changes. Prose verified field-by-field against SummarySchema (byStackPresenceHint record default {}, orphanCandidates object default {actionable:0,inaccessible:0}) and InstanceRecordSchema (stackPresenceHint enum present|likely-absent|unknown, default unknown). No .passthrough(), no placeholder values introduced."
+    },
+    {
+      "id": "lifetime-gc",
+      "verdict": "pass",
+      "note": "Resource specs summary and instance retain lifetime infinite and garbageCollection 10; no spec added or altered."
+    },
+    {
+      "id": "crud-completeness",
+      "verdict": "na",
+      "note": "Intentionally read-only audit model with a single fan-out audit method; no create/update/delete/sync lifecycle in scope. Unchanged."
+    },
+    {
+      "id": "preflight-checks",
+      "verdict": "na",
+      "note": "No mutating method exists, so preflight-check labels do not apply; audit makes only read-only Describe/List calls. Unchanged."
+    },
+    {
+      "id": "instance-names",
+      "verdict": "pass",
+      "note": "No writeResource call or spec changed; instance rows still keyed by instanceKey(account, region) and the summary by the fixed name. Uniqueness within an execution preserved."
+    },
+    {
+      "id": "data-access",
+      "verdict": "pass",
+      "note": "No readResource or dataRepository access added or changed; all derivations remain over the in-memory instances array of the same run."
+    },
+    {
+      "id": "version-upgrades",
+      "verdict": "pass",
+      "note": "Version bumped 2026.07.04.1 -> 2026.07.19.0 in both manifest.yaml and model.version, with a matching final upgrades entry (pass-through upgradeAttributes; docs-only, no resource schema changes, so old persisted rows load unchanged). Invariant manifest==model.version==upgrades.at(-1).toVersion holds and is asserted by the colocated metadata test."
+    }
+  ]
+}

@@ -1,6 +1,6 @@
 manifestVersion: 1
 name: "@jentz/aws-stackset-audit"
-version: "2026.07.04.1"
+version: "2026.07.19.0"
 description: |
   Read-only operational audit of a CloudFormation StackSet and all of its stack
   instances across accounts and regions. A single `audit` method fans out in one
@@ -10,10 +10,14 @@ description: |
 
   The `summary` carries the stackset config, a drift-detection rollup,
   per-dimension counts (detailed/overall status, region, drift status, failure
-  category), recent operations, a ranked `rootCauses` grouping, detected
-  cross-instance anti-patterns, and a derived `safeToReapply` verdict. Each
-  `instance` carries account, region, detailed and overall status, status
-  reason, drift status, stack id, OU id, and a normalized `failureCategory`.
+  category, and stack-presence hint via `byStackPresenceHint`), recent
+  operations, a ranked `rootCauses` grouping, a heuristic `orphanCandidates`
+  split, detected cross-instance anti-patterns, and a derived `safeToReapply`
+  verdict. Each `instance` carries account, region, detailed and overall status,
+  status reason, drift status, stack id, OU id, a normalized `failureCategory`,
+  and a non-authoritative `stackPresenceHint`. The `stackPresenceHint`,
+  `byStackPresenceHint`, and `orphanCandidates` heuristics are derived only from
+  `(detailedStatus, stackId)`; confirm with a live enumeration before acting.
 
   Read-only: only `Describe*` / `List*` are ever called, so the audit runs under
   a `*-readonly` profile. It reports each instance's existing drift status as the

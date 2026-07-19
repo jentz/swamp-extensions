@@ -43,7 +43,14 @@ One row per audit:
 - `drift` — the StackSet-level drift-detection rollup as last measured
 - `regions`, `accountsTargeted`, `instanceCount`
 - per-dimension counts: `byDetailedStatus`, `byOverallStatus`, `byRegion`,
-  `byDriftStatus`, `byFailureCategory`
+  `byDriftStatus`, `byFailureCategory`, `byStackPresenceHint` (instances grouped
+  by the per-instance `stackPresenceHint`)
+- `orphanCandidates` — a heuristic `{ actionable, inaccessible }` split of
+  instances whose stack is hinted `present`: `actionable` = `SUCCEEDED` (a real,
+  reachable stack), `inaccessible` = `SKIPPED_SUSPENDED_ACCOUNT` (the stack
+  likely exists but the account is suspended). Non-authoritative — like
+  `byStackPresenceHint`, it derives from the `stackPresenceHint` heuristic;
+  confirm with a live `@jentz/aws-cfn-orphan-sweep` `enumerate` before acting.
 - `operations` — recent stackset operations
 - `rootCauses` — failed instances grouped by normalized failure category,
   ranked by count
@@ -66,6 +73,12 @@ One row per stack instance, keyed `instance-${account}-${region}`:
 - `stackId`, `organizationalUnitId`
 - `failureCategory` — a normalized classification (`none`, `iam-name-conflict`,
   `resource-already-exists`, `access-denied`, `cancelled`, `in-progress`, …)
+- `stackPresenceHint` — a non-authoritative heuristic (`present`,
+  `likely-absent`, `unknown`) derived only from `(detailedStatus, stackId)`,
+  guessing whether the member stack still exists (a create-failure usually rolls
+  back, so a lingering `stackId` is `likely-absent`; `SUCCEEDED` and
+  `SKIPPED_SUSPENDED_ACCOUNT` are `present`). Makes no live cross-account call;
+  confirm with a live `@jentz/aws-cfn-orphan-sweep` `enumerate` before acting.
 - `auditedAt`
 
 ## Global arguments
@@ -134,19 +147,27 @@ ahead of the mutating drift-detect step, not in this read-only model.
 
 ```yaml
 # workflow.yaml (illustrative — the drift-detect type is the sibling extension)
-steps:
-  - name: detect-drift
-    model: stackset-drift-detect       # @jentz/aws-stackset-drift-detect (sibling)
-    method: detect
-    # runs under an admin profile that can call DetectStackSetDrift
+name: stackset-drift-then-audit
+jobs:
+  - name: drift-then-audit
+    steps:
+      - name: detect-drift
+        task:
+          type: model_method
+          modelIdOrName: stackset-drift-detect # @jentz/aws-stackset-drift-detect (sibling)
+          methodName: detect
+        # runs under an admin profile that can call DetectStackSetDrift
 
-  - name: audit
-    model: my-stackset-audit           # @jentz/aws-stackset-audit (this extension)
-    method: audit
-    dependsOn:
-      - step: detect-drift
-        on: succeeded
-    # runs under a *-readonly profile
+      - name: audit
+        task:
+          type: model_method
+          modelIdOrName: my-stackset-audit # @jentz/aws-stackset-audit (this extension)
+          methodName: audit
+        dependsOn:
+          - step: detect-drift
+            condition:
+              type: succeeded
+        # runs under a *-readonly profile
 ```
 
 ## Querying the output
