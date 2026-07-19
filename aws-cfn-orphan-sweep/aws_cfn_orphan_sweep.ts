@@ -36,14 +36,19 @@
  *     fatal. Account iteration is sequential today; bounded concurrency is a
  *     future optimization. Recommended first action for an org-wide inventory.
  *
- *   - `cleanup` (MUTATING; dry-run unless `apply=true`): for each orphan,
- *     `DeleteStack` retaining ONLY the dead `Custom::*` resource (so the broken
- *     Lambda is never invoked) while CloudFormation still deletes the Lambda and
- *     its IAM role. Polls to terminal, then verifies the IAM role is gone via
- *     `GetRole` → NoSuchEntity. Refuses any stack whose name does not match
- *     `namePrefix`, and refuses to retain anything that is not the detected
- *     custom resource. Needs `cloudformation:DeleteStack` + `iam:GetRole`, so it
- *     runs from a `*-devops` profile, never a read-only one.
+ *   - `cleanup` (MUTATING; dry-run unless `apply=true`): for each orphan, by
+ *     default (`predeleteLambda=true`) first `DeleteFunction` on the dead
+ *     backing Lambda, then a single plain `DeleteStack` — with the provider
+ *     gone the custom resource's Delete has nothing to invoke, so CloudFormation
+ *     removes the whole stack (custom resource, Lambda, IAM role) in one pass
+ *     instead of hanging ~1h on the missing callback. Set `predeleteLambda=false`
+ *     for the slow pure-CFN path: a plain `DeleteStack` that, on `DELETE_FAILED`,
+ *     retries retaining ONLY the dead `Custom::*` resource. Either way it polls
+ *     to terminal, then verifies the IAM role is gone via `GetRole` →
+ *     NoSuchEntity. Refuses any stack whose name does not match `namePrefix`,
+ *     and refuses to retain anything that is not the detected custom resource.
+ *     Needs `cloudformation:DeleteStack` + `lambda:DeleteFunction` +
+ *     `iam:GetRole`, so it runs from a `*-devops` profile, never a read-only one.
  *
  *   - `cleanupOrg` (MUTATING, cross-account; dry-run unless `apply=true`): the
  *     org-wide sibling of `cleanup`. Run once from the management account; it
@@ -1774,20 +1779,30 @@ function orgApiFromGlobals(g: GlobalArgs, signal?: AbortSignal): OrgApi {
  * `enumerateOrg` (read-only) runs from the management account and fans the same
  * enumeration across every ACTIVE org member account (sequentially today;
  * bounded concurrency is a future optimization); `cleanup` (mutating, dry-run
- * unless `apply=true`) deletes the orphans retaining only the dead custom
- * resource and verifies the IAM role is gone; `cleanupOrg` (mutating
+ * unless `apply=true`) deletes the orphans — by default predeleting the dead
+ * backing Lambda then issuing one plain `DeleteStack` (falling back to a
+ * retain-the-custom-resource two-pass delete) — and verifies the IAM role is
+ * gone; `cleanupOrg` (mutating
  * cross-account, dry-run unless `apply=true`) fans that same cleanup across the
  * whole org from the management account, with a per-account `expectAccount`
  * landing check so a misconfigured role can never delete in the wrong account.
  */
 export const model = {
   type: "@jentz/aws-cfn-orphan-sweep",
-  version: "2026.07.03.1",
+  version: "2026.07.19.0",
   globalArguments: GlobalArgsSchema,
   upgrades: [
     {
       toVersion: "2026.07.03.1",
       description: "Initial publish",
+      upgradeAttributes: (old: Record<string, unknown>) => old,
+    },
+    {
+      toVersion: "2026.07.19.0",
+      description:
+        "Docs only: correct cleanup IAM permissions in module/model JSDoc " +
+        "(default predelete-Lambda path + lambda:DeleteFunction) and note " +
+        "orphan/deletion key sanitization; no resource schema changes.",
       upgradeAttributes: (old: Record<string, unknown>) => old,
     },
   ],

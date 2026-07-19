@@ -1,6 +1,6 @@
 manifestVersion: 1
 name: "@jentz/aws-cfn-orphan-sweep"
-version: "2026.07.03.1"
+version: "2026.07.19.0"
 description: |
   Find and (optionally) clean up the standalone CloudFormation stacks a retired
   StackSet leaves behind, single-account or org-wide from the management
