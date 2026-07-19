@@ -38,7 +38,7 @@ Rules across three severities:
 | `bucket-encryption-enabled`                    | error    | At least one default encryption rule (`AES256`, `aws:kms`, or `aws:kms:dsse`)                                                                                                                                                   |
 | `bucket-public-access-blocked`                 | error    | All four BPA flags `true` (`BlockPublicAcls`, `BlockPublicPolicy`, `IgnorePublicAcls`, `RestrictPublicBuckets`)                                                                                                                 |
 | `bucket-ownership-enforced`                    | error    | `OwnershipControls.Rules` contains `ObjectOwnership: BucketOwnerEnforced` (ACLs disabled)                                                                                                                                       |
-| `bucket-tls-only-policy`                       | error    | Bucket policy includes a Deny with `Principal: *`, `Action: s3:*`, `Resource` covering both bucket ARN and `bucket/*`, and `Condition: Bool { aws:SecureTransport: "false" }`                                                   |
+| `bucket-tls-only-policy`                       | error    | Bucket policy includes a Deny with `Principal: *`, `Action: s3:*`, `Resource` covering both bucket ARN and `bucket/*`, and `Condition: Bool` (or `BoolIfExists`) `{ aws:SecureTransport: "false" }`                                                   |
 | `bucket-no-overbroad-allow`                    | error    | No Allow statement grants `Action: s3:*` to `Principal: *` on `Resource` covering both bucket ARN and `bucket/*` without a narrowing Condition (`aws:PrincipalOrgID`, `aws:Source{Arn,Account,Vpc,Vpce,Ip}`, etc.)              |
 | `bucket-tls-min-version-1.2`                   | warn     | Bucket policy includes a Deny with `Principal: *`, `Action: s3:*`, `Resource` covering both bucket ARN and `bucket/*`, and `Condition: NumericLessThan` (or `NumericLessThanIfExists`) on `s3:TlsVersion` with a floor `>= 1.2` |
 | `bucket-lifecycle-expires-noncurrent-versions` | warn     | At least one enabled lifecycle rule expires noncurrent object versions                                                                                                                                                          |
@@ -132,13 +132,20 @@ jobs:
       - name: verify-context
         task:
           type: model_method
-          modelIdOrName: aws-guard
+          modelType: "@jentz/aws-context-guard"
+          modelName: "audit-guard"
           methodName: verify
+          # `verify` takes no method arguments; with direct type execution
+          # swamp routes this input to the guard's globalArgs
+          # (expectedAccountId), which drives the sts:GetCallerIdentity
+          # account check. Without it the guard has no account to compare.
+          inputs:
+            expectedAccountId: ${{ inputs.expectedAccountId }}
         allowFailure: false
   - name: lookup
     steps:
       - name: bucket-state-${{ self.bucketName }}
-        forEach: { item: bucketName, in: ${{ inputs.bucketNames }} }
+        forEach: { item: bucketName, in: "${{ inputs.bucketNames }}" }
         task:
           type: model_method
           modelType: "@swamp/aws/s3/bucket"
@@ -147,7 +154,7 @@ jobs:
           inputs:
             identifier: ${{ self.bucketName }}
       - name: bucket-policy-${{ self.bucketName }}
-        forEach: { item: bucketName, in: ${{ inputs.bucketNames }} }
+        forEach: { item: bucketName, in: "${{ inputs.bucketNames }}" }
         task:
           type: model_method
           modelType: "@swamp/aws/s3/bucket-policy"
@@ -271,7 +278,13 @@ set -euo pipefail
 
 workflow="${1:?usage: audit-gate.sh <workflow-name>}"
 
-if ! output=$(swamp data get reports "$workflow"); then
+# The report's JSON artifact is persisted under a SANITIZED data name:
+# `report-<report-name>-json` with the report name's leading `@` dropped and
+# each `/` replaced by `-`. So `@jentz/aws-s3-bucket-audit` becomes
+# `report-jentz-aws-s3-bucket-audit-json`.
+report_data="report-jentz-aws-s3-bucket-audit-json"
+
+if ! output=$(swamp data get --workflow "$workflow" "$report_data" --json); then
   echo "audit-gate: failed to read report output for workflow '$workflow'" >&2
   exit 2
 fi
@@ -280,22 +293,25 @@ if [ -z "$output" ]; then
   exit 2
 fi
 
+# `swamp data get --json` returns a metadata envelope; the report body is
+# nested under `.content`, so the gate fields live at `.content.gateTripped`
+# and `.content.trippers[]` (not the envelope's top level).
 # `// "missing"` makes a null/absent field detectable instead of silently
 # comparing as the string "null".
-gate_tripped=$(printf '%s' "$output" | jq -r '.json.gateTripped // "missing"')
+gate_tripped=$(printf '%s' "$output" | jq -r '.content.gateTripped // "missing"')
 
 case "$gate_tripped" in
   true)
     echo "audit-gate: S3 bucket audit gate tripped:" >&2
     printf '%s' "$output" \
-      | jq -r '.json.trippers[] | "  - \(.bucket): \(.id) (\(.severity)/\(.status))"' >&2
+      | jq -r '.content.trippers[] | "  - \(.bucket): \(.id) (\(.severity)/\(.status))"' >&2
     exit 1
     ;;
   false)
     exit 0
     ;;
   *)
-    echo "audit-gate: 'json.gateTripped' missing from report output for workflow '$workflow'" >&2
+    echo "audit-gate: 'gateTripped' missing from report output for workflow '$workflow'" >&2
     exit 2
     ;;
 esac

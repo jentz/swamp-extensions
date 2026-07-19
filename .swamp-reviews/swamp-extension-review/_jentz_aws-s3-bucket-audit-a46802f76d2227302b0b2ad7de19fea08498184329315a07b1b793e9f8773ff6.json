@@ -1,0 +1,47 @@
+{
+  "extension": "@jentz/aws-s3-bucket-audit",
+  "version": "2026.07.19.0",
+  "reviewedAt": "2026-07-19T20:30:00Z",
+  "dimensions": [
+    {
+      "id": "credentials-secrets",
+      "verdict": "pass",
+      "note": "Docs-only change (README workflow example and audit-gate.sh helper) plus a manifest version bump. No credentials introduced; the corrected example still passes AWS auth via profile/env, and the account ID is a caller-supplied workflow input (placeholder AWS_ACCOUNT_ID), never a secret."
+    },
+    {
+      "id": "logging-quality",
+      "verdict": "pass",
+      "note": "No report source (s3_bucket_audit.ts) changed; existing structured logging is untouched."
+    },
+    {
+      "id": "error-handling",
+      "verdict": "pass",
+      "note": "No control flow changed in the extension. The documented audit-gate.sh keeps its exit-code contract (0 no-trip / 1 tripped / 2 unreadable); a missing gate field still routes to exit 2 rather than silently passing, now that it reads the sanitized data name (report-jentz-aws-s3-bucket-audit-json) and the .content-nested gate fields."
+    },
+    {
+      "id": "testing-completeness",
+      "verdict": "pass",
+      "note": "No code change; existing unit tests still pass under deno test (133 passed). The corrected workflow example was validated end-to-end with a throwaway workflow (swamp workflow validate: all checks passed) and then deleted. The audit-gate.sh data name and .content envelope were corrected to match empirically verified persisted-artifact behavior."
+    },
+    {
+      "id": "idempotency-resilience",
+      "verdict": "na",
+      "note": "Report-only extension; it renders collected workflow data and creates/updates/deletes no external resources."
+    },
+    {
+      "id": "api-contracts",
+      "verdict": "na",
+      "note": "No external API client in this extension; it consumes swamp step data/artifacts only."
+    },
+    {
+      "id": "resource-management",
+      "verdict": "pass",
+      "note": "No new files, handles, or network clients; the manifest additionalFiles set is unchanged (README.md, LICENSE.md)."
+    },
+    {
+      "id": "published-surface-hygiene",
+      "verdict": "pass",
+      "note": "Reviewed the edited README: the workflow example and audit-gate.sh use placeholders only (bucket name my-iac-state-bucket, account ID passed as the AWS_ACCOUNT_ID input placeholder). No real account IDs, IPs, hostnames, ARNs, or CIDR blocks. Manifest version bumped to 2026.07.19.0."
+    }
+  ]
+}
