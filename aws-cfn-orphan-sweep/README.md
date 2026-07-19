@@ -114,7 +114,12 @@ canary — `apply=true` to delete. Accounts are swept sequentially today.
 
 ### `orphan` resource
 
-One row per matching stack, keyed `orphan-${account}-${region}-${stack}`:
+One row per matching stack, keyed `orphan-${account}-${region}-${stack}`, where
+`${stack}` is the stack name reduced to a safe segment (`safeNameSegment`:
+non-`[A-Za-z0-9._-]` runs collapsed to `-`, then truncated to 90 chars). For a
+typical `StackSet-<name>-<guid>` name this equals the raw name, but a name with
+unsafe characters or over the cap is sanitized — use the sanitized form in an
+exact-key CEL lookup:
 
 - `account`, `region`, `stackName`, `stackId`, `stackStatus`, `statusReason`,
   `creationTime`
@@ -138,7 +143,9 @@ One per-account rollup, keyed `summary-${account}`:
 ### `deletion` resource
 
 One row per delete attempt or dry-run plan, keyed
-`deletion-${account}-${region}-${stack}`:
+`deletion-${account}-${region}-${stack}`, with `${stack}` sanitized the same way
+as the `orphan` key (`safeNameSegment`: unsafe-char runs collapsed to `-`, then
+truncated to 90 chars):
 
 - `account`, `region`, `stackName`, `stackId`
 - `action` — e.g. `would-initiate-delete`, `would-retain-delete`,
@@ -319,7 +326,9 @@ steps:
   - name: cleanup
     model: org-orphan-sweep
     method: cleanup
-    # apply=true; runs under a *-devops profile that can DeleteStack
+    # runs under a *-devops profile that can DeleteStack; pass apply:true to
+    # actually delete (omit args to preview — cleanup defaults to dry-run)
+    args: { apply: true }
     dependsOn:
       - step: enumerate
         on: succeeded
@@ -336,6 +345,10 @@ data.latest("<sweep-name>", "orphan-<account>-<region>-<stack>").attributes.iamR
 data.latest("<sweep-name>", "deletion-<account>-<region>-<stack>").attributes.roleGone
 data.latest("<sweep-name>", "org-summary-<management-account>").attributes.totalOrphans
 ```
+
+The `<stack>` segment in the `orphan-` / `deletion-` keys is the stack name
+passed through `safeNameSegment` (see the resource sections above); for a name
+with unsafe characters or over the 90-char cap, use the sanitized form here.
 
 ## Out of scope
 
