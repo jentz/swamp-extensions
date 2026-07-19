@@ -1,0 +1,82 @@
+{
+  "extension": "@jentz/aws-stackset-audit",
+  "version": "2026.07.04.1",
+  "reviewedAt": "2026-07-04T06:26:23Z",
+  "dimensions": [
+    {
+      "id": "credentials-secrets",
+      "verdict": "pass",
+      "note": "Change is a dedup refactor onto the generated _lib/stackset.ts twin. Credential resolution semantics are byte-equivalent: apiFromGlobals now calls the shared selectCredentials(profile), which returns fromIni({profile}) for a non-empty profile and undefined (ambient chain) otherwise — exactly the inline branch it replaced. No new credential paths, env reads, vault references, or sensitive logging. The twin is self-contained and does not pull in the fleet SSO machinery."
+    },
+    {
+      "id": "logging-quality",
+      "verdict": "pass",
+      "note": "No logging calls added or changed; runAudit keeps its structured entry/completion info logs with placeholder syntax. The shared twin logs nothing itself (its onPoll seam is unused by this read-only package)."
+    },
+    {
+      "id": "error-handling",
+      "verdict": "pass",
+      "note": "No error-handling paths changed. The audit method has no poll loop; the only functional substitutions are selectCredentials (same branch) and STACKSET_RETRY (same {maxAttempts: 8} spread into the CloudFormation client). Data is still written only after all reads and derivations succeed."
+    },
+    {
+      "id": "testing-completeness",
+      "verdict": "pass",
+      "note": "Smoke suite (tests/aws_stackset_audit_smoke_test.ts) passes byte-for-byte unchanged — the behavior-preservation proof for the migration. The isoOrEmpty unit test moved to the canonical _lib/stackset_test.ts, which owns the shared-helper coverage (isoOrEmpty edges, credential-selection branches, STACKSET_RETRY pin) once; package tests keep all package-logic coverage (classification, rollups, verdict derivation, instanceKey). Full trio+_lib run: 108 passed / 0 failed."
+    },
+    {
+      "id": "idempotency-resilience",
+      "verdict": "na",
+      "note": "Read-only audit model; the single audit method mutates no cloud state, so create/delete idempotency does not apply. Unchanged by this refactor."
+    },
+    {
+      "id": "api-contracts",
+      "verdict": "pass",
+      "note": "No AWS API calls added, removed, or reordered; pagination in listStackInstances/listOperations is untouched. AwsOperationSummary is now the trio-shared type from the twin with identical fields to the deleted private copy (verified field-by-field in the diff), and it is re-exported so the existing test mocks compile against the same name."
+    },
+    {
+      "id": "resource-management",
+      "verdict": "pass",
+      "note": "No new handles, clients, or temp files. The CloudFormation client construction is unchanged apart from the renamed retry const."
+    },
+    {
+      "id": "published-surface-hygiene",
+      "verdict": "pass",
+      "note": "The new twin _lib/stackset.ts carries only synthetic examples and no infrastructure identifiers; its generated header names the codegen script. Existing README/fixtures untouched. Module surface preserved: isoOrEmpty and AwsOperationSummary are re-exported from the twin, so previously-public symbols remain available."
+    },
+    {
+      "id": "schema-strictness",
+      "verdict": "pass",
+      "note": "Mechanical schema-write conformance re-verified: summary write covers every SummarySchema field and instance rows are typed InstanceRecord[] against InstanceRecordSchema; no schema or write-path changes in this refactor, no .passthrough(), no placeholder values. The shared GlobalArgs is a type only — the package keeps its own zod GlobalArgsSchema with its audit-specific describe() wording, unchanged."
+    },
+    {
+      "id": "lifetime-gc",
+      "verdict": "pass",
+      "note": "Resource specs (summary, instance) retain lifetime infinite and garbageCollection 10; no spec added or altered."
+    },
+    {
+      "id": "crud-completeness",
+      "verdict": "na",
+      "note": "Intentionally read-only audit model with a single fan-out audit method; no create/update/delete/sync lifecycle in scope. The colocated metadata test still asserts methods === ['audit']."
+    },
+    {
+      "id": "preflight-checks",
+      "verdict": "na",
+      "note": "No mutating method exists, so preflight check labels do not apply; the audit method makes only read-only Describe/List calls."
+    },
+    {
+      "id": "instance-names",
+      "verdict": "pass",
+      "note": "Unchanged: instance rows keyed by instanceKey(account, region), summary by the fixed name summary; no new writeResource call or spec, so uniqueness within an execution is preserved."
+    },
+    {
+      "id": "data-access",
+      "verdict": "pass",
+      "note": "No readResource or dataRepository access added or changed; all derivations remain over the in-memory instances array of the same run."
+    },
+    {
+      "id": "version-upgrades",
+      "verdict": "pass",
+      "note": "Version bumped 2026.06.23.1 -> 2026.07.04.1 (registry nextVersion) in manifest.yaml and model.version, with a matching final no-op upgrades entry (pass-through upgradeAttributes; no resource schema changes, so old persisted rows load unchanged). The colocated invariant tests assert manifest == model.version == upgrades.at(-1).toVersion and pass."
+    }
+  ]
+}

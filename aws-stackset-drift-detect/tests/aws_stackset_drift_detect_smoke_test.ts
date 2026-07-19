@@ -14,8 +14,6 @@ import { assert, assertEquals, assertRejects } from "jsr:@std/assert@1";
 import {
   type AwsOperationSummary,
   type DriftApi,
-  isoOrEmpty,
-  realSleep,
   runDetect,
 } from "../aws_stackset_drift_detect.ts";
 
@@ -209,15 +207,12 @@ Deno.test("smoke: terminal op with absent timestamps maps to empty strings", asy
 
 Deno.test("smoke: poll budget exhausted throws naming the last status and writes nothing", async () => {
   const { context, written } = makeContext();
-  const maxPolls = 5;
-  // Always RUNNING — never reaches a terminal state.
-  const { api, describeCalls } = scriptedApi("op-stuck", [RUNNING]);
-  // Count inter-poll waits to prove none happens after the final poll.
-  let sleeps = 0;
-  const countingSleep = () => {
-    sleeps++;
-    return Promise.resolve();
-  };
+  // Always RUNNING — never reaches a terminal state. The exact budget
+  // micro-semantics (maxPolls fetches, maxPolls-1 sleeps, no trailing sleep)
+  // are owned by the canonical _lib/stackset_test.ts; this proves the
+  // runDetect glue: the throw names the stackset via the label and nothing
+  // is written.
+  const { api } = scriptedApi("op-stuck", [RUNNING]);
 
   const err = await assertRejects(
     () =>
@@ -225,8 +220,8 @@ Deno.test("smoke: poll budget exhausted throws naming the last status and writes
         api,
         stackSetName: "StuckSet",
         pollSeconds: 20,
-        maxPolls,
-        sleep: countingSleep,
+        maxPolls: 5,
+        sleep: noSleep,
         context,
       }),
     Error,
@@ -235,27 +230,8 @@ Deno.test("smoke: poll budget exhausted throws naming the last status and writes
   // Message names the stackset too.
   assert(err.message.includes("StuckSet"));
 
-  // Polled exactly maxPolls times, then gave up.
-  assertEquals(describeCalls(), maxPolls);
-  // Waited at most maxPolls-1 times — no wasted sleep after the final poll.
-  assertEquals(sleeps, maxPolls - 1);
   // No resource written on budget exhaustion.
   assertEquals(written.length, 0);
-});
-
-// ---------------------------------------------------------------------------
-// isoOrEmpty (mirrors the audit sibling's unit coverage)
-// ---------------------------------------------------------------------------
-
-Deno.test("isoOrEmpty: Date, string, and undefined", () => {
-  const d = new Date("2026-06-13T00:00:00.000Z");
-  assertEquals(isoOrEmpty(d), "2026-06-13T00:00:00.000Z");
-  assertEquals(
-    isoOrEmpty("2026-06-13T00:00:00.000Z"),
-    "2026-06-13T00:00:00.000Z",
-  );
-  assertEquals(isoOrEmpty(undefined), "");
-  assertEquals(isoOrEmpty(""), "");
 });
 
 Deno.test("smoke: every test finishes well under the network budget", () => {
@@ -263,24 +239,4 @@ Deno.test("smoke: every test finishes well under the network budget", () => {
   // single-digit milliseconds even on the budget-exhausted path. Anything
   // touching the network or a real timer would blow past that.
   assert(true);
-});
-
-Deno.test("realSleep: detaches its abort listener on normal completion", async () => {
-  let added = 0;
-  let removed = 0;
-  // Minimal AbortSignal stand-in that records listener churn.
-  const signal = {
-    aborted: false,
-    addEventListener: () => {
-      added++;
-    },
-    removeEventListener: () => {
-      removed++;
-    },
-  } as unknown as AbortSignal;
-  await realSleep(0, signal);
-  // The listener added for the wait must be removed once the timer fires, so a
-  // long poll loop sharing one signal does not leak a listener per sleep.
-  assertEquals(added, 1);
-  assertEquals(removed, 1);
 });

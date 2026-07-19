@@ -40,10 +40,19 @@ import {
   DescribeStackSetOperationCommand,
   DetectStackSetDriftCommand,
 } from "npm:@aws-sdk/client-cloudformation@3.1073.0";
-import { fromIni } from "npm:@aws-sdk/credential-providers@3.1073.0";
+import {
+  type AwsOperationSummary,
+  type CredentialProvider,
+  type GlobalArgs,
+  isoOrEmpty,
+  pollToTerminal,
+  selectCredentials,
+  STACKSET_RETRY,
+} from "./_lib/stackset.ts";
 
-/** Credential provider as returned by `fromIni`; `undefined` means the ambient chain. */
-type CredentialProvider = ReturnType<typeof fromIni>;
+// Re-export the shared seams this package's tests and consumers previously
+// imported from here, so the twin migration keeps the module surface stable.
+export { type AwsOperationSummary, isoOrEmpty } from "./_lib/stackset.ts";
 
 // ---------------------------------------------------------------------------
 // Global arguments — identical shape to @jentz/aws-stackset-audit so a workflow
@@ -70,7 +79,8 @@ const GlobalArgsSchema = z.object({
   ),
 });
 
-type GlobalArgs = z.infer<typeof GlobalArgsSchema>;
+// The parsed shape of GlobalArgsSchema is the trio-shared `GlobalArgs` type
+// from ./_lib/stackset.ts; the glue below types against that shared shape.
 
 // ---------------------------------------------------------------------------
 // Resource schema
@@ -114,39 +124,12 @@ export interface OperationRecord {
 }
 
 // ---------------------------------------------------------------------------
-// Pure helpers (exported for unit-test access)
-// ---------------------------------------------------------------------------
-
-/** Coerce an SDK timestamp (Date | string | undefined) to an ISO string or "". */
-export function isoOrEmpty(ts: unknown): string {
-  if (ts instanceof Date) return ts.toISOString();
-  if (typeof ts === "string" && ts.length > 0) return ts;
-  return "";
-}
-
-// ---------------------------------------------------------------------------
 // AWS facade — minimal surface so the poll loop stays testable without the SDK
 // ---------------------------------------------------------------------------
 
-/**
- * Minimal stackset-operation shape this extension reads from
- * `DescribeStackSetOperation`. The same shape the audit sibling uses, so a
- * mock can satisfy both.
- */
-export interface AwsOperationSummary {
-  /** Operation id. */
-  OperationId?: string;
-  /** CREATE | UPDATE | DELETE | DETECT_DRIFT. */
-  Action?: string;
-  /** RUNNING | SUCCEEDED | FAILED | STOPPING | STOPPED | QUEUED. */
-  Status?: string;
-  /** Start time. */
-  CreationTimestamp?: Date | string;
-  /** End time. */
-  EndTimestamp?: Date | string;
-  /** Status reason. */
-  StatusReason?: string;
-}
+// The `AwsOperationSummary` shape this facade returns is the trio-shared type
+// re-exported above from ./_lib/stackset.ts, so a mock satisfies every
+// sibling's facade.
 
 /** Facade over the two CloudFormation calls this extension makes. */
 export interface DriftApi {
@@ -164,8 +147,6 @@ export interface DriftApi {
 // SDK-backed facade
 // ---------------------------------------------------------------------------
 
-const CLIENT_RETRY = { maxAttempts: 8 } as const;
-
 function sdkApi(
   credentials: CredentialProvider | undefined,
   region: string,
@@ -176,7 +157,7 @@ function sdkApi(
   const client = new CloudFormationClient({
     region,
     credentials,
-    ...CLIENT_RETRY,
+    ...STACKSET_RETRY,
   });
   const opts = { abortSignal: signal };
 
@@ -209,37 +190,8 @@ function sdkApi(
 }
 
 // ---------------------------------------------------------------------------
-// Sleep seam — real timer by default, injectable so the poll loop tests run at
-// zero wall-clock time.
-// ---------------------------------------------------------------------------
-
-/** Sleep for `ms` milliseconds, rejecting if `signal` aborts first. */
-export function realSleep(ms: number, signal?: AbortSignal): Promise<void> {
-  return new Promise((resolve, reject) => {
-    if (signal?.aborted) {
-      reject(new Error("aborted"));
-      return;
-    }
-    const onAbort = () => {
-      clearTimeout(t);
-      reject(new Error("aborted"));
-    };
-    const t = setTimeout(() => {
-      // Detach the abort listener on normal completion so a long poll loop
-      // sharing one signal does not accumulate a listener per sleep.
-      signal?.removeEventListener("abort", onAbort);
-      resolve();
-    }, ms);
-    signal?.addEventListener("abort", onAbort, { once: true });
-  });
-}
-
-// ---------------------------------------------------------------------------
 // Core detect logic — parameterized on its AWS facade, sleep, and context
 // ---------------------------------------------------------------------------
-
-/** Terminal stackset-operation states the poll loop stops on. */
-const TERMINAL = new Set(["SUCCEEDED", "FAILED", "STOPPED"]);
 
 /** Dependencies for {@link runDetect}. */
 export interface DetectDeps {
@@ -252,8 +204,9 @@ export interface DetectDeps {
   /** Maximum status polls before the poll budget is exhausted. */
   maxPolls: number;
   /**
-   * Sleep between polls. Defaults to {@link realSleep}; tests inject a no-op so
-   * the poll-budget-exhausted path runs at zero wall-clock time.
+   * Sleep between polls. Defaults to the shared abort-aware `delay` from
+   * `./_lib/stackset.ts`; tests inject a no-op so the poll-budget-exhausted
+   * path runs at zero wall-clock time.
    */
   sleep?: (ms: number, signal?: AbortSignal) => Promise<void>;
   /** Optional abort signal forwarded to the facade and the sleep. */
@@ -288,7 +241,6 @@ export interface DetectResult {
  */
 export async function runDetect(deps: DetectDeps): Promise<DetectResult> {
   const { api, stackSetName, pollSeconds, maxPolls, signal, context } = deps;
-  const sleep = deps.sleep ?? realSleep;
 
   const operationId = await api.detectDrift();
   context.logger.info(
@@ -296,28 +248,26 @@ export async function runDetect(deps: DetectDeps): Promise<DetectResult> {
     { name: stackSetName, op: operationId },
   );
 
-  let op: AwsOperationSummary = {};
-  let status = "RUNNING";
-  for (let poll = 0; poll < maxPolls; poll++) {
-    op = await api.describeOperation(operationId);
-    status = op.Status ?? "UNKNOWN";
-    if (TERMINAL.has(status)) break;
-    context.logger.info(
-      "Drift operation {op} is {status} (poll {poll}/{max})",
-      { op: operationId, status, poll: poll + 1, max: maxPolls },
-    );
-    // Don't wait after the final allowed poll — there is no next poll to wait
-    // for, and we'd only delay the timeout. The budget is maxPolls polls with
-    // at most maxPolls-1 inter-poll waits.
-    if (poll < maxPolls - 1) await sleep(pollSeconds * 1000, signal);
-  }
-
-  if (!TERMINAL.has(status)) {
-    throw new Error(
-      `drift detection for ${stackSetName} did not finish within ` +
-        `${maxPolls} polls (last status ${status})`,
-    );
-  }
+  // The shared loop polls the raw summary (this record needs its action and
+  // timestamps, not just the status) and keeps the injectable-sleep seam:
+  // an undefined deps.sleep falls back to the shared abort-aware delay.
+  const op = await pollToTerminal(
+    () => api.describeOperation(operationId),
+    (o) => o.Status ?? "UNKNOWN",
+    {
+      pollSeconds,
+      maxPolls,
+      sleep: deps.sleep,
+      signal,
+      onPoll: (status, poll, max) =>
+        context.logger.info(
+          "Drift operation {op} is {status} (poll {poll}/{max})",
+          { op: operationId, status, poll, max },
+        ),
+      label: `drift detection for ${stackSetName}`,
+    },
+  );
+  const status = op.Status ?? "UNKNOWN";
 
   const record: OperationRecord = {
     stackSetName,
@@ -344,10 +294,13 @@ export async function runDetect(deps: DetectDeps): Promise<DetectResult> {
 // ---------------------------------------------------------------------------
 
 function apiFromGlobals(g: GlobalArgs, signal?: AbortSignal): DriftApi {
-  const credentials = g.profile.length > 0
-    ? fromIni({ profile: g.profile })
-    : undefined;
-  return sdkApi(credentials, g.region, g.callAs, g.stackSetName, signal);
+  return sdkApi(
+    selectCredentials(g.profile),
+    g.region,
+    g.callAs,
+    g.stackSetName,
+    signal,
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -367,7 +320,7 @@ function apiFromGlobals(g: GlobalArgs, signal?: AbortSignal): DriftApi {
  */
 export const model = {
   type: "@jentz/aws-stackset-drift-detect",
-  version: "2026.06.22.0",
+  version: "2026.07.04.1",
   globalArguments: GlobalArgsSchema,
   upgrades: [
     {
@@ -378,6 +331,13 @@ export const model = {
     {
       toVersion: "2026.06.22.0",
       description: "Dependency refresh, no globalArguments schema changes",
+      upgradeAttributes: (old: Record<string, unknown>) => old,
+    },
+    {
+      toVersion: "2026.07.04.1",
+      description:
+        "Internal refactor onto the shared _lib/stackset.ts twin; no " +
+        "resource schema changes.",
       upgradeAttributes: (old: Record<string, unknown>) => old,
     },
   ],

@@ -1,6 +1,6 @@
 manifestVersion: 1
 name: "@jentz/aws-stackset-drift-detect"
-version: "2026.06.22.0"
+version: "2026.07.04.1"
 description: |
   Trigger CloudFormation StackSet drift detection and record its outcome — the
   write-side sibling of `@jentz/aws-stackset-audit`. A single mutating `detect`

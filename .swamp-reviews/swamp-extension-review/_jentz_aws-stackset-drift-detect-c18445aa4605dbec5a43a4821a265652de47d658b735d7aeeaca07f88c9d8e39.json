@@ -1,0 +1,82 @@
+{
+  "extension": "@jentz/aws-stackset-drift-detect",
+  "version": "2026.07.04.1",
+  "reviewedAt": "2026-07-04T06:26:23Z",
+  "dimensions": [
+    {
+      "id": "credentials-secrets",
+      "verdict": "pass",
+      "note": "Dedup refactor onto the generated _lib/stackset.ts twin. apiFromGlobals now uses the shared selectCredentials(profile) — the identical fromIni-vs-ambient branch it replaced. No new credential paths, env reads, or vault references; nothing sensitive logged. The twin is self-contained (no fleet SSO machinery pulled in)."
+    },
+    {
+      "id": "logging-quality",
+      "verdict": "pass",
+      "note": "Per-poll log wording preserved exactly through the shared loop's onPoll seam: 'Drift operation {op} is {status} (poll {poll}/{max})' with 1-based poll numbers, emitted only for non-terminal polls, as before. Start and completion info logs unchanged. Verified by the canonical onPoll sequence test plus the unchanged smoke scenarios."
+    },
+    {
+      "id": "error-handling",
+      "verdict": "pass",
+      "note": "Budget-exhaustion semantics preserved: the shared pollToTerminal throws only when maxPolls is exhausted, with label 'drift detection for <stackSetName>' producing the byte-identical message '... did not finish within N polls (last status S)'. Terminal FAILED/STOPPED still return (recorded, not thrown), and nothing is written on the throw path — all re-asserted by the unchanged smoke scenarios and the slimmed glue test."
+    },
+    {
+      "id": "testing-completeness",
+      "verdict": "pass",
+      "note": "The runDetect end-to-end smoke scenarios (terminal SUCCEEDED on Nth poll, terminal FAILED recorded, absent timestamps) pass byte-for-byte unchanged — the behavior-preservation proof. The poll-budget micro-semantics (exactly maxPolls fetches, maxPolls-1 sleeps, no trailing sleep), the abort-aware sleep listener-detach test, and isoOrEmpty edges moved to the canonical _lib/stackset_test.ts; the package keeps a glue test proving runDetect's throw names the stackset and writes nothing on exhaustion. Full trio+_lib run: 108 passed / 0 failed."
+    },
+    {
+      "id": "idempotency-resilience",
+      "verdict": "pass",
+      "note": "Unchanged: detect starts one operation and records its outcome keyed by operation id; a failed run writes nothing (re-verified), so a retry re-detects cleanly. The injectable sleep seam (deps.sleep, defaulting to the twin's abort-aware delay) is preserved, and the abort signal still cancels both SDK calls and inter-poll waits."
+    },
+    {
+      "id": "api-contracts",
+      "verdict": "pass",
+      "note": "Same two CloudFormation calls (DetectStackSetDrift, DescribeStackSetOperation) with unchanged inputs; STACKSET_RETRY spreads the identical {maxAttempts: 8} the deleted CLIENT_RETRY carried. The shared loop polls the raw AwsOperationSummary via statusOf (op.Status ?? 'UNKNOWN') so the record still gets the full summary (action, timestamps, reason), verified by the unchanged smoke assertions on the written record."
+    },
+    {
+      "id": "resource-management",
+      "verdict": "pass",
+      "note": "The shared delay clears its timer and detaches its abort listener on completion (ported listener-churn test now at the canonical source), so long poll loops sharing one signal still do not leak listeners. No other handles or clients changed."
+    },
+    {
+      "id": "published-surface-hygiene",
+      "verdict": "pass",
+      "note": "Twin content carries no infrastructure identifiers; README/fixtures untouched and still placeholder-only. Surface note: isoOrEmpty and AwsOperationSummary remain exported (re-exported from the twin); the realSleep export is gone — its behavior now ships as the twin's delay. That removal is intentional (the symbol was a test seam, and the version bump signals the change)."
+    },
+    {
+      "id": "schema-strictness",
+      "verdict": "pass",
+      "note": "Mechanical schema-write conformance re-verified: the operation record writes exactly the seven OperationSchema fields (stackSetName, operationId, action, status, creationTimestamp, endTimestamp, statusReason) with no placeholders and no .passthrough(). The package keeps its own zod GlobalArgsSchema with drift-specific describe() wording; the shared GlobalArgs is a compile-time type only."
+    },
+    {
+      "id": "lifetime-gc",
+      "verdict": "pass",
+      "note": "The operation spec retains lifetime infinite and garbageCollection 10; no spec changes."
+    },
+    {
+      "id": "crud-completeness",
+      "verdict": "na",
+      "note": "Single-purpose mutating trigger (detect) by design — the read side lives in the audit sibling and retirement in the lifecycle sibling; no CRUD lifecycle in scope. The colocated metadata test still asserts methods === ['detect']."
+    },
+    {
+      "id": "preflight-checks",
+      "verdict": "pass",
+      "note": "Unchanged: the method's guard surface (bounded pollSeconds/maxPolls zod ranges, OperationId presence check after DetectStackSetDrift) is intact; no preflight was removed."
+    },
+    {
+      "id": "instance-names",
+      "verdict": "pass",
+      "note": "Unchanged: exactly one operation resource per run, keyed by the AWS operation id; no new writeResource call."
+    },
+    {
+      "id": "data-access",
+      "verdict": "pass",
+      "note": "No readResource or dataRepository access added or changed."
+    },
+    {
+      "id": "version-upgrades",
+      "verdict": "pass",
+      "note": "Version bumped 2026.06.22.0 -> 2026.07.04.1 (registry nextVersion) in manifest.yaml and model.version, with a matching final no-op upgrades entry (pass-through; no resource schema changes, so persisted operation rows load unchanged). Colocated invariant tests pass."
+    }
+  ]
+}

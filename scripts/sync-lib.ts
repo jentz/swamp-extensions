@@ -48,8 +48,9 @@ const ROOT = dirname(dirname(fromFileUrl(import.meta.url)));
  * `aws-rds-inventory` (whose `aws_credentials.ts` twin imports it); the
  * SDK-bearing `aws_credentials.ts` is generated into the producers only (the
  * report bundles stay SDK-free, and the `aws-integration-coverage` consumer
- * reads the stored rows tolerantly so it needs no twin). Add a key/target here
- * when a package starts consuming a canonical module.
+ * reads the stored rows tolerantly so it needs no twin). The self-contained
+ * `stackset.ts` is generated into the `aws-stackset-*` sibling trio only. Add
+ * a key/target here when a package starts consuming a canonical module.
  */
 const TARGETS: Record<string, readonly string[]> = {
   "_lib/scan_error.ts": [
@@ -68,6 +69,11 @@ const TARGETS: Record<string, readonly string[]> = {
     "aws-iam-role-audit/_lib/aws_credentials.ts",
     "aws-rds-inventory/_lib/aws_credentials.ts",
     "aws-rds-reservations/_lib/aws_credentials.ts",
+  ],
+  "_lib/stackset.ts": [
+    "aws-stackset-audit/_lib/stackset.ts",
+    "aws-stackset-drift-detect/_lib/stackset.ts",
+    "aws-stackset-lifecycle/_lib/stackset.ts",
   ],
 };
 
