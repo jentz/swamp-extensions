@@ -19,7 +19,6 @@ import {
   detectPatterns,
   instanceKey,
   type InstanceRecord,
-  isoOrEmpty,
 } from "../aws_stackset_audit.ts";
 
 // ---------------------------------------------------------------------------
@@ -418,23 +417,15 @@ Deno.test("deriveSafeToReapply: failed/cancelled instances are 'caution'", () =>
 });
 
 // ---------------------------------------------------------------------------
-// instanceKey + isoOrEmpty
+// instanceKey
 // ---------------------------------------------------------------------------
+
+// isoOrEmpty coverage lives at the canonical source (_lib/stackset_test.ts);
+// this package re-exports the shared helper unchanged.
 
 Deno.test("instanceKey: composes account and region", () => {
   assertEquals(
     instanceKey("111111111111", "us-east-1"),
     "instance-111111111111-us-east-1",
   );
-});
-
-Deno.test("isoOrEmpty: Date, string, and undefined", () => {
-  const d = new Date("2026-06-13T00:00:00.000Z");
-  assertEquals(isoOrEmpty(d), "2026-06-13T00:00:00.000Z");
-  assertEquals(
-    isoOrEmpty("2026-06-13T00:00:00.000Z"),
-    "2026-06-13T00:00:00.000Z",
-  );
-  assertEquals(isoOrEmpty(undefined), "");
-  assertEquals(isoOrEmpty(""), "");
 });

@@ -44,10 +44,18 @@ import {
   ListStackInstancesCommand,
   ListStackSetOperationsCommand,
 } from "npm:@aws-sdk/client-cloudformation@3.1073.0";
-import { fromIni } from "npm:@aws-sdk/credential-providers@3.1073.0";
+import {
+  type AwsOperationSummary,
+  type CredentialProvider,
+  type GlobalArgs,
+  isoOrEmpty,
+  selectCredentials,
+  STACKSET_RETRY,
+} from "./_lib/stackset.ts";
 
-/** Credential provider as returned by `fromIni`; `undefined` means the ambient chain. */
-type CredentialProvider = ReturnType<typeof fromIni>;
+// Re-export the shared seams this package's tests and consumers previously
+// imported from here, so the twin migration keeps the module surface stable.
+export { type AwsOperationSummary, isoOrEmpty } from "./_lib/stackset.ts";
 
 // ---------------------------------------------------------------------------
 // Global arguments
@@ -72,7 +80,8 @@ const GlobalArgsSchema = z.object({
   ),
 });
 
-type GlobalArgs = z.infer<typeof GlobalArgsSchema>;
+// The parsed shape of GlobalArgsSchema is the trio-shared `GlobalArgs` type
+// from ./_lib/stackset.ts; the glue below types against that shared shape.
 
 // ---------------------------------------------------------------------------
 // Resource schemas
@@ -608,13 +617,6 @@ export function instanceKey(account: string, region: string): string {
   return `instance-${account}-${region}`;
 }
 
-/** Coerce an SDK timestamp (Date | string | undefined) to an ISO string or "". */
-export function isoOrEmpty(ts: unknown): string {
-  if (ts instanceof Date) return ts.toISOString();
-  if (typeof ts === "string" && ts.length > 0) return ts;
-  return "";
-}
-
 // ---------------------------------------------------------------------------
 // AWS facade — minimal surface so logic stays testable without the SDK
 // ---------------------------------------------------------------------------
@@ -678,21 +680,9 @@ export interface AwsStackInstanceSummary {
   LastDriftCheckTimestamp?: Date | string;
 }
 
-/** Minimal stackset operation summary from ListStackSetOperations. */
-export interface AwsOperationSummary {
-  /** Operation id. */
-  OperationId?: string;
-  /** CREATE | UPDATE | DELETE | DETECT_DRIFT. */
-  Action?: string;
-  /** RUNNING | SUCCEEDED | FAILED | STOPPING | STOPPED | QUEUED. */
-  Status?: string;
-  /** Start time. */
-  CreationTimestamp?: Date | string;
-  /** End time. */
-  EndTimestamp?: Date | string;
-  /** Status reason. */
-  StatusReason?: string;
-}
+// The `AwsOperationSummary` shape read from ListStackSetOperations is the
+// trio-shared type re-exported above from ./_lib/stackset.ts, so a mock
+// satisfies every sibling's facade.
 
 /** Facade over the read-only CloudFormation calls this extension uses. */
 export interface StackSetApi {
@@ -708,8 +698,6 @@ export interface StackSetApi {
 // SDK-backed facade
 // ---------------------------------------------------------------------------
 
-const CLIENT_RETRY = { maxAttempts: 8 } as const;
-
 function sdkApi(
   credentials: CredentialProvider | undefined,
   region: string,
@@ -720,7 +708,7 @@ function sdkApi(
   const client = new CloudFormationClient({
     region,
     credentials,
-    ...CLIENT_RETRY,
+    ...STACKSET_RETRY,
   });
   const opts = { abortSignal: signal };
 
@@ -966,10 +954,13 @@ export async function runAudit(deps: AuditDeps): Promise<AuditResult> {
 // ---------------------------------------------------------------------------
 
 function apiFromGlobals(g: GlobalArgs, signal?: AbortSignal): StackSetApi {
-  const credentials = g.profile.length > 0
-    ? fromIni({ profile: g.profile })
-    : undefined;
-  return sdkApi(credentials, g.region, g.callAs, g.stackSetName, signal);
+  return sdkApi(
+    selectCredentials(g.profile),
+    g.region,
+    g.callAs,
+    g.stackSetName,
+    signal,
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -990,7 +981,7 @@ function apiFromGlobals(g: GlobalArgs, signal?: AbortSignal): StackSetApi {
  */
 export const model = {
   type: "@jentz/aws-stackset-audit",
-  version: "2026.06.23.1",
+  version: "2026.07.04.1",
   globalArguments: GlobalArgsSchema,
   upgrades: [
     {
@@ -1010,6 +1001,13 @@ export const model = {
         "instance plus byStackPresenceHint / orphanCandidates rollups on the " +
         "summary. Purely additive; the new schema fields default for old " +
         "persisted resources, so the pass-through upgrade still loads them.",
+      upgradeAttributes: (old: Record<string, unknown>) => old,
+    },
+    {
+      toVersion: "2026.07.04.1",
+      description:
+        "Internal refactor onto the shared _lib/stackset.ts twin; no " +
+        "resource schema changes.",
       upgradeAttributes: (old: Record<string, unknown>) => old,
     },
   ],

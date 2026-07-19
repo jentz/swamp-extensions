@@ -1,6 +1,6 @@
 manifestVersion: 1
 name: "@jentz/aws-stackset-lifecycle"
-version: "2026.06.22.0"
+version: "2026.07.04.1"
 description: |
   Write-side retirement operations for a CloudFormation StackSet, run from the
   management / delegated-admin account. Two MUTATING methods, each a single

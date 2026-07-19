@@ -39,10 +39,13 @@ import {
   DeleteStackSetCommand,
   DescribeStackSetOperationCommand,
 } from "npm:@aws-sdk/client-cloudformation@3.1073.0";
-import { fromIni } from "npm:@aws-sdk/credential-providers@3.1073.0";
-
-/** Credential provider as returned by `fromIni`; `undefined` means the ambient chain. */
-type CredentialProvider = ReturnType<typeof fromIni>;
+import {
+  type CredentialProvider,
+  type GlobalArgs,
+  pollToTerminal,
+  selectCredentials,
+  STACKSET_RETRY,
+} from "./_lib/stackset.ts";
 
 // ---------------------------------------------------------------------------
 // Global arguments
@@ -67,7 +70,8 @@ const GlobalArgsSchema = z.object({
   ),
 });
 
-type GlobalArgs = z.infer<typeof GlobalArgsSchema>;
+// The parsed shape of GlobalArgsSchema is the trio-shared `GlobalArgs` type
+// from ./_lib/stackset.ts; the glue below types against that shared shape.
 
 // ---------------------------------------------------------------------------
 // Method argument schemas
@@ -202,13 +206,6 @@ export function validateDeleteInstances(input: {
   return null;
 }
 
-/** Coerce an SDK timestamp (Date | string | undefined) to an ISO string or "". */
-export function isoOrEmpty(ts: unknown): string {
-  if (ts instanceof Date) return ts.toISOString();
-  if (typeof ts === "string" && ts.length > 0) return ts;
-  return "";
-}
-
 // ---------------------------------------------------------------------------
 // AWS facade — minimal surface so logic stays testable without the SDK
 // ---------------------------------------------------------------------------
@@ -239,8 +236,6 @@ export interface LifecycleApi {
   ): Promise<{ status: string; reason: string }>;
 }
 
-const CLIENT_RETRY = { maxAttempts: 8 } as const;
-
 function sdkApi(
   credentials: CredentialProvider | undefined,
   region: string,
@@ -251,7 +246,7 @@ function sdkApi(
   const client = new CloudFormationClient({
     region,
     credentials,
-    ...CLIENT_RETRY,
+    ...STACKSET_RETRY,
   });
   const opts = { abortSignal: signal };
 
@@ -302,65 +297,6 @@ function sdkApi(
       };
     },
   };
-}
-
-function delay(ms: number, signal?: AbortSignal): Promise<void> {
-  return new Promise((resolve, reject) => {
-    if (signal?.aborted) {
-      reject(new Error("aborted"));
-      return;
-    }
-    const onAbort = () => {
-      clearTimeout(timer);
-      reject(new Error("aborted"));
-    };
-    const timer = setTimeout(() => {
-      // Drop the listener so a shared signal does not accumulate one dead
-      // listener per poll iteration (MaxListenersExceededWarning).
-      signal?.removeEventListener("abort", onAbort);
-      resolve();
-    }, ms);
-    signal?.addEventListener("abort", onAbort, { once: true });
-  });
-}
-
-const TERMINAL = new Set(["SUCCEEDED", "FAILED", "STOPPED"]);
-
-/**
- * Poll a stackset operation to a terminal state, or throw on timeout.
- *
- * @param api Facade bound to the stackset + admin credentials.
- * @param operationId The operation to poll.
- * @param pollSeconds Seconds between polls.
- * @param maxPolls Maximum polls before timing out.
- * @param context Swamp runtime context (logger + signal).
- * @returns The terminal status and its reason.
- */
-export async function pollToTerminal(
-  api: LifecycleApi,
-  operationId: string,
-  pollSeconds: number,
-  maxPolls: number,
-  // deno-lint-ignore no-explicit-any
-  context: any,
-): Promise<{ status: string; reason: string }> {
-  let last = { status: "RUNNING", reason: "" };
-  for (let poll = 0; poll < maxPolls; poll++) {
-    last = await api.describeOperation(operationId);
-    if (TERMINAL.has(last.status)) return last;
-    context.logger.info(
-      "Operation {op} is {status} (poll {poll}/{max})",
-      { op: operationId, status: last.status, poll: poll + 1, max: maxPolls },
-    );
-    // Skip the wait after the final allowed poll — there is no next poll it
-    // gates, and we would only delay the timeout. The budget is maxPolls polls
-    // with at most maxPolls-1 inter-poll waits.
-    if (poll < maxPolls - 1) await delay(pollSeconds * 1000, context.signal);
-  }
-  throw new Error(
-    `Operation ${operationId} did not finish within ${maxPolls} polls ` +
-      `(last status ${last.status})`,
-  );
 }
 
 // ---------------------------------------------------------------------------
@@ -473,12 +409,22 @@ export async function runDeleteInstances(
     retainStacks: args.retainStacks,
   });
 
+  // The shared loop polls the facade's mapped {status, reason} shape and
+  // waits with the shared abort-aware delay (the default sleep).
   const { status, reason } = await pollToTerminal(
-    api,
-    operationId,
-    args.pollSeconds,
-    args.maxPolls,
-    context,
+    () => api.describeOperation(operationId),
+    (op) => op.status,
+    {
+      pollSeconds: args.pollSeconds,
+      maxPolls: args.maxPolls,
+      signal: context.signal,
+      onPoll: (status, poll, max) =>
+        context.logger.info(
+          "Operation {op} is {status} (poll {poll}/{max})",
+          { op: operationId, status, poll, max },
+        ),
+      label: `Operation ${operationId}`,
+    },
   );
   const finishedAt = new Date().toISOString();
 
@@ -568,10 +514,13 @@ export async function runDeleteStackSet(
 // ---------------------------------------------------------------------------
 
 function apiFromGlobals(g: GlobalArgs, signal?: AbortSignal): LifecycleApi {
-  const credentials = g.profile.length > 0
-    ? fromIni({ profile: g.profile })
-    : undefined;
-  return sdkApi(credentials, g.region, g.callAs, g.stackSetName, signal);
+  return sdkApi(
+    selectCredentials(g.profile),
+    g.region,
+    g.callAs,
+    g.stackSetName,
+    signal,
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -585,7 +534,7 @@ function apiFromGlobals(g: GlobalArgs, signal?: AbortSignal): LifecycleApi {
  */
 export const model = {
   type: "@jentz/aws-stackset-lifecycle",
-  version: "2026.06.22.0",
+  version: "2026.07.04.1",
   globalArguments: GlobalArgsSchema,
   upgrades: [
     {
@@ -596,6 +545,13 @@ export const model = {
     {
       toVersion: "2026.06.22.0",
       description: "Dependency refresh, no globalArguments schema changes",
+      upgradeAttributes: (old: Record<string, unknown>) => old,
+    },
+    {
+      toVersion: "2026.07.04.1",
+      description:
+        "Internal refactor onto the shared _lib/stackset.ts twin; no " +
+        "resource schema changes.",
       upgradeAttributes: (old: Record<string, unknown>) => old,
     },
   ],

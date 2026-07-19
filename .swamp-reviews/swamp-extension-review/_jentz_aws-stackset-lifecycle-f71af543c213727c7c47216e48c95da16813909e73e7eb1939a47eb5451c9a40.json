@@ -1,0 +1,82 @@
+{
+  "extension": "@jentz/aws-stackset-lifecycle",
+  "version": "2026.07.04.1",
+  "reviewedAt": "2026-07-04T06:26:23Z",
+  "dimensions": [
+    {
+      "id": "credentials-secrets",
+      "verdict": "pass",
+      "note": "Dedup refactor onto the generated _lib/stackset.ts twin. apiFromGlobals now uses the shared selectCredentials(profile) — the identical fromIni-vs-ambient branch it replaced. No new credential paths, env reads, or vault references; nothing sensitive logged. The twin is self-contained (no fleet SSO machinery pulled in)."
+    },
+    {
+      "id": "logging-quality",
+      "verdict": "pass",
+      "note": "Per-poll log wording preserved exactly through the shared loop's onPoll seam: 'Operation {op} is {status} (poll {poll}/{max})' with 1-based poll numbers, emitted only for non-terminal polls, as before. Entry/completion and failure logs in runDeleteInstances/runDeleteStackSet unchanged."
+    },
+    {
+      "id": "error-handling",
+      "verdict": "pass",
+      "note": "Semantics preserved: the shared pollToTerminal throws only on budget exhaustion with label 'Operation <operationId>' yielding the byte-identical '... did not finish within N polls (last status S)' message; a terminal FAILED still returns, the result is persisted, and runDeleteInstances then throws naming operation/status/reason — re-verified by the unchanged smoke test 'writes the result then throws on a FAILED operation'. The safety guard (validateDeleteInstances) is untouched and still short-circuits before any AWS call."
+    },
+    {
+      "id": "testing-completeness",
+      "verdict": "pass",
+      "note": "The smoke suite (poll to SUCCEEDED, FAILED persisted-then-thrown, unsafe whole-target refusal, deleteStackSet) passes byte-for-byte unchanged — the behavior-preservation proof, including the real-timer fastPoll path through the twin's default delay sleep. The local pollToTerminal budget tests and isoOrEmpty test moved to the canonical _lib/stackset_test.ts, which owns those semantics once; the unit file keeps full validateDeleteInstances guard-branch coverage. Full trio+_lib run: 108 passed / 0 failed."
+    },
+    {
+      "id": "idempotency-resilience",
+      "verdict": "pass",
+      "note": "Unchanged: batched deleteInstances remains re-runnable (results keyed delete-instances-<operationId>), the FAILED outcome is persisted before the throw so partial failure is observable, and the abort signal still cancels both SDK calls and inter-poll waits via the twin's abort-aware delay."
+    },
+    {
+      "id": "api-contracts",
+      "verdict": "pass",
+      "note": "Same three CloudFormation calls (DeleteStackInstances, DeleteStackSet, DescribeStackSetOperation) with unchanged inputs; STACKSET_RETRY spreads the identical {maxAttempts: 8} the deleted CLIENT_RETRY carried. The shared loop polls the facade's mapped {status, reason} shape via statusOf, matching the previous local loop."
+    },
+    {
+      "id": "resource-management",
+      "verdict": "pass",
+      "note": "The twin's delay clears its timer and detaches its abort listener on completion (listener-churn test at the canonical source), preserving the no-listener-leak property of the deleted local delay. No other handles or clients changed."
+    },
+    {
+      "id": "published-surface-hygiene",
+      "verdict": "pass",
+      "note": "Twin content carries no infrastructure identifiers; README/fixtures untouched and still placeholder-only. Surface note: the pollToTerminal and isoOrEmpty exports are gone from this module — the former is replaced by the twin's generic (different signature, so keeping a same-name re-export would mislead), the latter was an unused test-seam export; the version bump signals the change."
+    },
+    {
+      "id": "schema-strictness",
+      "verdict": "pass",
+      "note": "Mechanical schema-write conformance re-verified: both result writes cover every ResultSchema field with real values (delete-stackset's empty operationId/targets are the documented shape for that action, not placeholders); no .passthrough(). The package keeps its own zod GlobalArgsSchema with lifecycle-specific describe() wording; the shared GlobalArgs is a compile-time type only."
+    },
+    {
+      "id": "lifetime-gc",
+      "verdict": "pass",
+      "note": "The result spec retains lifetime infinite and garbageCollection 20; no spec changes."
+    },
+    {
+      "id": "crud-completeness",
+      "verdict": "na",
+      "note": "Deliberately delete-only retirement model (deleteInstances, deleteStackSet); creation/update live in the official Cloud Control type and the read side in the audit sibling. The colocated metadata test still asserts exactly these two methods."
+    },
+    {
+      "id": "preflight-checks",
+      "verdict": "pass",
+      "note": "Unchanged: validateDeleteInstances still guards every deleteInstances run before any AWS call (explicit-accounts INTERSECTION batching or confirmWholeTarget), with full unit coverage retained in the package."
+    },
+    {
+      "id": "instance-names",
+      "verdict": "pass",
+      "note": "Unchanged: results keyed delete-instances-<operationId> and delete-stackset-<stackSetName> — distinct prefixes, no collision across methods."
+    },
+    {
+      "id": "data-access",
+      "verdict": "pass",
+      "note": "No readResource or dataRepository access added or changed."
+    },
+    {
+      "id": "version-upgrades",
+      "verdict": "pass",
+      "note": "Version bumped 2026.06.22.0 -> 2026.07.04.1 (registry nextVersion) in manifest.yaml and model.version, with a matching final no-op upgrades entry (pass-through; no resource schema changes, so persisted result rows load unchanged). Colocated invariant tests pass."
+    }
+  ]
+}
