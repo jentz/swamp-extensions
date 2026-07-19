@@ -24,14 +24,19 @@ workflow. The report runs once after the steps complete and collects every
 `@jentz/aws-rds-inventory` step's `cluster` / `instance` artifacts:
 
 ```yaml
+name: rds-inventory
 jobs:
-  inventory:
+  - name: inventory
     steps:
       - name: list-clusters
-        model: rds-fleet
-        method: list_clusters
+        task:
+          type: model_method
+          modelType: "@jentz/aws-rds-inventory"
+          modelName: rds-fleet
+          methodName: list_clusters
 reports:
-  - "@jentz/aws-rds-inventory-report"
+  require:
+    - "@jentz/aws-rds-inventory-report"
 ```
 
 ## What it emits

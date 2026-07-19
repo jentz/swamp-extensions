@@ -22,14 +22,19 @@ report runs once after the steps complete and collects every
 `@jentz/aws-default-sg-audit` step's `finding` / `scan_error` artifacts:
 
 ```yaml
+name: default-sg-audit
 jobs:
-  audit:
+  - name: audit
     steps:
       - name: scan-fleet
-        model: default-sg-fleet
-        method: scan
+        task:
+          type: model_method
+          modelType: "@jentz/aws-default-sg-audit"
+          modelName: default-sg-fleet
+          methodName: scan
 reports:
-  - "@jentz/aws-default-sg-audit-report"
+  require:
+    - "@jentz/aws-default-sg-audit-report"
 ```
 
 ## What it emits
@@ -46,7 +51,8 @@ reports:
   stripping rules.
 - A coverage-gaps section that groups failed `(profile, region)` pairs by kind:
   - which profiles need `aws sso login` (expired token, `auth_expired`),
-  - which regions were blocked by SCP/IAM (`access_denied`).
+  - which regions were blocked by SCP/IAM (`access_denied`),
+  - which scans hit a transient DNS/socket failure (`network`).
 
 Findings sort in-use-first, then safe, then compliant; ties break by account,
 region, then default SG id. Owner / team columns are derived from VPC tags.
@@ -58,8 +64,8 @@ A structured payload (`report-<name>-json`) carrying:
 - `findingCount` — the number of decoded findings.
 - `byVerdict` — a per-verdict count (`compliant`, `safe_to_remediate`,
   `in_use_needs_migration`).
-- `errorsByKind` — a per-`kind` breakdown of the scan errors (`auth_expired`,
-  `access_denied`, `other`).
+- `errorsByKind` — a per-`kind` breakdown of the scan errors (`network`,
+  `auth_expired`, `access_denied`, `other`).
 - `skipped` — artifacts skipped during collection.
 - `degraded` — `true` when the report's outer guard absorbed an unexpected
   failure and fell back to a still-valid (possibly empty) report.
