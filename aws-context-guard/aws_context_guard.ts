@@ -77,7 +77,7 @@ export function safeDestroy(
  */
 export const model = {
   type: "@jentz/aws-context-guard",
-  version: "2026.06.22.0",
+  version: "2026.07.19.0",
   globalArguments: GlobalArgsSchema,
   // swamp model upgrades transform stored globalArguments, not the per-run
   // derived context resource. The guard's globalArguments shape
@@ -109,6 +109,12 @@ export const model = {
     {
       toVersion: "2026.06.22.0",
       description: "Dependency refresh, no globalArguments schema changes",
+      upgradeAttributes: (old: Record<string, unknown>) => old,
+    },
+    {
+      toVersion: "2026.07.19.0",
+      description:
+        "Docs-only accuracy fix (empty-Account cause reworded); no schema change",
       upgradeAttributes: (old: Record<string, unknown>) => old,
     },
   ] as Array<{

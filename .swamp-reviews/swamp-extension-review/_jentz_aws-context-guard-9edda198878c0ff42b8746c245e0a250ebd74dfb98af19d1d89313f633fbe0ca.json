@@ -1,0 +1,82 @@
+{
+  "extension": "@jentz/aws-context-guard",
+  "version": "2026.07.19.0",
+  "reviewedAt": "2026-07-19T21:00:24Z",
+  "dimensions": [
+    {
+      "id": "credentials-secrets",
+      "verdict": "pass",
+      "note": "Docs-only change: reworded the 'returned no Account' error-table row in README.md. No credential resolution or secret handling touched."
+    },
+    {
+      "id": "logging-quality",
+      "verdict": "pass",
+      "note": "No logging calls changed; the only source edit is the model version bump and a no-op upgrades entry."
+    },
+    {
+      "id": "error-handling",
+      "verdict": "pass",
+      "note": "No control flow changed. Verified the doc claim against code: the empty-Account throw at the accountId check fires only when send() succeeds with an empty Account; expired-SSO/network failures throw out of send() and propagate as-is. README now describes it accurately."
+    },
+    {
+      "id": "testing-completeness",
+      "verdict": "pass",
+      "note": "Docs and a no-op version bump; existing typecheck, unit, quality, and dry-run gates continue to cover the extension."
+    },
+    {
+      "id": "idempotency-resilience",
+      "verdict": "pass",
+      "note": "No method semantics changed; verify remains a read-only guard that writes verified context only after checks pass."
+    },
+    {
+      "id": "api-contracts",
+      "verdict": "pass",
+      "note": "STS command class and response-field mapping unchanged; no request/response shape touched."
+    },
+    {
+      "id": "resource-management",
+      "verdict": "pass",
+      "note": "No new files, handles, or network clients; STS client cleanup path in the finally block is unchanged."
+    },
+    {
+      "id": "published-surface-hygiene",
+      "verdict": "pass",
+      "note": "Manifest and exported model version aligned at 2026.07.19.0; no files added to the package surface."
+    },
+    {
+      "id": "schema-strictness",
+      "verdict": "pass",
+      "note": "Mechanical schema/write review: no schema or writeResource payload change; strict globalArguments and context schema retained."
+    },
+    {
+      "id": "lifetime-gc",
+      "verdict": "pass",
+      "note": "Resource lifetime (infinite) and garbage-collection settings unchanged."
+    },
+    {
+      "id": "crud-completeness",
+      "verdict": "pass",
+      "note": "No new CRUD surface introduced; the existing single verify method set is unchanged by a docs edit."
+    },
+    {
+      "id": "preflight-checks",
+      "verdict": "pass",
+      "note": "Existing check behavior unchanged; the version bump and no-op upgrade do not bypass verification."
+    },
+    {
+      "id": "instance-names",
+      "verdict": "pass",
+      "note": "Mechanical instance-name review: no writeResource instance-name logic changed; context resource naming preserved."
+    },
+    {
+      "id": "data-access",
+      "verdict": "pass",
+      "note": "No readResource or dataRepository access patterns changed."
+    },
+    {
+      "id": "version-upgrades",
+      "verdict": "pass",
+      "note": "Added a no-op 2026.07.19.0 upgrade entry (upgradeAttributes returns old unchanged) so stored instances advance to the bumped model version with no globalArguments migration. Invariant holds: every version has a corresponding upgrade step."
+    }
+  ]
+}

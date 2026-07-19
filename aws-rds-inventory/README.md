@@ -166,7 +166,7 @@ Non-RDS engines are filtered out before this selector context is built:
 | Field                 | Type                 | Notes                                                                                       |
 | --------------------- | -------------------- | ------------------------------------------------------------------------------------------- |
 | `DBClusterIdentifier` | `string`             | Cluster name from AWS.                                                                      |
-| `Engine`              | `string`             | One of `aurora-mysql`, `aurora-postgresql`, `mysql`, `postgres` (the four engines the allowlist admits). Empty if missing. |
+| `Engine`              | `string`             | Always one of `aurora-mysql`, `aurora-postgresql`, `mysql`, `postgres` — the four engines the allowlist admits; never empty (the allowlist runs before the selector). |
 | `EngineVersion`       | `string`             | Empty string if AWS omitted it; never `undefined`.                                          |
 | `Status`              | `string`             | e.g. `available`, `creating`. Empty string if missing.                                      |
 | `MultiAZ`             | `boolean`            | `true` for Multi-AZ DB clusters; defaults to `false` when AWS omits the field.              |

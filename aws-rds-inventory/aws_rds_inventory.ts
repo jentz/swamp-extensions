@@ -794,7 +794,7 @@ export async function runListClusters(
  */
 export const model = {
   type: "@jentz/aws-rds-inventory",
-  version: "2026.07.03.0",
+  version: "2026.07.19.0",
   globalArguments: GlobalArgsSchema,
   // The 2026.06.05.1, 2026.06.06.1, 2026.06.07.1, and 2026.06.07.2 releases
   // changed only internals (server-side DescribeDBInstances filtering, AWS SDK
@@ -847,6 +847,12 @@ export const model = {
         "Retire the app-level retry layer for the SDK adaptive retry " +
         "(shared bounded config on the RDS client); no globalArguments " +
         "schema changes",
+      upgradeAttributes: (old: Record<string, unknown>) => old,
+    },
+    {
+      toVersion: "2026.07.19.0",
+      description:
+        "Docs-only accuracy fix (selector Engine is never empty post-allowlist); no schema change",
       upgradeAttributes: (old: Record<string, unknown>) => old,
     },
   ],

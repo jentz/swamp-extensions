@@ -1,0 +1,82 @@
+{
+  "extension": "@jentz/aws-rds-inventory",
+  "version": "2026.07.19.0",
+  "reviewedAt": "2026-07-19T21:00:24Z",
+  "dimensions": [
+    {
+      "id": "credentials-secrets",
+      "verdict": "pass",
+      "note": "Docs-only change: corrected the selector-context Engine row wording in README.md. No credential paths or secrets touched."
+    },
+    {
+      "id": "logging-quality",
+      "verdict": "pass",
+      "note": "No logging calls changed; the only source edit is the model version bump and a no-op upgrades entry."
+    },
+    {
+      "id": "error-handling",
+      "verdict": "pass",
+      "note": "No control flow changed. Verified against source: clusters are filtered by isRdsEngine (the four-engine allowlist) before selector contexts are built, so the selector-context Engine is always one of the allowlisted engines and never empty. README now states this correctly."
+    },
+    {
+      "id": "testing-completeness",
+      "verdict": "pass",
+      "note": "Documentation and a no-op version bump; existing typecheck, unit, quality, and dry-run gates continue to cover the scanner."
+    },
+    {
+      "id": "idempotency-resilience",
+      "verdict": "pass",
+      "note": "No method semantics changed; the scanner remains a read-only inventory that re-derives the same resources each run."
+    },
+    {
+      "id": "api-contracts",
+      "verdict": "pass",
+      "note": "DescribeDBClusters/DescribeDBInstances usage and response mapping unchanged; no request/response shape touched."
+    },
+    {
+      "id": "resource-management",
+      "verdict": "pass",
+      "note": "No new files, handles, or network clients; the RDS client lifecycle is unchanged."
+    },
+    {
+      "id": "published-surface-hygiene",
+      "verdict": "pass",
+      "note": "Manifest and exported model version aligned at 2026.07.19.0; no files added to the package surface."
+    },
+    {
+      "id": "schema-strictness",
+      "verdict": "pass",
+      "note": "Mechanical schema/write review: no schema or writeResource payload change; strict cluster/instance schemas retained."
+    },
+    {
+      "id": "lifetime-gc",
+      "verdict": "pass",
+      "note": "Resource lifetime and garbage-collection settings unchanged."
+    },
+    {
+      "id": "crud-completeness",
+      "verdict": "na",
+      "note": "Read-only scanner: it only enumerates existing RDS resources and has no create/update/delete lifecycle, so CRUD completeness does not apply; unchanged by a docs edit."
+    },
+    {
+      "id": "preflight-checks",
+      "verdict": "na",
+      "note": "No mutating operations, so there is no destructive preflight to gate; the read-only scan requires none. Unchanged."
+    },
+    {
+      "id": "instance-names",
+      "verdict": "pass",
+      "note": "Mechanical instance-name review: no writeResource instance-name logic changed; cluster/instance resource naming preserved."
+    },
+    {
+      "id": "data-access",
+      "verdict": "pass",
+      "note": "No readResource or dataRepository access patterns changed."
+    },
+    {
+      "id": "version-upgrades",
+      "verdict": "pass",
+      "note": "Added a no-op 2026.07.19.0 upgrade entry (upgradeAttributes returns old unchanged) so stored instances advance to the bumped model version with no globalArguments migration. Invariant holds: every version has a corresponding upgrade step."
+    }
+  ]
+}
