@@ -210,7 +210,8 @@ swamp data get --workflow <workflow-name> \
 | Field | Meaning |
 | ----- | ------- |
 | `report`, `workflow`, `generatedAt` | Report name, originating workflow, ISO timestamp taken at report start (`""` only if the report degraded before the timestamp was captured). |
-| `columns` | Per-bucket CSV column order. |
+| `columns` | Per-bucket CSV (`csv`) column order. |
+| `accountColumns` | Per-account CSV (`csvByAccount`) column order. |
 | `accountCount`, `regionCount` | Distinct accounts and regions represented. |
 | `instanceCount`, `reservedCount` | Provisioned and reserved rows seen. |
 | `totalRunningLargeEq`, `totalReservedLargeEq` | Org-wide gross size-flex capacity totals. Informational only — **not** the buy figure (subtracting them would net across the hard engine boundary). |

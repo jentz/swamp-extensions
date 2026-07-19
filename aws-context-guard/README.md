@@ -115,7 +115,7 @@ you which check failed:
 | ------------------------------------------------------------ | --------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------- |
 | `AWS_PROFILE is not set.`                                    | Env var unset.                                                                          | Export an `AWS_PROFILE` that matches your required suffix.                       |
 | `AWS_PROFILE='<x>' does not end with required suffix '<y>'.` | Wrong credential class (e.g. admin profile against an audit workflow).                  | Use the read-only variant, or override `requiredProfileSuffix`.                  |
-| `sts:GetCallerIdentity returned no Account.`                 | STS returned an empty `Account` field — typically expired SSO session or network issue. | `aws sso login` (or your auth equivalent), then retry.                           |
+| `sts:GetCallerIdentity returned no Account.`                 | The STS call succeeded but returned an empty `Account` field — a rare response anomaly, not an auth failure. (Expired SSO and network errors throw instead and surface as the propagated error below.) | Retry; if it persists, check STS endpoint health for the region.                 |
 | `sts:GetCallerIdentity returned account <a>, expected <b>.`  | The profile is valid but points at the wrong account.                                   | Switch profiles, or update `expectedAccountId` if the workflow's target changed. |
 
 Any other thrown error (network failure, signature error, etc.) is the
