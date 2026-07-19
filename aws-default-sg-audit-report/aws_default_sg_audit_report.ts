@@ -9,7 +9,8 @@
  * The markdown body is a human-readable report: a summary, then two action
  * tables (default SGs that are **safe to strip now** vs. those **in use** that
  * need a workload migrated first), then a coverage-gaps section (profiles whose
- * SSO token expired and need `aws sso login`, plus regions an SCP blocked). The
+ * SSO token expired and need `aws sso login`, regions an SCP blocked, and scans
+ * that hit a transient network error). The
  * `json` payload carries the per-verdict / per-error counts; every finding's
  * data is already exposed by the upstream model, so no flat CSV is emitted.
  *

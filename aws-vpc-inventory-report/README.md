@@ -22,14 +22,19 @@ workflow. The report runs once after the steps complete and collects every
 `@jentz/aws-vpc-inventory` step's `vpc` / `scan_error` artifacts:
 
 ```yaml
+name: vpc-inventory
 jobs:
-  inventory:
+  - name: inventory
     steps:
       - name: scan-fleet
-        model: vpc-fleet
-        method: scan
+        task:
+          type: model_method
+          modelType: "@jentz/aws-vpc-inventory"
+          modelName: vpc-fleet
+          methodName: scan
 reports:
-  - "@jentz/aws-vpc-inventory-report"
+  require:
+    - "@jentz/aws-vpc-inventory-report"
 ```
 
 ## What it emits
@@ -39,10 +44,14 @@ reports:
 - A header and a summary: accounts seen, regions covered, VPCs inventoried,
   default-VPC count, shared-in-via-RAM count, and a one-line coverage-gaps tally.
 - The full inventory table, sorted by `(account, region, VPC id)`.
-- A coverage-gaps section that groups failed `(profile, region)` pairs by kind:
+- A coverage-gaps section that groups failed `(profile, region)` pairs by kind,
+  one subsection each for:
   - which profiles need `aws sso login` (expired token, `auth_expired`),
   - which regions were blocked by SCP/IAM (`access_denied`),
-  - and any other errors.
+  - which scans hit a transient DNS/socket failure (`network`).
+
+  Any `other`-kind errors are folded into the one-line summary tally only; they
+  get no dedicated subsection.
 
 ### JSON
 

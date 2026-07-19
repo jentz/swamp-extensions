@@ -1,0 +1,47 @@
+{
+  "extension": "@jentz/aws-default-sg-audit-report",
+  "version": "2026.07.19.0",
+  "reviewedAt": "2026-07-19T20:48:14Z",
+  "dimensions": [
+    {
+      "id": "credentials-secrets",
+      "verdict": "pass",
+      "note": "Docs-only slice: README workflow example, README coverage-gaps/errorsByKind prose, the module-doc comment, and the manifest description. No credential, token, or secret material introduced; the report remains SDK-free pure data shaping over workflow artifacts."
+    },
+    {
+      "id": "logging-quality",
+      "verdict": "pass",
+      "note": "No logging changed. The only .ts edit is a JSDoc module comment (lines 11-12) that adds the transient-network coverage bucket to the prose summary; no log statements added, removed, or altered."
+    },
+    {
+      "id": "error-handling",
+      "verdict": "pass",
+      "note": "No control flow touched. renderMarkdown/execute still filter errors by kind (network, auth_expired, access_denied, other) and the never-throws guard is unchanged. The docs now correctly describe the network bucket the code already emitted, closing a doc-vs-code gap rather than changing behavior."
+    },
+    {
+      "id": "testing-completeness",
+      "verdict": "pass",
+      "note": "Docs-only change needs no new tests; existing suite already asserts the network path (errorsByKind counts the network bucket and renderMarkdown emits the transient-network section), so the tests already back the claims the README/manifest/module-doc now make. deno test for this extension stays green."
+    },
+    {
+      "id": "idempotency-resilience",
+      "verdict": "na",
+      "note": "Report-only extension: it renders collected workflow data and creates/updates/deletes no external resources, so idempotency does not apply. Unchanged by this docs slice."
+    },
+    {
+      "id": "api-contracts",
+      "verdict": "na",
+      "note": "No external API client; the report consumes swamp data artifacts only and validates each with safeParse before use. This slice edits documentation and does not alter any consumed contract."
+    },
+    {
+      "id": "resource-management",
+      "verdict": "pass",
+      "note": "No file handles, sockets, or temp files added; docs-only change introduces no new resources. The corrected workflow YAML example was validated in a throwaway workflow (schema check passed) and removed, leaving no stray artifacts."
+    },
+    {
+      "id": "published-surface-hygiene",
+      "verdict": "pass",
+      "note": "manifest version bumped 2026.06.26.1 -> 2026.07.19.0 (report has no model.version to align). README workflow example corrected to the real schema (jobs array, task block with modelType @jentz/aws-default-sg-audit + methodName scan, reports.require); coverage-gaps and errorsByKind docs now include the network bucket the code emits; manifest description aligned. No real account IDs, IPs, or hostnames in source, README, or fixtures."
+    }
+  ]
+}

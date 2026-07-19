@@ -1,6 +1,6 @@
 manifestVersion: 1
 name: "@jentz/aws-vpc-inventory-report"
-version: "2026.06.26.1"
+version: "2026.07.19.0"
 description: |
   Workflow-scope report that renders an operator VPC inventory from the `vpc`
   and `scan_error` rows produced earlier in the workflow by
@@ -8,7 +8,8 @@ description: |
 
   Emits a markdown body (summary with accounts/regions/VPC/default/shared
   counts, the full inventory table, and a coverage-gaps section grouping
-  failures into needs-aws-sso-login / blocked-by-SCP-IAM / other) and a JSON
+  failures into needs-aws-sso-login / blocked-by-SCP-IAM / transient-network
+  subsections, with other-kind errors counted in the summary only) and a JSON
   payload carrying a structured `vpcs[]` rows array (one object per VPC), the
   summary counts, a per-kind error breakdown, the skipped-artifact count, and a
   `degraded` flag — matching the markdown + JSON pattern of

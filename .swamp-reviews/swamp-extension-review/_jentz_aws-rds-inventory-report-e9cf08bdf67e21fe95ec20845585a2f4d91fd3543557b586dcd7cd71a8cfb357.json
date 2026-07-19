@@ -1,0 +1,47 @@
+{
+  "extension": "@jentz/aws-rds-inventory-report",
+  "version": "2026.07.19.0",
+  "reviewedAt": "2026-07-19T20:48:14Z",
+  "dimensions": [
+    {
+      "id": "credentials-secrets",
+      "verdict": "pass",
+      "note": "Docs-only slice: the single change is the README workflow example. No .ts changed. No credential, token, or secret material introduced; the report remains SDK-free pure data shaping over workflow artifacts."
+    },
+    {
+      "id": "logging-quality",
+      "verdict": "pass",
+      "note": "No .ts edited, so no logging changed. The change is limited to the README workflow example block."
+    },
+    {
+      "id": "error-handling",
+      "verdict": "pass",
+      "note": "No code touched; the never-throws guard and skipped-artifact handling are unchanged. Only the README workflow YAML example was corrected."
+    },
+    {
+      "id": "testing-completeness",
+      "verdict": "pass",
+      "note": "Docs-only change (workflow example) needs no new tests; the existing suite is unaffected and stays green. The example's methodName list_clusters and modelType @jentz/aws-rds-inventory match the upstream model's single method."
+    },
+    {
+      "id": "idempotency-resilience",
+      "verdict": "na",
+      "note": "Report-only extension: renders collected workflow data and creates/updates/deletes no external resources, so idempotency does not apply. Unchanged by this docs slice."
+    },
+    {
+      "id": "api-contracts",
+      "verdict": "na",
+      "note": "No external API client; the report consumes swamp data artifacts only and validates each with safeParse before use. This slice edits documentation and does not alter any consumed contract."
+    },
+    {
+      "id": "resource-management",
+      "verdict": "pass",
+      "note": "No file handles, sockets, or temp files; docs-only change introduces no new resources. The corrected workflow YAML example was validated in a throwaway workflow (schema check passed) and removed, leaving no stray artifacts."
+    },
+    {
+      "id": "published-surface-hygiene",
+      "verdict": "pass",
+      "note": "manifest version bumped 2026.06.22.0 -> 2026.07.19.0 (report has no model.version to align). README workflow example corrected to the real schema (jobs array, task block with modelType @jentz/aws-rds-inventory + methodName list_clusters, reports.require). No real account IDs, IPs, or hostnames in source, README, or fixtures."
+    }
+  ]
+}
