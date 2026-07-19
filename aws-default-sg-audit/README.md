@@ -65,9 +65,15 @@ ENIs referencing the default SG are the universal "is this in use?" signal:
 
 A single failure never aborts the wider sweep. Each `(profile, region)` that
 cannot be assessed produces one `scan_error` with `profile`, `accountId`,
-`region`, `phase` (`profile_suffix_check`, `credentials`, `describe_regions`,
-`describe_security_groups`), `kind` (`auth_expired` | `access_denied` |
-`other`), `message`, and `scannedAt`. The companion report
+`region`, `service` (the AWS service that failed — `sts`, `ec2`, `sso`, or `""`
+when no AWS call was involved), `phase` (`preflight_sso`, `profile_suffix_check`,
+`credentials`, `describe_regions`, `describe_security_groups`), `kind`
+(`network` | `auth_expired` | `access_denied` | `other`), `message`, and
+`scannedAt`. Errors are classified into `network` (a transient DNS/socket
+failure — re-run to clear; checked first so a network blip wrapped in a "could
+not load credentials" error is not misread as an expired token), `auth_expired`
+(operator runs `aws sso login`), `access_denied` (IAM/SCP), and `other`. The
+companion report
 [`@jentz/aws-default-sg-audit-report`](../aws-default-sg-audit-report/) groups
 these into operator coverage-gaps (which profiles need `aws sso login`, which
 regions an SCP/IAM policy blocked).
@@ -79,6 +85,7 @@ regions an SCP/IAM policy blocked).
 | `profiles`              | `string[]` | `[]`    | Named AWS profiles to sweep, one account each. Empty uses the ambient credential chain as a single account.                                                            |
 | `regions`               | `string[]` | `[]`    | Regions to scan per account. Empty discovers each account's enabled regions via `ec2:DescribeRegions`.                                                                 |
 | `requiredProfileSuffix` | `string`   | `""`    | If set, every profile (and the ambient `AWS_PROFILE`) must end with this suffix or the profile is refused before any AWS call and recorded as a `scan_error`. Disabled by default. |
+| `ssoSession`            | `string`   | `""`    | Name of the shared AWS SSO session backing the swept profiles (the `[sso-session <name>]` block in `~/.aws/config`). When set, the scan pre-flights this session's cached token once before the per-profile loop: a genuinely expired token short-circuits the whole sweep with a single `aws sso login` error rather than failing every profile. Empty (default) skips the pre-flight entirely. |
 
 Set `requiredProfileSuffix` to e.g. `-readonly` to enforce that the audit only
 ever runs under read-only profiles.

@@ -46,9 +46,13 @@ One row per observed VPC:
 A single failure never aborts the wider sweep. Each `(profile, region)` that
 cannot be assessed — an expired SSO token, an SCP-denied region, a malformed
 response — produces one `scan_error` with `profile`, `accountId`, `region`,
-`phase` (`profile_suffix_check`, `credentials`, `describe_regions`,
-`describe_vpcs`), `kind` (`auth_expired` | `access_denied` | `other`),
-`message`, and `scannedAt`. The companion report
+`service` (the AWS service that failed — `sts`, `ec2`, `sso`, or `""` when no
+AWS call was involved), `phase` (`preflight_sso`, `profile_suffix_check`,
+`credentials`, `describe_regions`, `describe_vpcs`), `kind` (`network` |
+`auth_expired` | `access_denied` | `other`), `message`, and `scannedAt`. The
+`network` kind is a transient DNS/socket failure (re-run to clear) and is
+checked first, so a network blip wrapped in a "could not load credentials" error
+is not misread as an expired token. The companion report
 [`@jentz/aws-vpc-inventory-report`](../aws-vpc-inventory-report/) groups these
 into operator coverage-gaps.
 
@@ -59,6 +63,7 @@ into operator coverage-gaps.
 | `profiles`              | `string[]` | `[]`    | Named AWS profiles to sweep, one account each. Empty uses the ambient credential chain as a single account.                                                            |
 | `regions`               | `string[]` | `[]`    | Regions to scan per account. Empty discovers each account's enabled regions via `ec2:DescribeRegions`.                                                                 |
 | `requiredProfileSuffix` | `string`   | `""`    | If set, every profile (and the ambient `AWS_PROFILE`) must end with this suffix or the profile is refused before any AWS call and recorded as a `scan_error`. Disabled by default. |
+| `ssoSession`            | `string`   | `""`    | Name of the shared AWS SSO session backing the swept profiles (the `[sso-session <name>]` block in `~/.aws/config`). When set, the scan pre-flights this session's cached token once before the per-profile loop: a genuinely expired token short-circuits the whole sweep with a single `aws sso login` error rather than failing every profile. Empty (default) skips the pre-flight entirely. |
 
 Set `requiredProfileSuffix` to e.g. `-readonly` to enforce that the inventory
 only ever runs under read-only profiles.
