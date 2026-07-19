@@ -82,8 +82,14 @@ One row per account (or account × role) that could not be assessed, keyed
 
 - `profile` (`""` for ambient), `accountId` (if known), `roleName` (`""` for
   account-level failures)
-- `phase` — e.g. `credentials`, `get_role`, `profile_suffix_check`
-- `kind` — `auth_expired` | `access_denied` | `other`
+- `service` — the AWS service that failed (`iam`, `sts`, `sso`, or `""` when no
+  AWS call was involved); reads default `""` so rows written before this field
+  existed still parse
+- `phase` — e.g. `preflight_sso`, `credentials`, `get_role`,
+  `profile_suffix_check`
+- `kind` — `network` | `auth_expired` | `access_denied` | `other` (`network`, a
+  transient DNS/socket failure, is checked first so it is never misread as an
+  expired token)
 - `message`, `scannedAt` (ISO 8601)
 
 A per-account credential failure or a per-role read failure produces a
@@ -101,6 +107,7 @@ no single-role shorthand.
 | `profiles`              | `string[]`      | `[]` (ambient)| Named AWS profiles to sweep, one account each. Empty uses the ambient credential chain as a single account.   |
 | `stackLookupRegions`    | `string[]`      | **required**  | Regions searched **in order** for the owning CloudFormation stack. No default — see below.                    |
 | `requiredProfileSuffix` | `string`        | `""`          | If set, every profile must end with this suffix or it is refused before any AWS call (e.g. `-readonly`).      |
+| `ssoSession`            | `string`        | `""`          | Name of the shared AWS SSO session backing the swept profiles (the `[sso-session <name>]` block in `~/.aws/config`). When set, the audit pre-flights this session's cached token once before the per-profile loop: a genuinely expired token short-circuits the whole sweep with a single `aws sso login` error rather than failing every profile. Empty (default) skips the pre-flight. |
 | `region`                | `string`        | `us-east-1`   | Region for the IAM/STS client endpoint. IAM is global; `us-east-1` is safe.                                   |
 
 Each entry in `roles` is a `RoleSpec`:

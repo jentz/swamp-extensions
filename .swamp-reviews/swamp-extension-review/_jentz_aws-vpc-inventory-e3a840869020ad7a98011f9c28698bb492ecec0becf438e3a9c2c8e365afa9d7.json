@@ -1,0 +1,82 @@
+{
+  "extension": "@jentz/aws-vpc-inventory",
+  "version": "2026.07.19.0",
+  "reviewedAt": "2026-07-19T20:40:08Z",
+  "dimensions": [
+    {
+      "id": "credentials-secrets",
+      "verdict": "pass",
+      "note": "Docs-only slice plus one non-runtime JSDoc reword — no executable path touched. The newly documented ssoSession arg names the shared SSO session only; no token/secret documented. README uses placeholder identifiers throughout."
+    },
+    {
+      "id": "logging-quality",
+      "verdict": "pass",
+      "note": "No logging code changed. The documented `aws sso login` remediation matches the shared ssoRemediation wording."
+    },
+    {
+      "id": "error-handling",
+      "verdict": "pass",
+      "note": "Behavior unchanged. The README now documents the full classified failure model already implemented: the `service` field, the `network` kind (checked first, transient DNS/socket), and the `preflight_sso` phase — all verified against _lib/scan_error.ts (ScanErrorSchema: service default \"\", kind enum network|auth_expired|access_denied|other) and _lib/aws_credentials.ts (PreflightSsoErrorFragment service:'sso'/phase:'preflight_sso')."
+    },
+    {
+      "id": "testing-completeness",
+      "verdict": "pass",
+      "note": "No test surface changed. The full test suite (including the colocated manifest/model.version/upgrades-tail metadata test) passes after the version bump. The accountNameFromProfile behavior the corrected JSDoc now describes — \"\" only for an empty (ambient) profile, profile returned unchanged on a suffix non-match — is exercised by the existing suffix-handling unit tests."
+    },
+    {
+      "id": "idempotency-resilience",
+      "verdict": "pass",
+      "note": "Read-only fan-out scan (Describe* + GetCallerIdentity) unchanged and re-runnable; a docs/JSDoc edit cannot affect idempotency."
+    },
+    {
+      "id": "api-contracts",
+      "verdict": "pass",
+      "note": "The published README contract now matches shipped code: scan_error service field lists sts/ec2/sso/\"\" (the exact literals at each throw site), kind is network|auth_expired|access_denied|other, and phases include preflight_sso alongside profile_suffix_check/credentials/describe_regions/describe_vpcs (verified against the phase literals in aws_vpc_inventory.ts). No SDK pins or request shapes changed."
+    },
+    {
+      "id": "resource-management",
+      "verdict": "pass",
+      "note": "No clients, handles, or files opened by a documentation/JSDoc change."
+    },
+    {
+      "id": "published-surface-hygiene",
+      "verdict": "pass",
+      "note": "This IS the change: the README drifted behind the shared scan_error + SSO adoption and is corrected to document the `service` field, the `network` kind, the `preflight_sso` phase, and the `ssoSession` argument. The accountName JSDoc default was corrected to empty-string (no stripping) AND its result-value clause fixed: empty-string is returned ONLY for an ambient/empty profile; a profile that does not end with the configured suffix is returned UNCHANGED — verified against accountNameFromProfile (empty profile -> \"\"; empty suffix -> profile; non-match -> profile unchanged) and now consistent with that function's own adjacent JSDoc. `-readonly` is shown only as an example. Manifest and model.version aligned at 2026.07.19.0; wording mirrors the sibling @jentz/aws-rds-reservations README."
+    },
+    {
+      "id": "schema-strictness",
+      "verdict": "pass",
+      "note": "MECHANICAL: the README's scan_error field/enum documentation was diffed against ScanErrorSchema in _lib/scan_error.ts — 8 fields, service z.string().default(\"\") (documented as reads-default-\"\"), kind the closed z.enum. Schemas remain unchanged strict z.object; the edit only makes docs faithful to them."
+    },
+    {
+      "id": "lifetime-gc",
+      "verdict": "pass",
+      "note": "vpc/scan_error keep lifetime 'infinite' and garbageCollection 10 — untouched by a docs change."
+    },
+    {
+      "id": "crud-completeness",
+      "verdict": "na",
+      "note": "Read-only fan-out inventory; no create/update/delete lifecycle to complete. Unaffected by a documentation change."
+    },
+    {
+      "id": "preflight-checks",
+      "verdict": "pass",
+      "note": "The requiredProfileSuffix refusal and opt-in SSO pre-flight are unchanged in code; the README now documents the ssoSession pre-flight (empty default skips it), matching preflightSsoGate's ssoSession.length===0 early return."
+    },
+    {
+      "id": "instance-names",
+      "verdict": "pass",
+      "note": "No key construction changed. The documented vpc/scan_error keys reflect vpcKey and the canonical scanErrorKey(profile, region, service, phase)."
+    },
+    {
+      "id": "data-access",
+      "verdict": "pass",
+      "note": "No read/write data-access code changed; the downstream report contract (vpc/scan_error row shapes) is byte-identical. The README simply describes the service field accurately now."
+    },
+    {
+      "id": "version-upgrades",
+      "verdict": "pass",
+      "note": "Invariant holds: model.version bumped 2026.07.03.0 -> 2026.07.19.0 with a matching no-op upgrade entry appended (identity upgradeAttributes; description states docs-only, JSDoc default corrected, no resource schema changes). Chain tail equals model.version and manifest version, verified by the colocated metadata test in the passing suite."
+    }
+  ]
+}

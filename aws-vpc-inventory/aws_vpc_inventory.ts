@@ -115,8 +115,10 @@ export interface VpcRecord {
   accountId: string;
   /**
    * Friendly account label, derived from the profile by stripping the
-   * configured suffix (default `-readonly`). `""` when ambient (no profile)
-   * or when the profile is already the bare account name.
+   * configured `requiredProfileSuffix` (for example `-readonly`). The suffix
+   * defaults to `""`, which strips nothing and leaves the profile unchanged.
+   * `""` only when ambient (no profile); a profile that does not end with the
+   * configured suffix is returned unchanged (not `""`).
    */
   accountName: string;
   /** Profile that produced this row; `""` for the ambient credential chain. */
@@ -596,7 +598,7 @@ export async function runScan(deps: ScanDeps): Promise<ScanResult> {
  */
 export const model = {
   type: "@jentz/aws-vpc-inventory",
-  version: "2026.07.03.0",
+  version: "2026.07.19.0",
   globalArguments: GlobalArgsSchema,
   // The upgrade chain's tail toVersion must equal model.version — swamp
   // registry/host loading rejects a model where the two drift. The no-op
@@ -628,6 +630,15 @@ export const model = {
       description:
         "Centralize the SSO pre-flight policy into the shared gate; no " +
         "globalArguments schema changes",
+      upgradeAttributes: (old: Record<string, unknown>) => old,
+    },
+    {
+      toVersion: "2026.07.19.0",
+      description:
+        "Docs-only: README documents the `service` scan_error field, the " +
+        "`network` kind, the `preflight_sso` phase, and the `ssoSession` " +
+        "argument; accountName JSDoc default corrected to empty string; no " +
+        "resource schema changes",
       upgradeAttributes: (old: Record<string, unknown>) => old,
     },
   ],
