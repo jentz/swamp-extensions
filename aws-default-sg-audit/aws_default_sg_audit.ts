@@ -740,7 +740,7 @@ export async function runScan(deps: ScanDeps): Promise<ScanResult> {
  */
 export const model = {
   type: "@jentz/aws-default-sg-audit",
-  version: "2026.07.19.0",
+  version: "2026.07.20.0",
   globalArguments: GlobalArgsSchema,
   // The upgrade chain's tail toVersion must equal model.version — swamp
   // registry/host loading rejects a model where the two drift. The no-op
@@ -780,6 +780,13 @@ export const model = {
         "Docs-only: README documents the `network` kind, the `service` " +
         "scan_error field, the `preflight_sso` phase, and the `ssoSession` " +
         "argument; no resource schema changes",
+      upgradeAttributes: (old: Record<string, unknown>) => old,
+    },
+    {
+      toVersion: "2026.07.20.0",
+      description:
+        "Regenerate shared scan_error _lib twin: harden message extraction " +
+        "for non-Error object errors; no globalArguments schema changes",
       upgradeAttributes: (old: Record<string, unknown>) => old,
     },
   ],
