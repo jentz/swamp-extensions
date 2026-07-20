@@ -1,6 +1,6 @@
 manifestVersion: 1
 name: "@jentz/aws-default-sg-audit"
-version: "2026.07.20.0"
+version: "2026.07.20.1"
 description: |
   Fleet audit for AWS Security Hub control EC2.2 ("VPC default security groups
   should not allow inbound or outbound traffic"), with a remediation-safety

@@ -1217,13 +1217,14 @@ Deno.test("runSweep: two malformed instance rows (hyphenated ids) in same region
   // Distinct keys -> the keyed store would persist BOTH, not collapse to one.
   assertEquals(new Set(keys).size, 2);
   // The canonical key folds the per-row discriminator into the trailing phase
-  // segment, so each key ends with `<base phase>:<ordinal>:<row id>`.
+  // segment, so each key ends with `<base phase>:<ordinal>:<row id>` — now
+  // percent-encoded (`:` -> %3A, `-` -> %2D) since each segment is URL-encoded.
   assertStrictEquals(
-    keys.some((k) => k.endsWith("malformed_db_instance:0:orders-db")),
+    keys.some((k) => k.endsWith("malformed_db_instance%3A0%3Aorders%2Ddb")),
     true,
   );
   assertStrictEquals(
-    keys.some((k) => k.endsWith("malformed_db_instance:1:billing-db")),
+    keys.some((k) => k.endsWith("malformed_db_instance%3A1%3Abilling%2Ddb")),
     true,
   );
 });
@@ -1301,14 +1302,15 @@ Deno.test("runSweep: WORST CASE - two id-less malformed rows in same region -> d
   assertEquals(errs.length, 2);
   const keys = errs.map((w) => w.name);
   // The ordinal fallback keeps two id-less rows distinct: with no row id the
-  // discriminated phase falls back to `<base phase>:<ordinal>:noid`.
+  // discriminated phase falls back to `<base phase>:<ordinal>:noid` — now
+  // percent-encoded (`:` -> %3A) since each key segment is URL-encoded.
   assertEquals(new Set(keys).size, 2);
   assertStrictEquals(
-    keys.some((k) => k.endsWith("malformed_db_instance:0:noid")),
+    keys.some((k) => k.endsWith("malformed_db_instance%3A0%3Anoid")),
     true,
   );
   assertStrictEquals(
-    keys.some((k) => k.endsWith("malformed_db_instance:1:noid")),
+    keys.some((k) => k.endsWith("malformed_db_instance%3A1%3Anoid")),
     true,
   );
 });

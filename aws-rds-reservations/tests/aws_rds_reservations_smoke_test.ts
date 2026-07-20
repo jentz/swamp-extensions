@@ -285,20 +285,19 @@ Deno.test("smoke: instance/reserved storage-key separator is locked to `--` (tas
   );
 });
 
-Deno.test("smoke: scanErrorKey uses the canonical fleet format (4-arg, single-hyphen, ambient/account sentinels)", () => {
-  // The canonical key is `error-<profile|ambient>-<region|account>-<service>-<phase>`
-  // (single hyphens; the absent profile/region render as the `ambient`/`account`
-  // sentinel words, not empty segments). The legacy `--`/operator-string
-  // injectivity contract no longer applies — the canonical key trades it for the
-  // shared fleet shape — so those assertions are intentionally dropped.
+Deno.test("smoke: scanErrorKey uses the canonical fleet format (4-arg, per-segment encoded, injective)", () => {
+  // The canonical key is `error-<enc(profile)>-<enc(region)>-<enc(service)>-<enc(phase)>`,
+  // where each segment is percent-encoded and value-internal `-` is escaped to
+  // %2D. An absent profile/region encodes to an empty segment (no sentinel word),
+  // and the encoding is injective over all four inputs.
   assertEquals(
     scanErrorKey("", "us-east-1", "sts", "credentials"),
-    "error-ambient-us-east-1-sts-credentials",
+    "error--us%2Deast%2D1-sts-credentials",
   );
-  // Account-level failure: empty region renders as the `account` sentinel.
+  // Account-level failure: empty region encodes to an empty segment.
   assertEquals(
     scanErrorKey("ro", "", "sts", "credentials"),
-    "error-ro-account-sts-credentials",
+    "error-ro--sts-credentials",
   );
   // Field-swap: profile/region are positional; swapping a value changes the key.
   assert(

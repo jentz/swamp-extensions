@@ -1261,7 +1261,7 @@ export async function runSweep(deps: SweepDeps): Promise<SweepResult> {
  */
 export const model = {
   type: "@jentz/aws-rds-reservations",
-  version: "2026.07.20.0",
+  version: "2026.07.20.1",
   globalArguments: GlobalArgsSchema,
   // swamp model upgrades transform stored globalArguments, not historical
   // resource artifacts, so there is nothing to migrate here. The no-op chain
@@ -1320,6 +1320,13 @@ export const model = {
       description:
         "Regenerate shared scan_error _lib twin: harden message extraction " +
         "for non-Error object errors; no globalArguments schema changes",
+      upgradeAttributes: (old: Record<string, unknown>) => old,
+    },
+    {
+      toVersion: "2026.07.20.1",
+      description:
+        "Regenerate shared scan_error _lib twin: make scanErrorKey injective " +
+        "by percent-encoding each key segment; no globalArguments schema changes",
       upgradeAttributes: (old: Record<string, unknown>) => old,
     },
   ] as Array<{

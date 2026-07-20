@@ -794,7 +794,7 @@ export async function runListClusters(
  */
 export const model = {
   type: "@jentz/aws-rds-inventory",
-  version: "2026.07.20.0",
+  version: "2026.07.20.1",
   globalArguments: GlobalArgsSchema,
   // The 2026.06.05.1, 2026.06.06.1, 2026.06.07.1, and 2026.06.07.2 releases
   // changed only internals (server-side DescribeDBInstances filtering, AWS SDK
@@ -860,6 +860,13 @@ export const model = {
       description:
         "Regenerate shared scan_error _lib twin: harden message extraction " +
         "for non-Error object errors; no globalArguments schema changes",
+      upgradeAttributes: (old: Record<string, unknown>) => old,
+    },
+    {
+      toVersion: "2026.07.20.1",
+      description:
+        "Regenerate shared scan_error _lib twin: make scanErrorKey injective " +
+        "by percent-encoding each key segment; no globalArguments schema changes",
       upgradeAttributes: (old: Record<string, unknown>) => old,
     },
   ],

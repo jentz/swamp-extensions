@@ -1,6 +1,6 @@
 manifestVersion: 1
 name: "@jentz/aws-vpc-inventory-report"
-version: "2026.07.20.0"
+version: "2026.07.20.1"
 description: |
   Workflow-scope report that renders an operator VPC inventory from the `vpc`
   and `scan_error` rows produced earlier in the workflow by
