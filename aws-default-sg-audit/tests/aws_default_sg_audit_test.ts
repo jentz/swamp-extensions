@@ -163,11 +163,14 @@ Deno.test("findingKey: stable and unique across (account, region, sg)", () => {
   assertNotEquals(a, c);
 });
 
-Deno.test("scanErrorKey: ambient and account-level fallbacks", () => {
+Deno.test("scanErrorKey: empty profile/region encode to empty segments (no sentinel)", () => {
+  // Sentinels dropped: an empty profile/region encodes to an empty segment, so
+  // it can never collide with a profile/region literally named ambient/account.
   assertEquals(
     scanErrorKey("", "", "sts", "credentials"),
-    "error-ambient-account-sts-credentials",
+    "error---sts-credentials",
   );
+  // A '-' inside a value is escaped to %2D so it never reads as the separator.
   assertEquals(
     scanErrorKey(
       "acct-readonly",
@@ -175,7 +178,7 @@ Deno.test("scanErrorKey: ambient and account-level fallbacks", () => {
       "ec2",
       "describe_security_groups",
     ),
-    "error-acct-readonly-eu-west-1-ec2-describe_security_groups",
+    "error-acct%2Dreadonly-eu%2Dwest%2D1-ec2-describe_security_groups",
   );
 });
 

@@ -9,14 +9,61 @@
  * @module
  */
 
-import { assertEquals } from "jsr:@std/assert@1";
+import { assertEquals, assertNotEquals } from "jsr:@std/assert@1";
 import {
   classifyError,
   errorBucket,
   reconcileScanErrors,
+  scanErrorKey,
   ScanErrorSchema,
   type ScanErrorStore,
 } from "./scan_error.ts";
+
+// ---------------------------------------------------------------------------
+// scanErrorKey — injectivity + determinism
+// ---------------------------------------------------------------------------
+
+Deno.test("scanErrorKey: encodes each segment, escaping hyphens to %2D", () => {
+  // Exact-format assertion with teeth: reverting to the bare-hyphen encoding
+  // (`error-prod-readonly-eu-west-1-sts-credentials`) makes this fail.
+  assertEquals(
+    scanErrorKey("prod-readonly", "eu-west-1", "sts", "credentials"),
+    "error-prod%2Dreadonly-eu%2Dwest%2D1-sts-credentials",
+  );
+});
+
+Deno.test("scanErrorKey: hyphen-boundary tuples do not collide", () => {
+  // Bare-hyphen join is ambiguous: `a-b|c` and `a|b-c` both spell 'a-b-c'.
+  // Escaping the value-internal '-' to %2D keeps the two tuples distinct.
+  assertNotEquals(
+    scanErrorKey("a-b", "c", "s", "p"),
+    scanErrorKey("a", "b-c", "s", "p"),
+  );
+});
+
+Deno.test("scanErrorKey: literal 'ambient' profile != empty (ambient) profile", () => {
+  // Dropping the bare 'ambient' sentinel: an empty profile encodes to '', which
+  // a profile literally named 'ambient' can never produce.
+  assertNotEquals(
+    scanErrorKey("ambient", "eu-west-1", "s", "p"),
+    scanErrorKey("", "eu-west-1", "s", "p"),
+  );
+});
+
+Deno.test("scanErrorKey: literal 'account' region != empty (account-level) region", () => {
+  // Same for the dropped 'account' region sentinel.
+  assertNotEquals(
+    scanErrorKey("prod", "account", "s", "p"),
+    scanErrorKey("prod", "", "s", "p"),
+  );
+});
+
+Deno.test("scanErrorKey: same tuple => same key (deterministic)", () => {
+  assertEquals(
+    scanErrorKey("prod-readonly", "eu-west-1", "sts", "credentials"),
+    scanErrorKey("prod-readonly", "eu-west-1", "sts", "credentials"),
+  );
+});
 
 // ---------------------------------------------------------------------------
 // ScanErrorSchema
@@ -187,24 +234,18 @@ function fakeStore(
 }
 
 Deno.test("reconcileScanErrors deletes a recovered unit's stale row", async () => {
-  const store = fakeStore([
-    {
-      name: "error-prod-readonly-eu-west-1-sts-credentials",
-      profile: "prod-readonly",
-    },
-  ]);
+  const key = scanErrorKey("prod-readonly", "eu-west-1", "sts", "credentials");
+  const store = fakeStore([{ name: key, profile: "prod-readonly" }]);
   await reconcileScanErrors(
     store,
     new Set(["prod-readonly"]), // attempted (and it recovered)
     new Set(), // no fresh errors written this run
   );
-  assertEquals(store.deleted, [
-    "error-prod-readonly-eu-west-1-sts-credentials",
-  ]);
+  assertEquals(store.deleted, [key]);
 });
 
 Deno.test("reconcileScanErrors keeps a still-failing unit's row", async () => {
-  const key = "error-prod-readonly-eu-west-1-sts-credentials";
+  const key = scanErrorKey("prod-readonly", "eu-west-1", "sts", "credentials");
   const store = fakeStore([{ name: key, profile: "prod-readonly" }]);
   await reconcileScanErrors(
     store,
@@ -217,7 +258,7 @@ Deno.test("reconcileScanErrors keeps a still-failing unit's row", async () => {
 Deno.test("reconcileScanErrors leaves rows for un-attempted profiles untouched", async () => {
   const store = fakeStore([
     {
-      name: "error-other-readonly-eu-west-1-sts-credentials",
+      name: scanErrorKey("other-readonly", "eu-west-1", "sts", "credentials"),
       profile: "other-readonly",
     },
   ]);

@@ -916,7 +916,7 @@ export async function runAudit(deps: AuditDeps): Promise<AuditResult> {
  */
 export const model = {
   type: "@jentz/aws-iam-role-audit",
-  version: "2026.07.20.0",
+  version: "2026.07.20.1",
   globalArguments: GlobalArgsSchema,
   // The upgrade chain's tail toVersion must equal model.version — swamp
   // registry/host loading rejects a model where the two drift. The no-op
@@ -963,6 +963,13 @@ export const model = {
       description:
         "Regenerate shared scan_error _lib twin: harden message extraction " +
         "for non-Error object errors; no globalArguments schema changes",
+      upgradeAttributes: (old: Record<string, unknown>) => old,
+    },
+    {
+      toVersion: "2026.07.20.1",
+      description:
+        "Regenerate shared scan_error _lib twin: make scanErrorKey injective " +
+        "by percent-encoding each key segment; no globalArguments schema changes",
       upgradeAttributes: (old: Record<string, unknown>) => old,
     },
   ],

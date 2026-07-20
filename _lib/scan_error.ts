@@ -83,16 +83,36 @@ export interface ScanError {
 // Keys
 // ---------------------------------------------------------------------------
 
-/** Deterministic storage key for a `scan_error` row. */
+/**
+ * Deterministic, injective storage key for a `scan_error` row.
+ *
+ * Each of the four segments is percent-encoded with {@link encodeURIComponent}
+ * and, in addition, every literal `-` is escaped to `%2D`, so the `-` join
+ * separator can never appear inside an encoded segment. That makes the key
+ * injective over all four inputs, including empty segments and segments that
+ * contain the separator or a former sentinel word:
+ *
+ *   - A `-` *inside* a value (`prod-readonly`, `eu-west-1`) becomes `%2D`, so it
+ *     can never be mistaken for the segment separator — e.g.
+ *     `scanErrorKey("a-b","c",…)` and `scanErrorKey("a","b-c",…)` now differ.
+ *   - An empty segment encodes to `""`, distinct from any non-empty value, so no
+ *     `"ambient"`/`"account"` sentinel is needed: an empty profile can never
+ *     collide with a profile literally named `"ambient"` (nor `""` region with
+ *     `"account"`).
+ *   - `encodeURIComponent` escapes `%` to `%25`, so a literal `%2D` in the
+ *     output only ever originates from an escaped separator — the encoding stays
+ *     reversible and collision-free.
+ */
 export function scanErrorKey(
   profileLabel: string,
   region: string,
   service: string,
   phase: string,
 ): string {
-  return `error-${profileLabel || "ambient"}-${
-    region || "account"
-  }-${service}-${phase}`;
+  const seg = (s: string) => encodeURIComponent(s).replaceAll("-", "%2D");
+  return `error-${seg(profileLabel)}-${seg(region)}-${seg(service)}-${
+    seg(phase)
+  }`;
 }
 
 // ---------------------------------------------------------------------------
