@@ -1,0 +1,82 @@
+{
+  "extension": "@jentz/aws-cfn-orphan-sweep",
+  "version": "2026.07.20.0",
+  "reviewedAt": "2026-07-20T09:58:53Z",
+  "dimensions": [
+    {
+      "id": "credentials-secrets",
+      "verdict": "pass",
+      "note": "Docs + version-only change (README global-argument type-label rewording, manifest/model version bump, no-op upgrade entry); no credential-handling code touched. Credentials still come from the environment (ambient chain, fromIni, fromTemporaryCredentials for AssumeRole); nothing vaulted or stored. The reworded README rows add no secrets — they only change the argument-type annotation text."
+    },
+    {
+      "id": "logging-quality",
+      "verdict": "pass",
+      "note": "No logging code changed. The existing structured-placeholder logging in processStack is untouched by this docs/version edit."
+    },
+    {
+      "id": "error-handling",
+      "verdict": "pass",
+      "note": "No error-handling code changed. The documented fatal-vs-skip split and narrow catches (ValidationError, ResourceNotFoundException on DeleteFunction, NoSuchEntity on GetRole) are untouched; only the README argument-type labels and version metadata changed."
+    },
+    {
+      "id": "testing-completeness",
+      "verdict": "pass",
+      "note": "No behavior change, so no new tests required. The version-coupled metadata tests (manifest-name/version sync and upgrade-chain-ends-at-model.version) cover the bump to 2026.07.20.0 and the appended no-op upgrade entry; the full suite for the touched dir was run as part of the verification gates and passes."
+    },
+    {
+      "id": "idempotency-resilience",
+      "verdict": "pass",
+      "note": "No behavior change. The re-runnable cleanup path (predelete-Lambda default plus predeleteLambda=false two-pass fallback) is unchanged; only documentation labels and version metadata moved."
+    },
+    {
+      "id": "api-contracts",
+      "verdict": "pass",
+      "note": "No API-calling code changed. The AWS SDK calls (List*, DescribeStacks, DeleteStackCommand, DeleteFunctionCommand, GetRoleCommand, AssumeRole, ListAccounts) are untouched by this docs/version edit."
+    },
+    {
+      "id": "resource-management",
+      "verdict": "pass",
+      "note": "No resource-lifecycle code changed. Per-region memoized clients and abort-signal threading are untouched by this docs-only edit."
+    },
+    {
+      "id": "published-surface-hygiene",
+      "verdict": "pass",
+      "note": "Reviewed the edited README rows: the namePrefix, regions, and assumeRoleName global-argument rows now read '(non-empty)' instead of the inaccurate '(required, non-empty)' — accurate because each field carries .min(1).default(...) in GlobalArgsSchema (namePrefix, regions, assumeRoleName), so none must be user-supplied; the .min(1) is a non-empty validation constraint, not a supply requirement. Default column values, the profile row, and per-method arg tables are unchanged. No real account ids/hostnames/IPs introduced (README examples remain synthetic placeholders). Manifest version and model.version aligned at 2026.07.20.0."
+    },
+    {
+      "id": "schema-strictness",
+      "verdict": "pass",
+      "note": "No zod schema changed by this docs/version edit. The orphan/summary/deletion/org-summary schemas and their deliberate documented .passthrough() on org-summary still hold as verified at prior publish."
+    },
+    {
+      "id": "lifetime-gc",
+      "verdict": "pass",
+      "note": "No lifetime/GC settings changed. Every spec retains lifetime infinite with garbageCollection 10, matching the accumulate-and-query design."
+    },
+    {
+      "id": "crud-completeness",
+      "verdict": "pass",
+      "note": "This mutating model's sole state-changing operation is deletion (single-account cleanup + org-wide cleanupOrg, both dry-run by default, name-prefix scoped, custom-resource-only retain); it intentionally offers no create/update because it retires externally-created StackSet-orphan stacks it never provisions. No code changed by this docs/version edit."
+    },
+    {
+      "id": "preflight-checks",
+      "verdict": "pass",
+      "note": "No guard code changed. The mutating-path guards (apply defaults to false, expectAccount throws before any write, per-member landing check, namePrefix refusal, computeRetain custom-resource-only retain) still hold and remain accurately documented."
+    },
+    {
+      "id": "instance-names",
+      "verdict": "pass",
+      "note": "No instance-naming code changed. The orphan-/deletion-key construction via safeNameSegment is untouched by this docs/version edit; the README key documentation remains accurate."
+    },
+    {
+      "id": "data-access",
+      "verdict": "pass",
+      "note": "No data-access code changed. cleanup still re-enumerates targets live rather than reading stored rows; the edit does not alter this."
+    },
+    {
+      "id": "version-upgrades",
+      "verdict": "pass",
+      "note": "Invariant holds: model.version bumped to 2026.07.20.0 and a final upgrades entry appended with toVersion 2026.07.20.0 (equal to model.version) whose upgradeAttributes passes old attributes through unchanged — a no-op consistent with a docs-only change and no resource schema changes. The colocated chain-ends-at-model.version and manifest-version-sync tests pass."
+    }
+  ]
+}
