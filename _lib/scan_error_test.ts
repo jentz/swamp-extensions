@@ -126,6 +126,35 @@ Deno.test("classifyError: returns the original message", () => {
   );
 });
 
+Deno.test("classifyError: non-Error object with string .message => access_denied + real message", () => {
+  // Hardening: a non-Error object carrying the signal only in a string
+  // `.message` must expose that message (not "[object Object]") and classify
+  // off it. Reverting the message-extraction change collapses `message` to
+  // "[object Object]" and drops `kind` to "other", so this test has teeth.
+  const result = classifyError({
+    message: "User is not authorized to perform sts:AssumeRole",
+  });
+  assertEquals(result.kind, "access_denied");
+  assertEquals(
+    result.message,
+    "User is not authorized to perform sts:AssumeRole",
+  );
+});
+
+Deno.test("classifyError: object cause with a network signature only in .message => network", () => {
+  // The discriminating `getaddrinfo` signal lives solely in an object-shaped
+  // cause's string `.message` (no matching `name`). collectHaystack must read
+  // it; without the change the cause contributes nothing and this falls to
+  // "other".
+  const result = classifyError({
+    name: "SomeWrapperError",
+    message: "wrapping failure",
+    cause: { message: "getaddrinfo ENOTFOUND sts.eu-west-1.amazonaws.com" },
+  });
+  assertEquals(result.kind, "network");
+  assertEquals(result.message, "wrapping failure");
+});
+
 // ---------------------------------------------------------------------------
 // errorBucket
 // ---------------------------------------------------------------------------

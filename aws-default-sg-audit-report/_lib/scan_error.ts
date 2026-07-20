@@ -121,6 +121,34 @@ const NETWORK_SIGNATURES = [
 ] as const;
 
 /**
+ * Return a non-`Error` object's `.message` when it is a string, else
+ * `undefined`. Real AWS SDK errors are `Error` instances, but an object-shaped
+ * error (e.g. a plain `{ message }` value) still carries the operator-facing
+ * detail and the classification signal, so it is read here rather than being
+ * collapsed to `"[object Object]"`. A missing or non-string `.message` yields
+ * `undefined`, so callers can preserve their prior fallback behavior.
+ */
+function stringMessage(value: unknown): string | undefined {
+  if (
+    typeof value === "object" && value !== null &&
+    typeof (value as { message?: unknown }).message === "string"
+  ) {
+    return (value as { message: string }).message;
+  }
+  return undefined;
+}
+
+/**
+ * Extract a usable string message from an arbitrary thrown value. `Error` and
+ * `string` inputs behave exactly as before; a non-`Error` object with a string
+ * `.message` uses that message; anything else falls back to `String(err)`.
+ */
+function extractMessage(err: unknown): string {
+  if (err instanceof Error) return err.message;
+  return stringMessage(err) ?? String(err);
+}
+
+/**
  * Classify an AWS SDK error into the coarse `kind` the report buckets by.
  *
  * Order matters:
@@ -140,7 +168,7 @@ export function classifyError(err: unknown): {
   kind: ScanErrorKind;
   message: string;
 } {
-  const message = err instanceof Error ? err.message : String(err);
+  const message = extractMessage(err);
   const name = (err as { name?: string } | null)?.name ?? "";
 
   // Walk the full message + cause chain so a network failure wrapped inside a
@@ -191,7 +219,7 @@ function collectHaystack(
       ? cause.message
       : typeof cause === "string"
       ? cause
-      : "";
+      : stringMessage(cause) ?? "";
     parts.push(cName, cMessage);
     cause = (cause as { cause?: unknown } | null)?.cause;
   }

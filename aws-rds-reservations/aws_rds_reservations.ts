@@ -1261,7 +1261,7 @@ export async function runSweep(deps: SweepDeps): Promise<SweepResult> {
  */
 export const model = {
   type: "@jentz/aws-rds-reservations",
-  version: "2026.07.03.0",
+  version: "2026.07.20.0",
   globalArguments: GlobalArgsSchema,
   // swamp model upgrades transform stored globalArguments, not historical
   // resource artifacts, so there is nothing to migrate here. The no-op chain
@@ -1313,6 +1313,13 @@ export const model = {
         "Centralize the SSO pre-flight policy into the shared gate and " +
         "retire the app-level retry layer (the SDK adaptive retry is the " +
         "single mechanism); no globalArguments schema changes",
+      upgradeAttributes: (old: Record<string, unknown>) => old,
+    },
+    {
+      toVersion: "2026.07.20.0",
+      description:
+        "Regenerate shared scan_error _lib twin: harden message extraction " +
+        "for non-Error object errors; no globalArguments schema changes",
       upgradeAttributes: (old: Record<string, unknown>) => old,
     },
   ] as Array<{

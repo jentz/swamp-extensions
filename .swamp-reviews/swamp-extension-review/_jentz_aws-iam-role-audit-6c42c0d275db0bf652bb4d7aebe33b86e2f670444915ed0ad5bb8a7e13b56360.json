@@ -1,0 +1,82 @@
+{
+  "extension": "@jentz/aws-iam-role-audit",
+  "version": "2026.07.20.0",
+  "reviewedAt": "2026-07-20T09:20:21Z",
+  "dimensions": [
+    {
+      "id": "credentials-secrets",
+      "verdict": "pass",
+      "note": "No credential/secret path touched. The scan_error change reads an error object's string `.message`; scan_error messages are already operator-facing diagnostics, never token material, and AWS SDK credential resolution is unchanged."
+    },
+    {
+      "id": "logging-quality",
+      "verdict": "pass",
+      "note": "No logging code changed. For real Error inputs the classified message is byte-identical; the change only recovers a usable message from non-Error object errors instead of \"[object Object]\"."
+    },
+    {
+      "id": "error-handling",
+      "verdict": "pass",
+      "note": "This IS the change: classifyError/collectHaystack now extract a string `.message` from non-Error object errors and object-shaped causes, so an object whose signal lives only in `.message` classifies correctly (network/auth_expired/access_denied) instead of falling to \"other\" with an \"[object Object]\" message. Error and string inputs behave byte-identically (extractMessage falls back to String(err) on a missing/non-string message); verified against _lib/scan_error_test.ts. Still throws before writeResource."
+    },
+    {
+      "id": "testing-completeness",
+      "verdict": "pass",
+      "note": "_lib/scan_error_test.ts gains two teeth tests — a non-Error object with the signal only in `.message` => access_denied + exact message, and an object cause with a network signature only in `.message` => network — both fail if the source change is reverted. All prior scan_error tests unchanged and green."
+    },
+    {
+      "id": "idempotency-resilience",
+      "verdict": "pass",
+      "note": "Read-only fan-out scan unchanged; a pure message-extraction helper change cannot affect re-runnability."
+    },
+    {
+      "id": "api-contracts",
+      "verdict": "pass",
+      "note": "No SDK calls or request shapes changed; the scan_error kind enum and stored row shape are untouched."
+    },
+    {
+      "id": "resource-management",
+      "verdict": "pass",
+      "note": "No clients, handles, or files are affected by a pure classification helper change."
+    },
+    {
+      "id": "published-surface-hygiene",
+      "verdict": "pass",
+      "note": "The only source change is the regenerated shared _lib/scan_error.ts twin (message-extraction hardening); no README/fixture identifiers added or changed. Manifest and model.version aligned at 2026.07.20.0."
+    },
+    {
+      "id": "schema-strictness",
+      "verdict": "pass",
+      "note": "ScanErrorSchema and all resource schemas are untouched strict z.object; the change is confined to the classifyError/collectHaystack pure functions."
+    },
+    {
+      "id": "lifetime-gc",
+      "verdict": "pass",
+      "note": "No resource/file spec lifetime or garbageCollection touched by this change."
+    },
+    {
+      "id": "crud-completeness",
+      "verdict": "na",
+      "note": "Read-only fan-out scan (Describe*/Get* only); no create/update/delete lifecycle to complete. Unaffected by a classification helper change."
+    },
+    {
+      "id": "preflight-checks",
+      "verdict": "pass",
+      "note": "The SSO pre-flight and profile-suffix refusal are unchanged in code; unaffected by the scan_error helper change."
+    },
+    {
+      "id": "instance-names",
+      "verdict": "pass",
+      "note": "scanErrorKey and all instance-name construction are unchanged."
+    },
+    {
+      "id": "data-access",
+      "verdict": "pass",
+      "note": "No readResource/writeResource paths changed; the stored scan_error row shape is byte-identical."
+    },
+    {
+      "id": "version-upgrades",
+      "verdict": "pass",
+      "note": "model.version bumped to 2026.07.20.0 with a matching no-op upgrade entry appended (identity upgradeAttributes; description records the regenerated shared scan_error twin, no globalArguments schema changes). The upgrades-tail toVersion equals model.version, verified by the passing metadata test."
+    }
+  ]
+}

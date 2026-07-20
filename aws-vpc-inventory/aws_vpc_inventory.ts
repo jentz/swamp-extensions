@@ -598,7 +598,7 @@ export async function runScan(deps: ScanDeps): Promise<ScanResult> {
  */
 export const model = {
   type: "@jentz/aws-vpc-inventory",
-  version: "2026.07.19.0",
+  version: "2026.07.20.0",
   globalArguments: GlobalArgsSchema,
   // The upgrade chain's tail toVersion must equal model.version — swamp
   // registry/host loading rejects a model where the two drift. The no-op
@@ -639,6 +639,13 @@ export const model = {
         "`network` kind, the `preflight_sso` phase, and the `ssoSession` " +
         "argument; accountName JSDoc default corrected to empty string; no " +
         "resource schema changes",
+      upgradeAttributes: (old: Record<string, unknown>) => old,
+    },
+    {
+      toVersion: "2026.07.20.0",
+      description:
+        "Regenerate shared scan_error _lib twin: harden message extraction " +
+        "for non-Error object errors; no globalArguments schema changes",
       upgradeAttributes: (old: Record<string, unknown>) => old,
     },
   ],
