@@ -180,10 +180,10 @@ change.
 
 | Argument     | Type                            | Default                              | Meaning                                                                                              |
 | ------------ | ------------------------------- | ------------------------------------ | ---------------------------------------------------------------------------------------------------- |
-| `namePrefix` | `string` (required, non-empty)  | `StackSet-IAMCustomPasswordPolicy-`  | Only stacks whose name starts with this prefix are enumerated or ever considered for deletion.       |
-| `regions`    | `string[]` (required, non-empty) | `us-east-1`, `eu-west-1`, `eu-central-1`, `eu-north-1` | Regions to fan out across in one execution.                                                          |
+| `namePrefix` | `string` (non-empty)  | `StackSet-IAMCustomPasswordPolicy-`  | Only stacks whose name starts with this prefix are enumerated or ever considered for deletion.       |
+| `regions`    | `string[]` (non-empty) | `us-east-1`, `eu-west-1`, `eu-central-1`, `eu-north-1` | Regions to fan out across in one execution.                                                          |
 | `profile`    | `string`                        | `""` (ambient)                       | Named AWS profile (resolved via `fromIni`). Empty uses the ambient credential chain (`AWS_*` env).   |
-| `assumeRoleName` | `string` (required, non-empty) | `AWSControlTowerExecution`        | Role name `enumerateOrg` assumes into each member account (must exist with this name in every member). Unused by the single-account methods. |
+| `assumeRoleName` | `string` (non-empty) | `AWSControlTowerExecution`        | Role name `enumerateOrg` assumes into each member account (must exist with this name in every member). Unused by the single-account methods. |
 
 The `enumerateOrg` method takes one argument:
 

@@ -1789,7 +1789,7 @@ function orgApiFromGlobals(g: GlobalArgs, signal?: AbortSignal): OrgApi {
  */
 export const model = {
   type: "@jentz/aws-cfn-orphan-sweep",
-  version: "2026.07.19.0",
+  version: "2026.07.20.0",
   globalArguments: GlobalArgsSchema,
   upgrades: [
     {
@@ -1803,6 +1803,14 @@ export const model = {
         "Docs only: correct cleanup IAM permissions in module/model JSDoc " +
         "(default predelete-Lambda path + lambda:DeleteFunction) and note " +
         "orphan/deletion key sanitization; no resource schema changes.",
+      upgradeAttributes: (old: Record<string, unknown>) => old,
+    },
+    {
+      toVersion: "2026.07.20.0",
+      description:
+        'Docs only: drop the inaccurate "required" label from the defaulted ' +
+        "namePrefix, regions, and assumeRoleName global-argument rows in the " +
+        "README; no resource schema changes.",
       upgradeAttributes: (old: Record<string, unknown>) => old,
     },
   ],
