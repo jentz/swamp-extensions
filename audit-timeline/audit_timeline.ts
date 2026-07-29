@@ -161,7 +161,9 @@ export interface ActorSummary {
  * Returns the input unchanged when it cannot be parsed.
  */
 export function toIsoUtc(ts: string): string {
-  const insights = ts.match(/^(\d{4}-\d{2}-\d{2}) (\d{2}:\d{2}:\d{2}(?:\.\d+)?)$/);
+  const insights = ts.match(
+    /^(\d{4}-\d{2}-\d{2}) (\d{2}:\d{2}:\d{2}(?:\.\d+)?)$/,
+  );
   const candidate = insights ? `${insights[1]}T${insights[2]}Z` : ts;
   const parsed = new Date(candidate);
   if (isNaN(parsed.getTime())) return ts;
@@ -364,9 +366,14 @@ export async function collect(
       const res = QueryArtifactSchema.safeParse(value);
       if (!res.success) {
         skipped++;
-        tryLog(logger, "warn", "query_results artifact {handle} failed schema", {
-          handle: handle.name,
-        });
+        tryLog(
+          logger,
+          "warn",
+          "query_results artifact {handle} failed schema",
+          {
+            handle: handle.name,
+          },
+        );
         continue;
       }
       rawRows.push(...res.data.results);
@@ -456,7 +463,9 @@ export function renderMarkdown(
     lines.push("|---|---|---|---|");
     for (const a of actors) {
       lines.push(
-        `| \`${mdEscape(a.actor)}\` | ${a.changes} | ${a.firstSeen} | ${a.lastSeen} |`,
+        `| \`${
+          mdEscape(a.actor)
+        }\` | ${a.changes} | ${a.firstSeen} | ${a.lastSeen} |`,
       );
     }
   }
