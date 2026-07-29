@@ -128,7 +128,7 @@ export interface ChangeEvent {
   account: string;
   /** Correlation/request id; `""` if absent. */
   requestId: string;
-  /** Producing service/domain (e.g. `salestaxes`). */
+  /** Producing service/domain (e.g. `widgets`). */
   service: string;
   /** Change verb derived from the HTTP method: add/update/delete/other. */
   verb: string;

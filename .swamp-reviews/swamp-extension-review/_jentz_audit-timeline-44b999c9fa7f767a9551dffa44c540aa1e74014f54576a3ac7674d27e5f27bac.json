@@ -1,0 +1,47 @@
+{
+  "extension": "@jentz/audit-timeline",
+  "version": "2026.07.29.0",
+  "reviewedAt": "2026-07-29T13:31:25Z",
+  "dimensions": [
+    {
+      "id": "credentials-secrets",
+      "verdict": "na",
+      "note": "Pure data shaping over workflow artifacts; the report holds no credentials and makes no authenticated calls."
+    },
+    {
+      "id": "logging-quality",
+      "verdict": "pass",
+      "note": "Structured placeholders via a never-throws tryLog wrapper; info on entry/finish, warn on skipped artifacts; no secrets logged."
+    },
+    {
+      "id": "error-handling",
+      "verdict": "pass",
+      "note": "Per-artifact narrow catches count skips; the outer catch implements the documented never-throws degrade contract with the degraded flag."
+    },
+    {
+      "id": "testing-completeness",
+      "verdict": "pass",
+      "note": "11 tests: pure helpers, collect (success, schema-mismatch skip, unreadable-artifact skip), execute happy path, and execute degraded path with a broken context."
+    },
+    {
+      "id": "idempotency-resilience",
+      "verdict": "pass",
+      "note": "Read-only and deterministic for the same artifacts; re-runs are safe."
+    },
+    {
+      "id": "api-contracts",
+      "verdict": "na",
+      "note": "No external HTTP calls; artifact shapes are validated with zod safeParse before use."
+    },
+    {
+      "id": "resource-management",
+      "verdict": "na",
+      "note": "No connections, file handles, temp files, or cloud resources."
+    },
+    {
+      "id": "published-surface-hygiene",
+      "verdict": "pass",
+      "note": "Placeholders only: RFC 5737 IPs, neutral account ids and service names. Environment-specific identifiers found in the first draft's tests were removed during this review."
+    }
+  ]
+}
