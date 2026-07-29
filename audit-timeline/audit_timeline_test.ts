@@ -50,7 +50,10 @@ function event(overrides: Partial<ChangeEvent>): ChangeEvent {
 Deno.test("toIsoUtc converts Logs Insights timestamps as UTC", () => {
   assertEquals(toIsoUtc("2026-06-11 08:40:04.097"), "2026-06-11T08:40:04.097Z");
   assertEquals(toIsoUtc("2026-06-11 08:40:04"), "2026-06-11T08:40:04.000Z");
-  assertEquals(toIsoUtc("2026-06-11T08:40:04.097Z"), "2026-06-11T08:40:04.097Z");
+  assertEquals(
+    toIsoUtc("2026-06-11T08:40:04.097Z"),
+    "2026-06-11T08:40:04.097Z",
+  );
   assertEquals(toIsoUtc("not a date"), "not a date");
 });
 
