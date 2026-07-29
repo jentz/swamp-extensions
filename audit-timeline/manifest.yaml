@@ -1,0 +1,50 @@
+manifestVersion: 1
+name: "@jentz/audit-timeline"
+version: "2026.07.29.0"
+description: |
+  Workflow-scope report that renders a change-audit timeline from CloudWatch
+  Logs Insights query rows collected earlier in the workflow (any model
+  emitting `query_results` artifacts, e.g. @webframp/aws/logs), plus an actor
+  roster and ready-to-run identity-resolution SQL.
+
+  Generic by design: every environment-specific detail — which row fields
+  feed each column, the identity-resolution SQL template, and an optional
+  source-IP -> origin annotation map — comes from a `config` artifact
+  produced in the same workflow (e.g. @jentz/local-config over a gitignored
+  JSON file). The published report contains no environment identifiers.
+
+  Emits a markdown body (timeline table with ISO-8601 UTC timestamps,
+  actor/verb/service/site/path/status/body columns, actor roster with
+  first/last-seen, and the SQL block for the human-run identity hop) and a
+  JSON payload carrying the normalized `events[]`, `actors[]`, and
+  `resolutionSql[]`.
+
+  The report never throws: unreadable or schema-mismatched artifacts are
+  counted and skipped, and an unexpected failure degrades to a still-valid
+  report with the `degraded` flag set.
+repository: "https://github.com/jentz/swamp-extensions"
+homepage: "https://github.com/jentz/swamp-extensions/tree/main/audit-timeline"
+paths:
+  base: manifest
+models: []
+workflows: []
+vaults: []
+drivers: []
+datastores: []
+reports:
+  - audit_timeline.ts
+additionalFiles:
+  - README.md
+  - LICENSE.md
+platforms:
+  - linux-x86_64
+  - linux-aarch64
+  - darwin-x86_64
+  - darwin-aarch64
+labels:
+  - audit
+  - logs
+  - timeline
+  - forensics
+  - report
+dependencies: []
