@@ -90,8 +90,33 @@ const FieldMapSchema = z.object({
   sourceIp: z.string().default(""),
 });
 
-/** Which raw row fields feed each timeline column. */
-export type FieldMap = z.infer<typeof FieldMapSchema>;
+/**
+ * Which raw row fields feed each timeline column. Mirrors `FieldMapSchema`,
+ * which stays the runtime validation source of truth; the explicit interface
+ * keeps zod internals out of the public API surface.
+ */
+export interface FieldMap {
+  /** Row field holding the event timestamp. */
+  timestamp: string;
+  /** Row field holding the actor identifier. */
+  actor: string;
+  /** Row field holding the account identifier. */
+  account: string;
+  /** Row field holding the correlation/request id. */
+  requestId: string;
+  /** Row field holding the producing service/domain. */
+  service: string;
+  /** Row field holding the HTTP method. */
+  method: string;
+  /** Row field holding the target path. */
+  path: string;
+  /** Row field holding the HTTP status. */
+  status: string;
+  /** Row field holding the submitted body. */
+  body: string;
+  /** Row field holding the source IP; `""` disables origin lookup. */
+  sourceIp: string;
+}
 
 /** One normalized change event on the timeline. */
 export interface ChangeEvent {
@@ -123,6 +148,7 @@ export interface ChangeEvent {
 
 /** Everything collected from upstream workflow steps. */
 export interface Collected {
+  /** Normalized change events, sorted by timestamp. */
   events: ChangeEvent[];
   /** Parsed config artifact, `{}` when no config step was found. */
   config: Record<string, unknown>;
@@ -132,22 +158,35 @@ export interface Collected {
 
 /** Structured JSON payload emitted alongside the markdown body. */
 export interface ReportJson {
+  /** Report name (`@jentz/audit-timeline`). */
   report: string;
+  /** Name of the workflow the report ran against. */
   workflow: string;
+  /** ISO-8601 generation timestamp. */
   generatedAt: string;
+  /** Normalized change events, sorted by timestamp. */
   events: ChangeEvent[];
+  /** Number of events. */
   eventCount: number;
+  /** Per-actor rollups, most changes first. */
   actors: ActorSummary[];
+  /** One identity-resolution SQL statement per distinct account. */
   resolutionSql: string[];
+  /** Artifacts that failed to decode or validate. */
   skipped: number;
+  /** True when an unexpected failure degraded the report. */
   degraded: boolean;
 }
 
 /** Per-actor rollup for the roster table. */
 export interface ActorSummary {
+  /** Actor identifier exactly as logged. */
   actor: string;
+  /** Number of changes attributed to this actor. */
   changes: number;
+  /** Timestamp of the actor's earliest change. */
   firstSeen: string;
+  /** Timestamp of the actor's latest change. */
   lastSeen: string;
 }
 
@@ -495,6 +534,10 @@ export function renderMarkdown(
 // Report definition
 // ---------------------------------------------------------------------------
 
+/**
+ * The `@jentz/audit-timeline` workflow-scope report definition consumed by
+ * the swamp report loader.
+ */
 export const report = {
   name: "@jentz/audit-timeline",
   description:
