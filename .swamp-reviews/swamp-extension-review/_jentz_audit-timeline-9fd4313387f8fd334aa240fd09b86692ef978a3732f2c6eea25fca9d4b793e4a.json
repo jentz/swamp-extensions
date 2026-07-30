@@ -1,7 +1,7 @@
 {
   "extension": "@jentz/audit-timeline",
-  "version": "2026.07.30.0",
-  "reviewedAt": "2026-07-30T19:08:22Z",
+  "version": "2026.07.30.1",
+  "reviewedAt": "2026-07-30T20:46:57Z",
   "dimensions": [
     {
       "id": "credentials-secrets",
@@ -11,17 +11,17 @@
     {
       "id": "logging-quality",
       "verdict": "pass",
-      "note": "Structured placeholders via the never-throws tryLog wrapper; the new failed-attempts path adds a structured warn when auditTimeline.failedAttempts fails schema validation."
+      "note": "Structured placeholders via the never-throws tryLog wrapper; the new incomplete-query path adds a structured warn ({handle}, {status}) when a query_results artifact did not reach Complete."
     },
     {
       "id": "error-handling",
       "verdict": "pass",
-      "note": "failedAttempts config is safeParse-validated; an invalid section disables the feature with a warning instead of throwing. Per-artifact narrow catches and the outer degrade contract are unchanged."
+      "note": "Incomplete detection runs inside the existing safeParse-guarded artifact loop; a producer that omits status is treated as complete by design (documented). The never-throws degrade contract is unchanged."
     },
     {
       "id": "testing-completeness",
       "verdict": "pass",
-      "note": "19 tests: prior coverage plus statusPartition boundaries (399/400, absent, non-numeric), dataset routing by step name, roster/SQL inclusion of rejected primary rows and exclusion of dataset rows, None-found rendering, and section omission without config."
+      "note": "22 tests: prior coverage plus incomplete flagging (Running flagged, Complete and missing status not), warning banner with step/status detail, empty-timeline wording swap under incomplete results, and no-warning path when all queries complete."
     },
     {
       "id": "idempotency-resilience",
@@ -41,7 +41,7 @@
     {
       "id": "published-surface-hygiene",
       "verdict": "pass",
-      "note": "Placeholders only: widgets-theme operation names, generic step names (query-failed-graphql / query-failed-xyz), RFC 5737 IPs, neutral families."
+      "note": "Placeholders only: widgets-theme operation names, generic step names (query-changes / query-failed-xyz), RFC 5737 IPs, neutral families; the new docs mention only the generic Logs Insights status vocabulary."
     }
   ]
 }

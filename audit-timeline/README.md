@@ -96,7 +96,8 @@ without overrides the default field names are used.
   intended for a human with database access to run; results never flow back
   into the toolkit.
 - **JSON**: `events[]` (normalized rows), `failedAttempts[]`, `actors[]`,
-  `resolutionSql[]`, `skipped`, `degraded`.
+  `resolutionSql[]`, `skipped`, `incompleteQueries[]`,
+  `incompleteQueryCount`, `degraded`.
 
 ## Usage
 
@@ -126,3 +127,9 @@ swamp report get @jentz/audit-timeline --workflow <workflow> --markdown
 The report never throws: unreadable or schema-mismatched artifacts are counted
 in `skipped`, and an unexpected failure degrades to a still-valid report with
 `degraded: true`.
+
+Incomplete queries are surfaced, never silent. A `query_results` artifact
+whose `status` is present but not `Complete` — for example `Running` after a
+timed-out Logs Insights wait — is listed in `incompleteQueries[]` and stamped
+as a warning at the top of the markdown body. An empty timeline backed by a
+cut-off query says so explicitly instead of reading as "no changes".

@@ -1,6 +1,6 @@
 manifestVersion: 1
 name: "@jentz/audit-timeline"
-version: "2026.07.30.0"
+version: "2026.07.30.1"
 description: |
   Workflow-scope report that renders a change-audit timeline from CloudWatch
   Logs Insights query rows collected earlier in the workflow (any model
@@ -22,7 +22,10 @@ description: |
 
   The report never throws: unreadable or schema-mismatched artifacts are
   counted and skipped, and an unexpected failure degrades to a still-valid
-  report with the `degraded` flag set.
+  report with the `degraded` flag set. Query artifacts whose status never
+  reached `Complete` (e.g. a timed-out Logs Insights wait) are listed in
+  `incompleteQueries` and stamped as a markdown warning, so a cut-off query
+  cannot read as "no changes".
 repository: "https://github.com/jentz/swamp-extensions"
 homepage: "https://github.com/jentz/swamp-extensions/tree/main/audit-timeline"
 paths:

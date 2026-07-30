@@ -484,6 +484,68 @@ Deno.test("report.execute omits the section without failedAttempts config", asyn
   assertEquals(markdown.includes("## Failed attempts"), false);
 });
 
+Deno.test("collect flags query artifacts that did not complete", async () => {
+  const context = fakeContext([
+    {
+      spec: "query_results",
+      step: "query-changes",
+      value: { results: [], status: "Running" },
+    },
+    {
+      spec: "query_results",
+      step: "query-ok",
+      value: { results: [primaryRow({})], status: "Complete" },
+    },
+    {
+      spec: "query_results",
+      step: "query-legacy",
+      value: { results: [primaryRow({})] },
+    },
+  ]);
+  const collected = await collect(context);
+  assertEquals(collected.incomplete, [
+    { step: "query-changes", status: "Running" },
+  ]);
+  assertEquals(collected.events.length, 2);
+  assertEquals(collected.skipped, 0);
+});
+
+Deno.test("report.execute surfaces incomplete queries instead of silent zero rows", async () => {
+  const context = fakeContext([
+    {
+      spec: "query_results",
+      step: "query-changes",
+      value: { results: [], status: "Running" },
+    },
+  ]);
+  const { markdown, json } = await report.execute(context);
+  assertEquals(json.degraded, false);
+  assertEquals(json.incompleteQueryCount, 1);
+  assertEquals(json.incompleteQueries, [
+    { step: "query-changes", status: "Running" },
+  ]);
+  assertEquals(markdown.includes("Warning — incomplete results"), true);
+  assertEquals(markdown.includes("`query-changes`: Running"), true);
+  assertEquals(markdown.includes("not evidence of no changes"), true);
+  assertEquals(
+    markdown.includes("No changes matched the query window"),
+    false,
+  );
+});
+
+Deno.test("report.execute omits the incomplete warning when queries complete", async () => {
+  const context = fakeContext([
+    {
+      spec: "query_results",
+      step: "query-changes",
+      value: { results: [primaryRow({})], status: "Complete" },
+    },
+  ]);
+  const { markdown, json } = await report.execute(context);
+  assertEquals(json.incompleteQueryCount, 0);
+  assertEquals(markdown.includes("Warning — incomplete results"), false);
+});
+
 Deno.test("report.execute degrades on a broken context", async () => {
   const { markdown, json } = await report.execute({
     workflowName: "wf-test",
