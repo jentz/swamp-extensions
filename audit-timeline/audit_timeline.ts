@@ -35,6 +35,30 @@
  *       "status": "http.status",
  *       "body": "http.body",
  *       "sourceIp": ""
+ *     },
+ *     // optional: presence enables the "Failed attempts" section
+ *     "failedAttempts": {
+ *       // partition field for primary rows; defaults to fields.status.
+ *       // numeric >= 400 -> rejected, absent/non-numeric -> no response,
+ *       // otherwise the row stays on the change timeline
+ *       "statusField": "http.status",
+ *       // family labels stamped on partitioned primary rows
+ *       "rejectedFamily": "rejected",
+ *       "noResponseFamily": "no-response",
+ *       // extra datasets that are failed attempts in their entirety,
+ *       // keyed by the workflow step name that produced them; rows never
+ *       // enter the timeline, actor roster, or resolution SQL
+ *       "datasets": {
+ *         "query-failed-xyz": {
+ *           "family": "xyz-error",
+ *           "fields": {
+ *             "timestamp": "@timestamp",
+ *             "actor": "",
+ *             "operation": "operationName",
+ *             "detail": "extensions"
+ *           }
+ *         }
+ *       }
  *     }
  *   }
  * }
@@ -89,6 +113,71 @@ const FieldMapSchema = z.object({
   body: z.string().default("http.body"),
   sourceIp: z.string().default(""),
 });
+
+const FailedDatasetFieldsSchema = z.object({
+  timestamp: z.string().default("@timestamp"),
+  actor: z.string().default(""),
+  operation: z.string().default(""),
+  detail: z.string().default(""),
+});
+
+const FailedDatasetSchema = z.object({
+  family: z.string(),
+  fields: FailedDatasetFieldsSchema.default({
+    timestamp: "@timestamp",
+    actor: "",
+    operation: "",
+    detail: "",
+  }),
+});
+
+const FailedAttemptsSchema = z.object({
+  statusField: z.string().default(""),
+  rejectedFamily: z.string().default("rejected"),
+  noResponseFamily: z.string().default("no-response"),
+  datasets: z.record(z.string(), FailedDatasetSchema).default({}),
+});
+
+/**
+ * Parsed `auditTimeline.failedAttempts` config. Mirrors
+ * `FailedAttemptsSchema`; present on `Collected` only when the config
+ * artifact carries the section.
+ */
+export interface FailedAttemptsConfig {
+  /** Partition field for primary rows; `""` falls back to `fields.status`. */
+  statusField: string;
+  /** Family stamped on primary rows with a numeric status >= 400. */
+  rejectedFamily: string;
+  /** Family stamped on primary rows with an absent/non-numeric status. */
+  noResponseFamily: string;
+  /** Whole-dataset failed-attempt sources, keyed by workflow step name. */
+  datasets: Record<
+    string,
+    {
+      family: string;
+      fields: {
+        timestamp: string;
+        actor: string;
+        operation: string;
+        detail: string;
+      };
+    }
+  >;
+}
+
+/** One failed change attempt, from either family of failure. */
+export interface FailedAttempt {
+  /** ISO-8601 UTC timestamp with milliseconds. */
+  timestamp: string;
+  /** Family label (e.g. `rejected`, `no-response`, or a dataset family). */
+  family: string;
+  /** Actor identifier exactly as logged; `""` renders as `unknown`. */
+  actor: string;
+  /** What was attempted (`METHOD /path` or a dataset operation field). */
+  operation: string;
+  /** Failure detail (HTTP status, error code, ...); `""` if absent. */
+  detail: string;
+}
 
 /**
  * Which raw row fields feed each timeline column. Mirrors `FieldMapSchema`,
@@ -150,6 +239,15 @@ export interface ChangeEvent {
 export interface Collected {
   /** Normalized change events, sorted by timestamp. */
   events: ChangeEvent[];
+  /**
+   * Primary-row events that partitioned out as failed (kept as full
+   * `ChangeEvent`s so they still feed the actor roster and resolution SQL).
+   */
+  failedPrimary: ChangeEvent[];
+  /** Failed attempts across all families, sorted by timestamp. */
+  failedAttempts: FailedAttempt[];
+  /** Parsed failed-attempts config; `null` disables the section. */
+  failedConfig: FailedAttemptsConfig | null;
   /** Parsed config artifact, `{}` when no config step was found. */
   config: Record<string, unknown>;
   /** Artifacts that failed to decode or validate. */
@@ -168,6 +266,10 @@ export interface ReportJson {
   events: ChangeEvent[];
   /** Number of events. */
   eventCount: number;
+  /** Failed attempts across all families, sorted by timestamp. */
+  failedAttempts: FailedAttempt[];
+  /** Number of failed attempts. */
+  failedAttemptCount: number;
   /** Per-actor rollups, most changes first. */
   actors: ActorSummary[];
   /** One identity-resolution SQL statement per distinct account. */
@@ -324,6 +426,54 @@ export function rowToEvent(
   };
 }
 
+/**
+ * Classify a primary row's raw status value for the failed-attempts
+ * partition: numeric >= 400 is `rejected`, absent or non-numeric is
+ * `no-response`, anything else stays on the change timeline (`ok`).
+ */
+export function statusPartition(
+  raw: string | undefined,
+): "ok" | "rejected" | "no-response" {
+  if (raw === undefined || raw.trim() === "") return "no-response";
+  const n = Number(raw);
+  if (!Number.isFinite(n)) return "no-response";
+  return n >= 400 ? "rejected" : "ok";
+}
+
+/** Convert a failed primary `ChangeEvent` into a `FailedAttempt` row. */
+export function eventToFailedAttempt(
+  e: ChangeEvent,
+  family: string,
+): FailedAttempt {
+  return {
+    timestamp: e.timestamp,
+    family,
+    actor: e.actor,
+    operation: `${e.method} ${e.path}`.trim(),
+    detail: e.status,
+  };
+}
+
+/** Convert one raw dataset row into a `FailedAttempt` via its field map. */
+export function datasetRowToFailedAttempt(
+  row: Record<string, string>,
+  family: string,
+  fields: {
+    timestamp: string;
+    actor: string;
+    operation: string;
+    detail: string;
+  },
+): FailedAttempt {
+  return {
+    timestamp: toIsoUtc(row[fields.timestamp] ?? ""),
+    family,
+    actor: fields.actor ? row[fields.actor] ?? "" : "",
+    operation: fields.operation ? row[fields.operation] ?? "" : "",
+    detail: fields.detail ? row[fields.detail] ?? "" : "",
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Never-throws helpers
 // ---------------------------------------------------------------------------
@@ -362,7 +512,7 @@ export async function collect(
 ): Promise<Collected> {
   const logger = context.logger;
   let config: Record<string, unknown> = {};
-  const rawRows: Record<string, string>[] = [];
+  const rawRows: Array<{ stepName: string; row: Record<string, string> }> = [];
   let skipped = 0;
 
   for (const step of context.stepExecutions ?? []) {
@@ -415,13 +565,26 @@ export async function collect(
         );
         continue;
       }
-      rawRows.push(...res.data.results);
+      const stepName = typeof step.stepName === "string" ? step.stepName : "";
+      for (const row of res.data.results) rawRows.push({ stepName, row });
     }
   }
 
-  const fields = FieldMapSchema.parse(
-    (config.auditTimeline as { fields?: unknown } | undefined)?.fields ?? {},
-  );
+  const auditTimeline = config.auditTimeline as
+    | { fields?: unknown; failedAttempts?: unknown }
+    | undefined;
+  const fields = FieldMapSchema.parse(auditTimeline?.fields ?? {});
+
+  let failedConfig: FailedAttemptsConfig | null = null;
+  if (auditTimeline?.failedAttempts !== undefined) {
+    const res = FailedAttemptsSchema.safeParse(auditTimeline.failedAttempts);
+    if (res.success) {
+      failedConfig = res.data;
+    } else {
+      tryLog(logger, "warn", "invalid auditTimeline.failedAttempts config", {});
+    }
+  }
+
   const natMapRaw = (config.natMap ?? {}) as Record<string, unknown>;
   const natMap: Record<string, z.infer<typeof NatEntrySchema>> = {};
   for (const [ip, entry] of Object.entries(natMapRaw)) {
@@ -429,11 +592,52 @@ export async function collect(
     if (res.success) natMap[ip] = res.data;
   }
 
-  const events = rawRows
-    .map((row) => rowToEvent(row, fields, natMap))
-    .sort((a, b) => a.timestamp.localeCompare(b.timestamp));
+  const statusField = failedConfig?.statusField || fields.status;
+  const events: ChangeEvent[] = [];
+  const failedPrimary: ChangeEvent[] = [];
+  const failedAttempts: FailedAttempt[] = [];
 
-  return { events, config, skipped };
+  for (const { stepName, row } of rawRows) {
+    const dataset = failedConfig?.datasets[stepName];
+    if (dataset) {
+      failedAttempts.push(
+        datasetRowToFailedAttempt(row, dataset.family, dataset.fields),
+      );
+      continue;
+    }
+    const event = rowToEvent(row, fields, natMap);
+    if (failedConfig) {
+      const partition = statusPartition(row[statusField]);
+      if (partition !== "ok") {
+        failedPrimary.push(event);
+        failedAttempts.push(
+          eventToFailedAttempt(
+            event,
+            partition === "rejected"
+              ? failedConfig.rejectedFamily
+              : failedConfig.noResponseFamily,
+          ),
+        );
+        continue;
+      }
+    }
+    events.push(event);
+  }
+
+  const byTimestamp = <T extends { timestamp: string }>(a: T, b: T) =>
+    a.timestamp.localeCompare(b.timestamp);
+  events.sort(byTimestamp);
+  failedPrimary.sort(byTimestamp);
+  failedAttempts.sort(byTimestamp);
+
+  return {
+    events,
+    failedPrimary,
+    failedAttempts,
+    failedConfig,
+    config,
+    skipped,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -456,7 +660,7 @@ export function renderMarkdown(
   generatedAt: string,
   workflowName: string,
 ): string {
-  const { events, skipped } = collected;
+  const { events, failedAttempts, failedConfig, skipped } = collected;
   const hasOrigin = events.some((e) => e.origin !== "");
   const lines: string[] = [];
 
@@ -465,6 +669,7 @@ export function renderMarkdown(
   lines.push(
     `_Workflow **${workflowName}** · generated ${generatedAt} · ` +
       `${events.length} change(s) · ${actors.length} actor(s)` +
+      `${failedConfig ? ` · ${failedAttempts.length} failed attempt(s)` : ""}` +
       `${skipped ? ` · ${skipped} artifact(s) skipped` : ""}_`,
   );
   lines.push("");
@@ -492,6 +697,28 @@ export function renderMarkdown(
     }
   }
   lines.push("");
+
+  if (failedConfig) {
+    lines.push("## Failed attempts");
+    lines.push("");
+    if (failedAttempts.length === 0) {
+      lines.push("_None found._");
+    } else {
+      lines.push("| Timestamp (UTC) | Family | Actor | Operation | Detail |");
+      lines.push("|---|---|---|---|---|");
+      for (const f of failedAttempts) {
+        lines.push(
+          `| ${f.timestamp} | ${mdEscape(f.family)} | ` +
+            `\`${mdEscape(f.actor) || "unknown"}\` | ` +
+            `\`${mdEscape(f.operation) || "—"}\` | ` +
+            `${
+              f.detail ? "`" + mdEscape(truncate(f.detail, 160)) + "`" : "—"
+            } |`,
+        );
+      }
+    }
+    lines.push("");
+  }
 
   lines.push("## Actor roster");
   lines.push("");
@@ -543,8 +770,10 @@ export const report = {
   description:
     "Change-audit timeline built from Logs Insights query rows collected " +
     "earlier in the workflow: per-change timestamp/actor/verb/target table, " +
-    "an actor roster, and ready-to-run identity-resolution SQL from a " +
-    "config-carried template. Generic — field names, SQL template, and " +
+    "an optional failed-attempts section (status-partitioned primary rows " +
+    "plus whole failed datasets keyed by step name), an actor roster, and " +
+    "ready-to-run identity-resolution SQL from a config-carried template. " +
+    "Generic — field names, SQL template, failed-attempt families, and " +
     "source-IP origin map all come from a config artifact in the same " +
     "workflow.",
   scope: "workflow" as const,
@@ -560,7 +789,14 @@ export const report = {
       workflow: workflowName,
     });
 
-    let collected: Collected = { events: [], config: {}, skipped: 0 };
+    let collected: Collected = {
+      events: [],
+      failedPrimary: [],
+      failedAttempts: [],
+      failedConfig: null,
+      config: {},
+      skipped: 0,
+    };
     let actors: ActorSummary[] = [];
     let resolutionSql: string[] = [];
     let generatedAt = "";
@@ -570,8 +806,11 @@ export const report = {
     try {
       generatedAt = new Date().toISOString();
       collected = await collect(context);
-      actors = summarizeActors(collected.events);
-      resolutionSql = buildResolutionSql(collected.events, collected.config);
+      // Failed primary rows carry full identity, so they still feed the
+      // roster and the resolution SQL; dataset rows never do.
+      const attributed = [...collected.events, ...collected.failedPrimary];
+      actors = summarizeActors(attributed);
+      resolutionSql = buildResolutionSql(attributed, collected.config);
       markdown = renderMarkdown(
         collected,
         actors,
@@ -592,6 +831,8 @@ export const report = {
       generatedAt,
       events: collected.events,
       eventCount: collected.events.length,
+      failedAttempts: collected.failedAttempts,
+      failedAttemptCount: collected.failedAttempts.length,
       actors,
       resolutionSql,
       skipped: collected.skipped,

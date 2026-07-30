@@ -2,7 +2,8 @@
 
 Workflow-scope swamp report that renders a **change-audit timeline** from
 CloudWatch Logs Insights query rows collected earlier in the workflow, plus an
-**actor roster** and **ready-to-run identity-resolution SQL**.
+optional **failed-attempts section**, an **actor roster**, and **ready-to-run
+identity-resolution SQL**.
 
 ## What it consumes
 
@@ -45,21 +46,57 @@ without overrides the default field names are used.
       "status": "http.status",
       "body": "http.body",
       "sourceIp": ""
+    },
+    // optional: presence enables the "Failed attempts" section
+    "failedAttempts": {
+      // partition field for primary rows; defaults to fields.status.
+      // numeric >= 400 -> rejectedFamily, absent or non-numeric ->
+      // noResponseFamily, anything else stays on the change timeline
+      "statusField": "http.status",
+      "rejectedFamily": "rejected",
+      "noResponseFamily": "no-response",
+      // extra datasets that are failed attempts in their entirety, keyed
+      // by the workflow step name that produced them
+      "datasets": {
+        "query-failed-graphql": {
+          "family": "graphql-error",
+          "fields": {
+            "timestamp": "@timestamp",
+            "actor": "",              // "" renders as `unknown`
+            "operation": "operationName",
+            "detail": "extensions"
+          }
+        }
+      }
     }
   }
 }
 ```
 
+### Failed-attempts semantics
+
+- Primary rows (any `query_results` dataset not listed in `datasets`) are
+  partitioned on `statusField`: numeric `>= 400` becomes a failed attempt
+  labeled `rejectedFamily`; an absent or non-numeric status becomes
+  `noResponseFamily`; everything else stays on the change timeline.
+- Partitioned-out primary rows keep their identity, so they still feed the
+  actor roster and the resolution SQL.
+- Dataset rows are failed attempts in their entirety, labeled with the
+  dataset's `family`, and never enter the timeline, the actor roster, or the
+  resolution SQL.
+
 ## What it emits
 
 - **Markdown**: timeline table (ISO-8601 UTC ms timestamps; actor, verb
   add/update/delete derived from the HTTP method, service, site parsed from
-  `/sites/{site}/` paths, path, status, submitted body), actor roster with
-  change counts and first/last-seen, and the identity-resolution SQL in a
-  fenced block — intended for a human with database access to run; results
-  never flow back into the toolkit.
-- **JSON**: `events[]` (normalized rows), `actors[]`, `resolutionSql[]`,
-  `skipped`, `degraded`.
+  `/sites/{site}/` paths, path, status, submitted body), an optional failed-
+  attempts table (timestamp, family, actor or `unknown`, operation, detail;
+  `None found.` when empty), actor roster with change counts and
+  first/last-seen, and the identity-resolution SQL in a fenced block —
+  intended for a human with database access to run; results never flow back
+  into the toolkit.
+- **JSON**: `events[]` (normalized rows), `failedAttempts[]`, `actors[]`,
+  `resolutionSql[]`, `skipped`, `degraded`.
 
 ## Usage
 

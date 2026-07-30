@@ -9,11 +9,14 @@ import {
   buildResolutionSql,
   type ChangeEvent,
   collect,
+  datasetRowToFailedAttempt,
+  eventToFailedAttempt,
   guidToHex,
   methodToVerb,
   report,
   rowToEvent,
   siteFromPath,
+  statusPartition,
   summarizeActors,
   toIsoUtc,
 } from "./audit_timeline.ts";
@@ -159,23 +162,26 @@ Deno.test("buildResolutionSql returns empty without a template", () => {
 
 /** Build a fake report context around encoded artifacts. */
 function fakeContext(
-  artifacts: Array<{ spec: string; value: unknown; unreadable?: boolean }>,
+  artifacts: Array<
+    { spec: string; value: unknown; unreadable?: boolean; step?: string }
+  >,
 ) {
   const enc = new TextEncoder();
   return {
     workflowName: "wf-test",
     logger: { info: () => {}, warn: () => {} },
-    stepExecutions: [
-      {
-        modelType: "@test/source",
-        modelId: "m1",
-        dataHandles: artifacts.map((a, i) => ({
+    stepExecutions: artifacts.map((a, i) => ({
+      stepName: a.step ?? "s0",
+      modelType: "@test/source",
+      modelId: "m1",
+      dataHandles: [
+        {
           name: `h${i}`,
           version: 1,
           metadata: { tags: { specName: a.spec } },
-        })),
-      },
-    ],
+        },
+      ],
+    })),
     dataRepository: {
       getContent: (
         _type: string,
@@ -271,6 +277,211 @@ Deno.test("report.execute emits markdown, SQL, and json payload", async () => {
   assertEquals(markdown.includes("## Timeline"), true);
   assertEquals(markdown.includes("delete"), true);
   assertEquals(markdown.includes("```sql"), true);
+});
+
+Deno.test("statusPartition splits ok, rejected, and no-response", () => {
+  assertEquals(statusPartition("200"), "ok");
+  assertEquals(statusPartition("399"), "ok");
+  assertEquals(statusPartition("400"), "rejected");
+  assertEquals(statusPartition("503"), "rejected");
+  assertEquals(statusPartition(undefined), "no-response");
+  assertEquals(statusPartition(""), "no-response");
+  assertEquals(statusPartition("not-a-number"), "no-response");
+});
+
+Deno.test("eventToFailedAttempt keeps actor and builds the operation", () => {
+  const f = eventToFailedAttempt(event({ status: "403" }), "rejected");
+  assertEquals(f.family, "rejected");
+  assertEquals(f.actor, "{AAAA1111-BBBB-2222-CCCC-333344445555}");
+  assertEquals(f.operation, "PUT /sites/2/widgets/7");
+  assertEquals(f.detail, "403");
+});
+
+Deno.test("datasetRowToFailedAttempt maps configured fields", () => {
+  const f = datasetRowToFailedAttempt(
+    {
+      "@timestamp": "2026-06-11 08:40:04.097",
+      operationName: "UpdateWidget",
+      extensions: '{"code":"FORBIDDEN"}',
+    },
+    "graphql-error",
+    {
+      timestamp: "@timestamp",
+      actor: "",
+      operation: "operationName",
+      detail: "extensions",
+    },
+  );
+  assertEquals(f.timestamp, "2026-06-11T08:40:04.097Z");
+  assertEquals(f.family, "graphql-error");
+  assertEquals(f.actor, "");
+  assertEquals(f.operation, "UpdateWidget");
+  assertEquals(f.detail, '{"code":"FORBIDDEN"}');
+});
+
+const FAILED_CONFIG = {
+  identityResolution: {
+    sqlTemplate: "SELECT 1 FROM db{account}.t WHERE u IN ({userid_list});",
+    useridTerm: "UNHEX('{guid_hex}')",
+  },
+  auditTimeline: {
+    failedAttempts: {
+      rejectedFamily: "platform-rejected",
+      noResponseFamily: "no-response",
+      datasets: {
+        "query-failed-graphql": {
+          family: "graphql-error",
+          fields: { operation: "operationName", detail: "extensions" },
+        },
+      },
+    },
+  },
+};
+
+function primaryRow(overrides: Record<string, string>) {
+  return {
+    "@timestamp": "2026-06-11 08:40:04.097",
+    user_id: "{AAAA1111-BBBB-2222-CCCC-333344445555}",
+    account_id: "1001",
+    service: "widgets",
+    "http.method": "PUT",
+    "http.path": "/sites/2/widgets/7",
+    "http.status": "200",
+    ...overrides,
+  };
+}
+
+Deno.test("collect partitions primary rows and routes failed datasets", async () => {
+  const context = fakeContext([
+    { spec: "config", value: FAILED_CONFIG },
+    {
+      spec: "query_results",
+      step: "query-changes",
+      value: {
+        results: [
+          primaryRow({}),
+          primaryRow({
+            "@timestamp": "2026-06-11 09:00:00.000",
+            "http.status": "403",
+          }),
+          primaryRow({
+            "@timestamp": "2026-06-11 10:00:00.000",
+            "http.status": "",
+          }),
+        ],
+      },
+    },
+    {
+      spec: "query_results",
+      step: "query-failed-graphql",
+      value: {
+        results: [
+          {
+            "@timestamp": "2026-06-11 08:30:00.000",
+            operationName: "UpdateWidget",
+            extensions: '{"code":"FORBIDDEN"}',
+          },
+        ],
+      },
+    },
+  ]);
+  const collected = await collect(context);
+  assertEquals(collected.events.length, 1);
+  assertEquals(collected.events[0].status, "200");
+  assertEquals(collected.failedPrimary.length, 2);
+  assertEquals(collected.failedAttempts.length, 3);
+  assertEquals(
+    collected.failedAttempts.map((f) => f.family),
+    ["graphql-error", "platform-rejected", "no-response"],
+  );
+});
+
+Deno.test("collect without failedAttempts config keeps all rows on the timeline", async () => {
+  const context = fakeContext([
+    {
+      spec: "query_results",
+      value: { results: [primaryRow({ "http.status": "403" })] },
+    },
+  ]);
+  const collected = await collect(context);
+  assertEquals(collected.events.length, 1);
+  assertEquals(collected.failedAttempts.length, 0);
+  assertEquals(collected.failedConfig, null);
+});
+
+Deno.test("report.execute renders failed attempts and keeps graphql rows out of roster and SQL", async () => {
+  const context = fakeContext([
+    { spec: "config", value: FAILED_CONFIG },
+    {
+      spec: "query_results",
+      step: "query-changes",
+      value: {
+        results: [
+          primaryRow({}),
+          primaryRow({
+            "@timestamp": "2026-06-11 09:00:00.000",
+            user_id: "{DDDD1111-BBBB-2222-CCCC-333344445555}",
+            "http.status": "403",
+          }),
+        ],
+      },
+    },
+    {
+      spec: "query_results",
+      step: "query-failed-graphql",
+      value: {
+        results: [
+          {
+            "@timestamp": "2026-06-11 08:30:00.000",
+            operationName: "UpdateWidget",
+            extensions: '{"code":"FORBIDDEN"}',
+          },
+        ],
+      },
+    },
+  ]);
+  const { markdown, json } = await report.execute(context);
+  assertEquals(json.degraded, false);
+  assertEquals(json.eventCount, 1);
+  assertEquals(json.failedAttemptCount, 2);
+  // The rejected actor still resolves; the graphql row adds no actor.
+  assertEquals(json.actors.length, 2);
+  assertEquals(json.resolutionSql.length, 1);
+  assertEquals(
+    json.resolutionSql[0].includes("DDDD1111BBBB2222CCCC333344445555"),
+    true,
+  );
+  assertEquals(markdown.includes("## Failed attempts"), true);
+  assertEquals(markdown.includes("platform-rejected"), true);
+  assertEquals(markdown.includes("graphql-error"), true);
+  assertEquals(markdown.includes("`unknown`"), true);
+  assertEquals(markdown.includes("UpdateWidget"), true);
+});
+
+Deno.test("report.execute renders 'None found.' with config but no failures", async () => {
+  const context = fakeContext([
+    { spec: "config", value: FAILED_CONFIG },
+    {
+      spec: "query_results",
+      step: "query-changes",
+      value: { results: [primaryRow({})] },
+    },
+  ]);
+  const { markdown, json } = await report.execute(context);
+  assertEquals(json.failedAttemptCount, 0);
+  assertEquals(markdown.includes("## Failed attempts"), true);
+  assertEquals(markdown.includes("_None found._"), true);
+});
+
+Deno.test("report.execute omits the section without failedAttempts config", async () => {
+  const context = fakeContext([
+    {
+      spec: "query_results",
+      value: { results: [primaryRow({})] },
+    },
+  ]);
+  const { markdown } = await report.execute(context);
+  assertEquals(markdown.includes("## Failed attempts"), false);
 });
 
 Deno.test("report.execute degrades on a broken context", async () => {
