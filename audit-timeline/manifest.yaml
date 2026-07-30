@@ -1,6 +1,6 @@
 manifestVersion: 1
 name: "@jentz/audit-timeline"
-version: "2026.07.29.0"
+version: "2026.07.30.0"
 description: |
   Workflow-scope report that renders a change-audit timeline from CloudWatch
   Logs Insights query rows collected earlier in the workflow (any model
@@ -14,10 +14,11 @@ description: |
   JSON file). The published report contains no environment identifiers.
 
   Emits a markdown body (timeline table with ISO-8601 UTC timestamps,
-  actor/verb/service/site/path/status/body columns, actor roster with
+  actor/verb/service/site/path/status/body columns, an optional
+  failed-attempts table with configurable family labels, actor roster with
   first/last-seen, and the SQL block for the human-run identity hop) and a
-  JSON payload carrying the normalized `events[]`, `actors[]`, and
-  `resolutionSql[]`.
+  JSON payload carrying the normalized `events[]`, `failedAttempts[]`,
+  `actors[]`, and `resolutionSql[]`.
 
   The report never throws: unreadable or schema-mismatched artifacts are
   counted and skipped, and an unexpected failure degrades to a still-valid

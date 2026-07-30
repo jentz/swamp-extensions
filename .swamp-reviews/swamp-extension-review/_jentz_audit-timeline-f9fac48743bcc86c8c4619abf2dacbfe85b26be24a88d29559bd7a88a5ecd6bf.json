@@ -1,7 +1,7 @@
 {
   "extension": "@jentz/audit-timeline",
-  "version": "2026.07.29.0",
-  "reviewedAt": "2026-07-29T13:31:25Z",
+  "version": "2026.07.30.0",
+  "reviewedAt": "2026-07-30T19:08:22Z",
   "dimensions": [
     {
       "id": "credentials-secrets",
@@ -11,17 +11,17 @@
     {
       "id": "logging-quality",
       "verdict": "pass",
-      "note": "Structured placeholders via a never-throws tryLog wrapper; info on entry/finish, warn on skipped artifacts; no secrets logged."
+      "note": "Structured placeholders via the never-throws tryLog wrapper; the new failed-attempts path adds a structured warn when auditTimeline.failedAttempts fails schema validation."
     },
     {
       "id": "error-handling",
       "verdict": "pass",
-      "note": "Per-artifact narrow catches count skips; the outer catch implements the documented never-throws degrade contract with the degraded flag."
+      "note": "failedAttempts config is safeParse-validated; an invalid section disables the feature with a warning instead of throwing. Per-artifact narrow catches and the outer degrade contract are unchanged."
     },
     {
       "id": "testing-completeness",
       "verdict": "pass",
-      "note": "11 tests: pure helpers, collect (success, schema-mismatch skip, unreadable-artifact skip), execute happy path, and execute degraded path with a broken context."
+      "note": "19 tests: prior coverage plus statusPartition boundaries (399/400, absent, non-numeric), dataset routing by step name, roster/SQL inclusion of rejected primary rows and exclusion of dataset rows, None-found rendering, and section omission without config."
     },
     {
       "id": "idempotency-resilience",
@@ -41,7 +41,7 @@
     {
       "id": "published-surface-hygiene",
       "verdict": "pass",
-      "note": "Placeholders only: RFC 5737 IPs, neutral account ids and service names. Environment-specific identifiers found in the first draft's tests were removed during this review."
+      "note": "Placeholders only: widgets-theme operation names, generic step names (query-failed-graphql / query-failed-xyz), RFC 5737 IPs, neutral families."
     }
   ]
 }
