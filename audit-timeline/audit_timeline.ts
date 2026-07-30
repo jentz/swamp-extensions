@@ -68,6 +68,12 @@
  * schema drift degrades to a logged warning and a still-useful (possibly
  * empty) report.
  *
+ * Incomplete queries are surfaced, never silent: a `query_results` artifact
+ * whose `status` is present but not `Complete` (e.g. `Running` after a
+ * timed-out Logs Insights wait) is listed in `incompleteQueries` and stamped
+ * as a warning at the top of the markdown body, so a cut-off query can never
+ * read as "no changes".
+ *
  * @module
  */
 
@@ -235,6 +241,14 @@ export interface ChangeEvent {
   origin: string;
 }
 
+/** One query artifact that was cut off before completion. */
+export interface IncompleteQuery {
+  /** Workflow step that produced the artifact; `""` if unknown. */
+  step: string;
+  /** Artifact status as stored (e.g. `Running`, `Failed`, `Cancelled`). */
+  status: string;
+}
+
 /** Everything collected from upstream workflow steps. */
 export interface Collected {
   /** Normalized change events, sorted by timestamp. */
@@ -252,6 +266,8 @@ export interface Collected {
   config: Record<string, unknown>;
   /** Artifacts that failed to decode or validate. */
   skipped: number;
+  /** Query artifacts whose status never reached `Complete`. */
+  incomplete: IncompleteQuery[];
 }
 
 /** Structured JSON payload emitted alongside the markdown body. */
@@ -276,6 +292,10 @@ export interface ReportJson {
   resolutionSql: string[];
   /** Artifacts that failed to decode or validate. */
   skipped: number;
+  /** Query artifacts whose status never reached `Complete`. */
+  incompleteQueries: IncompleteQuery[];
+  /** Number of incomplete query artifacts. */
+  incompleteQueryCount: number;
   /** True when an unexpected failure degraded the report. */
   degraded: boolean;
 }
@@ -514,6 +534,7 @@ export async function collect(
   let config: Record<string, unknown> = {};
   const rawRows: Array<{ stepName: string; row: Record<string, string> }> = [];
   let skipped = 0;
+  const incomplete: IncompleteQuery[] = [];
 
   for (const step of context.stepExecutions ?? []) {
     for (const handle of step.dataHandles ?? []) {
@@ -566,6 +587,16 @@ export async function collect(
         continue;
       }
       const stepName = typeof step.stepName === "string" ? step.stepName : "";
+      const status = res.data.status ?? "";
+      if (status !== "" && status !== "Complete") {
+        incomplete.push({ step: stepName, status });
+        tryLog(
+          logger,
+          "warn",
+          "query_results artifact {handle} has status {status}",
+          { handle: handle.name, status },
+        );
+      }
       for (const row of res.data.results) rawRows.push({ stepName, row });
     }
   }
@@ -637,6 +668,7 @@ export async function collect(
     failedConfig,
     config,
     skipped,
+    incomplete,
   };
 }
 
@@ -660,7 +692,8 @@ export function renderMarkdown(
   generatedAt: string,
   workflowName: string,
 ): string {
-  const { events, failedAttempts, failedConfig, skipped } = collected;
+  const { events, failedAttempts, failedConfig, skipped, incomplete } =
+    collected;
   const hasOrigin = events.some((e) => e.origin !== "");
   const lines: string[] = [];
 
@@ -670,14 +703,38 @@ export function renderMarkdown(
     `_Workflow **${workflowName}** · generated ${generatedAt} · ` +
       `${events.length} change(s) · ${actors.length} actor(s)` +
       `${failedConfig ? ` · ${failedAttempts.length} failed attempt(s)` : ""}` +
-      `${skipped ? ` · ${skipped} artifact(s) skipped` : ""}_`,
+      `${skipped ? ` · ${skipped} artifact(s) skipped` : ""}` +
+      `${
+        incomplete.length
+          ? ` · ${incomplete.length} incomplete quer(y/ies)`
+          : ""
+      }_`,
   );
   lines.push("");
+
+  if (incomplete.length > 0) {
+    const detail = incomplete
+      .map((q) =>
+        `\`${mdEscape(q.step) || "unknown step"}\`: ${mdEscape(q.status)}`
+      )
+      .join(", ");
+    lines.push(
+      `> **Warning — incomplete results.** ${incomplete.length} ` +
+        `quer(y/ies) did not reach \`Complete\` status (${detail}). ` +
+        `Rows may be missing; do not read this report as a full answer.`,
+    );
+    lines.push("");
+  }
 
   lines.push("## Timeline");
   lines.push("");
   if (events.length === 0) {
-    lines.push("_No changes matched the query window and filters._");
+    lines.push(
+      incomplete.length > 0
+        ? "_No changes collected, but at least one query was cut off " +
+          "before completion — this is not evidence of no changes._"
+        : "_No changes matched the query window and filters._",
+    );
   } else {
     const originHead = hasOrigin ? " Origin |" : "";
     lines.push(
@@ -775,7 +832,8 @@ export const report = {
     "ready-to-run identity-resolution SQL from a config-carried template. " +
     "Generic — field names, SQL template, failed-attempt families, and " +
     "source-IP origin map all come from a config artifact in the same " +
-    "workflow.",
+    "workflow. Query artifacts that never reached Complete status are " +
+    "surfaced as a warning so a cut-off query cannot read as no changes.",
   scope: "workflow" as const,
   labels: ["audit", "logs", "timeline", "forensics", "report"],
   // deno-lint-ignore no-explicit-any
@@ -796,6 +854,7 @@ export const report = {
       failedConfig: null,
       config: {},
       skipped: 0,
+      incomplete: [],
     };
     let actors: ActorSummary[] = [];
     let resolutionSql: string[] = [];
@@ -836,6 +895,8 @@ export const report = {
       actors,
       resolutionSql,
       skipped: collected.skipped,
+      incompleteQueries: collected.incomplete,
+      incompleteQueryCount: collected.incomplete.length,
       degraded,
     };
 
