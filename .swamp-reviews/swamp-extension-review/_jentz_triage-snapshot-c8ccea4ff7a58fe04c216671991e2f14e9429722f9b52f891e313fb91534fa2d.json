@@ -1,0 +1,47 @@
+{
+  "extension": "@jentz/triage-snapshot",
+  "version": "2026.07.31.0",
+  "reviewedAt": "2026-07-31T09:53:59Z",
+  "dimensions": [
+    {
+      "id": "credentials-secrets",
+      "verdict": "pass",
+      "note": ""
+    },
+    {
+      "id": "logging-quality",
+      "verdict": "pass",
+      "note": ""
+    },
+    {
+      "id": "error-handling",
+      "verdict": "pass",
+      "note": ""
+    },
+    {
+      "id": "testing-completeness",
+      "verdict": "pass",
+      "note": ""
+    },
+    {
+      "id": "idempotency-resilience",
+      "verdict": "pass",
+      "note": ""
+    },
+    {
+      "id": "api-contracts",
+      "verdict": "na",
+      "note": "Pure data-shaping report; no HTTP or external API calls."
+    },
+    {
+      "id": "resource-management",
+      "verdict": "pass",
+      "note": ""
+    },
+    {
+      "id": "published-surface-hygiene",
+      "verdict": "pass",
+      "note": ""
+    }
+  ]
+}

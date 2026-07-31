@@ -1,0 +1,53 @@
+manifestVersion: 1
+name: "@jentz/triage-snapshot"
+version: "2026.07.31.0"
+description: |
+  Workflow-scope report that renders a one-look snapshot of the
+  service-triage artifacts collected earlier in the workflow, one section
+  per artifact in step order:
+
+  - lambda_failure_scan (e.g. @jentz/aws-metric-scan) — per-function
+    invocations/errors table with the deterministic-failure flag.
+  - queue_depth (e.g. @jentz/aws-metric-scan) — per-queue depth and
+    oldest-message age.
+  - query_results with groups/items (e.g. @jentz/aws-dynamodb-query) —
+    grouped-counts table, or plain rows when the query had no grouping.
+  - query_results with results (e.g. @webframp/aws/logs) — Logs Insights
+    rows. A query whose status never reached Complete is surfaced as a
+    warning, so a cut-off query cannot read as all-clear.
+
+  Generic by design: the report carries no environment identifiers and
+  renders whatever recognized artifacts the workflow produced. Verdicts
+  (what counts as an anomaly) belong to the calling workflow's assert
+  steps, not to this report.
+
+  Emits a markdown body and a JSON payload carrying the structured
+  sections[], the incomplete-query list, the skipped-artifact count, and
+  a degraded flag. The report never throws — unreadable or
+  schema-mismatched artifacts are counted and skipped, and an unexpected
+  failure degrades to a still-valid report.
+repository: "https://github.com/jentz/swamp-extensions"
+homepage: "https://github.com/jentz/swamp-extensions/tree/main/triage-snapshot"
+paths:
+  base: manifest
+models: []
+workflows: []
+vaults: []
+drivers: []
+datastores: []
+reports:
+  - triage_snapshot.ts
+additionalFiles:
+  - README.md
+  - LICENSE.md
+platforms:
+  - linux-x86_64
+  - linux-aarch64
+  - darwin-x86_64
+  - darwin-aarch64
+labels:
+  - triage
+  - health
+  - snapshot
+  - report
+dependencies: []
